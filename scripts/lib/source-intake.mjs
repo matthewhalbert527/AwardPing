@@ -630,7 +630,7 @@ export function normalizeGeminiIntakeResult(value) {
     "not_program_page",
     "unclear",
   ], "unclear");
-  const status = cleanChoice(result.status, ["accepted", "needs_review", "rejected"], "needs_review");
+  const status = intakeReviewStatus(result.status);
   const pageType = cleanChoice(result.page_type, [
     "homepage",
     "application",
@@ -701,6 +701,9 @@ export function validateIntakeAiDecision(review) {
   if (!acceptedCycle.has(facts.cycle_relevance)) return { accepted: false, manual: facts.cycle_relevance === "unclear", reason: `cycle_relevance_${facts.cycle_relevance}` };
   if (!["official", "likely_official"].includes(facts.officialness)) return { accepted: false, manual: true, reason: `officialness_${facts.officialness}` };
   if (facts.confidence === "low") return { accepted: false, manual: true, reason: "confidence_low" };
+  // Strong supporting signals cannot override a request for human review.
+  // Keep earlier specific failure reasons and use a stable status fallback.
+  if (facts.status !== "accepted") return { accepted: false, manual: true, reason: `ai_status_${facts.status}` };
   return { accepted: true, manual: false, reason: "accepted" };
 }
 
@@ -1374,6 +1377,19 @@ function stringArray(value) {
   if (Array.isArray(value)) return value.flatMap((item) => stringArray(item));
   if (typeof value !== "string") return [];
   return value.split(/\s*(?:;|\n|\u2022)\s*/).map(cleanText).filter(Boolean);
+}
+
+const INTAKE_REVIEW_STATUSES = new Set(["accepted", "needs_review", "rejected"]);
+
+/**
+ * Status controls disposition, so do not coerce arrays or strip punctuation
+ * as cleanChoice does. Malformed verdicts remain unresolved; valid string
+ * tokens retain ordinary trim/case normalization. Other fields are unchanged.
+ */
+function intakeReviewStatus(value) {
+  if (typeof value !== "string") return "needs_review";
+  const token = value.trim().toLowerCase();
+  return INTAKE_REVIEW_STATUSES.has(token) ? token : "needs_review";
 }
 
 function cleanChoice(value, choices, fallback) {

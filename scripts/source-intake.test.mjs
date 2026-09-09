@@ -209,6 +209,141 @@ describe("source intake worker helpers", () => {
     expect(decision.reason).toBe("missing_evidence_quotes");
   });
 
+  it("keeps an explicit needs_review verdict with a human, however strong the other signals", () => {
+    // Every other signal here is the strongest the model can give. The model
+    // still asked for review, and that request is the decision.
+    const decision = validateIntakeAiDecision({ ...acceptedReview, status: "needs_review" });
+    expect(decision.accepted).toBe(false);
+    expect(decision.manual).toBe(true);
+    expect(decision.reason).toBe("ai_status_needs_review");
+  });
+
+  it("keeps an unknown or missing status with a human rather than accepting it", () => {
+    for (const status of [undefined, null, "", "   ", "approved", "in_review", 7, {}]) {
+      const decision = validateIntakeAiDecision({ ...acceptedReview, status });
+      expect(decision.accepted, JSON.stringify(status)).toBe(false);
+      expect(decision.manual, JSON.stringify(status)).toBe(true);
+      // The strict status reader resolves unknown input to needs_review, so the
+      // reason stays deterministic instead of echoing unvalidated input.
+      expect(decision.reason, JSON.stringify(status)).toBe("ai_status_needs_review");
+    }
+  });
+
+  it("reads the review status as a strict token, so malformed input cannot spell acceptance", () => {
+    // cleanChoice stringifies non-strings and strips punctuation, which turned
+    // each of these into an acceptance that ended human review.
+    const malformed = [
+      ["accepted"],
+      "accepted?",
+      "ac cepted",
+      { status: "accepted" },
+      true,
+      false,
+      7,
+      "accepted!",
+      "accepted.",
+      "accepted-ish",
+      ["rejected"],
+    ];
+    for (const status of malformed) {
+      const normalized = normalizeGeminiIntakeResult({ ...acceptedReview, status });
+      expect(normalized.status, JSON.stringify(status)).toBe("needs_review");
+      const decision = validateIntakeAiDecision({ ...acceptedReview, status });
+      expect(decision.accepted, JSON.stringify(status)).toBe(false);
+      expect(decision.manual, JSON.stringify(status)).toBe(true);
+      expect(decision.reason, JSON.stringify(status)).toBe("ai_status_needs_review");
+    }
+  });
+
+  it("keeps a malformed rejection with a human rather than rejecting outright", () => {
+    // "rejected?" is not a rejection either: an unreadable verdict is a
+    // question for a person, never an automatic outcome in either direction.
+    for (const status of ["rejected?", "rejected!", ["rejected"], "re-jected"]) {
+      const decision = validateIntakeAiDecision({ ...acceptedReview, status });
+      expect(decision.accepted, JSON.stringify(status)).toBe(false);
+      expect(decision.manual, JSON.stringify(status)).toBe(true);
+      expect(decision.reason, JSON.stringify(status)).toBe("ai_status_needs_review");
+    }
+  });
+
+  it("still honours the valid tokens with ordinary trimming and casing", () => {
+    for (const status of ["accepted", "ACCEPTED", "  accepted  ", " Accepted\n"]) {
+      expect(normalizeGeminiIntakeResult({ ...acceptedReview, status }).status, JSON.stringify(status)).toBe("accepted");
+      expect(validateIntakeAiDecision({ ...acceptedReview, status }), JSON.stringify(status))
+        .toEqual({ accepted: true, manual: false, reason: "accepted" });
+    }
+    for (const status of ["rejected", "REJECTED", " rejected "]) {
+      const decision = validateIntakeAiDecision({ ...acceptedReview, status, rejection_reason: "not an award page" });
+      expect(decision, JSON.stringify(status)).toEqual({ accepted: false, manual: false, reason: "not an award page" });
+    }
+    for (const status of ["needs_review", "NEEDS_REVIEW", " needs_review "]) {
+      expect(normalizeGeminiIntakeResult({ ...acceptedReview, status }).status, JSON.stringify(status)).toBe("needs_review");
+    }
+  });
+
+  it("leaves the other normalized fields exactly as they were", () => {
+    // Only the status reader changed; every sibling field keeps cleanChoice.
+    const normalized = normalizeGeminiIntakeResult({
+      ...acceptedReview,
+      status: ["accepted"],
+      source_relevance: "PRIMARY",
+      cycle_relevance: "current-or-upcoming",
+      officialness: " official ",
+      confidence: "HIGH",
+      page_type: " HOMEPAGE ",
+    });
+    expect(normalized.status).toBe("needs_review");
+    expect(normalized.source_relevance).toBe("primary");
+    expect(normalized.cycle_relevance).toBe("current_or_upcoming");
+    expect(normalized.officialness).toBe("official");
+    expect(normalized.confidence).toBe("high");
+    expect(normalized.page_type).toBe("homepage");
+  });
+
+  it("prefers the specific blocking reason over the status when both apply", () => {
+    const noEvidence = validateIntakeAiDecision({ ...acceptedReview, status: "needs_review", evidence_quotes: [] });
+    expect(noEvidence.reason).toBe("missing_evidence_quotes");
+    expect(noEvidence.manual).toBe(true);
+
+    const lowConfidence = validateIntakeAiDecision({ ...acceptedReview, status: "needs_review", confidence: "low" });
+    expect(lowConfidence.reason).toBe("confidence_low");
+    expect(lowConfidence.manual).toBe(true);
+
+    const sibling = validateIntakeAiDecision({ ...acceptedReview, status: "needs_review", source_relevance: "sibling_program" });
+    expect(sibling.reason).toBe("source_relevance_sibling_program");
+    expect(sibling.manual).toBe(false);
+  });
+
+  it("leaves an explicit accepted decision and an explicit rejection unchanged", () => {
+    const accepted = validateIntakeAiDecision(acceptedReview);
+    expect(accepted).toEqual({ accepted: true, manual: false, reason: "accepted" });
+
+    // Case variants remain valid; a dashed review token stays manual via
+    // the unknown-token fallback rather than punctuation normalization.
+    expect(validateIntakeAiDecision({ ...acceptedReview, status: "ACCEPTED" })).toEqual(accepted);
+    expect(validateIntakeAiDecision({ ...acceptedReview, status: "needs-review" }).reason)
+      .toBe("ai_status_needs_review");
+
+    const rejected = validateIntakeAiDecision({
+      ...acceptedReview,
+      status: "rejected",
+      rejection_reason: "not an award page",
+    });
+    expect(rejected.accepted).toBe(false);
+    expect(rejected.manual).toBe(false);
+    expect(rejected.reason).toBe("not an award page");
+
+    // A rejection still short-circuits ahead of every other check.
+    const rejectedWithoutEvidence = validateIntakeAiDecision({
+      ...acceptedReview,
+      status: "rejected",
+      rejection_reason: "not an award page",
+      evidence_quotes: [],
+    });
+    expect(rejectedWithoutEvidence.manual).toBe(false);
+    expect(rejectedWithoutEvidence.reason).toBe("not an award page");
+  });
+
   it("rejects sibling or generic listing decisions", () => {
     const sibling = validateIntakeAiDecision({
       ...acceptedReview,
