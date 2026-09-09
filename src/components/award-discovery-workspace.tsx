@@ -68,6 +68,12 @@ export function awardDirectoryHref(award: Pick<SharedAwardCard, "publicPath">) {
 }
 
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+/** The bucket `awardInitial` already assigns to every name not starting A-Z. */
+const otherBucket = "#";
+const otherBucketName = "Numbers and other characters";
+// Keep # after Z in the strip and traversal; character-code ordering puts it
+// before A and would make next/previous skip the bucket at the displayed end.
+const browseBuckets = [...alphabet, otherBucket];
 const pageSizeOptions = [30, 50, 100] as const;
 const searchResultLimit = 100;
 const allFilterLabel = "All";
@@ -152,9 +158,16 @@ export function AwardDiscoveryWorkspace({
   const activeLetter =
     availableLetters.has(selectedLetter)
       ? selectedLetter
-      : alphabet.find((letter) => availableLetters.has(letter)) || "#";
-  const nextLetter = alphabet.find((letter) => letter > activeLetter && availableLetters.has(letter));
-  const previousLetter = alphabet.findLast((letter) => letter < activeLetter && availableLetters.has(letter));
+      : browseBuckets.find((bucket) => availableLetters.has(bucket)) || otherBucket;
+  // Ordinary A-Z catalogs retain the existing 26-button strip.
+  const visibleBuckets = availableLetters.has(otherBucket) ? browseBuckets : alphabet;
+  const activeBucketIndex = browseBuckets.indexOf(activeLetter);
+  const nextLetter = browseBuckets.find(
+    (bucket, index) => index > activeBucketIndex && availableLetters.has(bucket),
+  );
+  const previousLetter = browseBuckets.findLast(
+    (bucket, index) => index < activeBucketIndex && availableLetters.has(bucket),
+  );
   const letterAwards = useMemo(
     () => alphabeticalAwards.filter((award) => awardInitial(award.name) === activeLetter),
     [activeLetter, alphabeticalAwards],
@@ -198,18 +211,21 @@ export function AwardDiscoveryWorkspace({
       return (
         <div className="min-w-0 max-w-full">
           <div ref={alphabetNavRef} tabIndex={-1} role="group" className="award-alpha-nav scroll-mt-40" aria-label="Alphabetical award pages" aria-describedby="award-letter-page-status">
-            {alphabet.map((letter) => {
-              const enabled = availableLetters.has(letter);
+            {visibleBuckets.map((bucket) => {
+              const enabled = availableLetters.has(bucket);
+              const name = bucket === otherBucket ? otherBucketName : undefined;
               return (
                 <button
-                  className={`award-alpha-letter ${activeLetter === letter ? "award-alpha-letter-active" : ""}`}
+                  className={`award-alpha-letter ${activeLetter === bucket ? "award-alpha-letter-active" : ""}`}
                   disabled={!enabled}
-                  key={letter}
+                  key={bucket}
                   type="button"
-                  aria-pressed={activeLetter === letter}
-                  onClick={() => selectLetter(letter)}
+                  aria-pressed={activeLetter === bucket}
+                  aria-label={name}
+                  title={name}
+                  onClick={() => selectLetter(bucket)}
                 >
-                  {letter}
+                  {bucket}
                 </button>
               );
             })}
@@ -276,6 +292,7 @@ export function AwardDiscoveryWorkspace({
               style={{ minHeight: 44 }}
               type="button"
               disabled={!previousLetter}
+              aria-label={previousLetter === otherBucket ? `Previous letter: #, ${otherBucketName}` : undefined}
               title={!previousLetter ? "You are at the first available letter." : undefined}
               onClick={() => {
                 if (!previousLetter) return;
@@ -288,13 +305,23 @@ export function AwardDiscoveryWorkspace({
               <span>Previous<span className="sr-only sm:not-sr-only">{previousLetter ? ` letter: ${previousLetter}` : " letter"}</span></span>
             </button>
             <span className="min-w-8 text-center text-base font-semibold text-[var(--foreground)]" aria-current="true">
-              <span className="sr-only">Current letter: </span>{activeLetter}
+              {activeLetter === otherBucket ? (
+                <>
+                  <span className="sr-only">Current group: {otherBucketName}</span>
+                  <span aria-hidden="true">{activeLetter}</span>
+                </>
+              ) : (
+                <>
+                  <span className="sr-only">Current letter: </span>{activeLetter}
+                </>
+              )}
             </span>
             <button
               className="button-secondary cursor-pointer px-3 py-3 text-sm disabled:cursor-default disabled:opacity-40"
               style={{ minHeight: 44 }}
               type="button"
               disabled={!nextLetter}
+              aria-label={nextLetter === otherBucket ? `Next letter: #, ${otherBucketName}` : undefined}
               title={!nextLetter ? "You are at the last available letter." : undefined}
               onClick={() => {
                 if (!nextLetter) return;

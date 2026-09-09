@@ -754,14 +754,112 @@ function pager(html: string) {
 }
 
 function alphaButton(html: string, letter: string) {
-  const match = html.match(
-    new RegExp(
-      `<button class="award-alpha-letter ?(award-alpha-letter-active)?"( disabled="")? type="button" aria-pressed="(true|false)">${letter}</button>`,
-    ),
-  );
-  if (!match) throw new Error(`letter button ${letter} missing`);
-  return { active: Boolean(match[1]), disabled: match[2] === ' disabled=""', pressed: match[3] === "true" };
+  const $ = load(html);
+  const button = $(".award-alpha-nav button").filter((_index, element) => $(element).text() === letter);
+  expect(button, `letter button ${letter}`).toHaveLength(1);
+  return {
+    active: button.hasClass("award-alpha-letter-active"),
+    disabled: button.is(":disabled"),
+    pressed: button.attr("aria-pressed") === "true",
+  };
 }
+
+describe("AwardDiscoveryWorkspace numbers and other initials", () => {
+  const rows = [
+    fictionalRow(1, { name: "Alpha Award", academicLevels: ["Undergraduate"] }),
+    fictionalRow(2, { name: "Zeta Award", academicLevels: ["Undergraduate"] }),
+    fictionalRow(3, { name: "180 Example Award", academicLevels: ["Graduate"] }),
+    fictionalRow(4, { name: "École Example Award", academicLevels: ["Graduate"] }),
+  ];
+
+  it("makes every matching award reachable from exactly one enabled bucket", () => {
+    const original = structuredClone(rows);
+    const initial = renderRows(rows);
+    const $ = load(initial);
+    const buckets = $(".award-alpha-nav button:not(:disabled)").map((_index, element) => $(element).text()).get();
+    expect(buckets).toEqual(["A", "Z", "#"]);
+    const hash = $(".award-alpha-nav button").last();
+    expect(hash.text()).toBe("#");
+    expect(hash.attr("aria-label")).toContain("Numbers and other characters");
+    expect(initial).toContain("4 of 4 monitored awards match.");
+
+    const reachable = buckets.flatMap((letter) => {
+      const html = renderRows(rows, browsePresets({ letter }));
+      expect(alphaButton(html, letter)).toEqual({ active: true, disabled: false, pressed: true });
+      const count = browseRowHrefs(html).length;
+      expect(showingLines(html)).toEqual([
+        `Showing 1-${count} of ${count} awards under ${letter}.`,
+        `Showing 1-${count} of ${count} awards under ${letter}.`,
+      ]);
+      return browseRowHrefs(html);
+    });
+    expect(reachable).toHaveLength(rows.length);
+    expect(new Set(reachable)).toEqual(new Set(rows.map((row) => row.publicPath)));
+    expect(rows).toEqual(original);
+  });
+
+  it("shows # selected when every available award has a non-A-Z initial", () => {
+    const html = renderRows(rows.slice(2));
+    const $ = load(html);
+    expect(alphaButton(html, "#")).toEqual({ active: true, disabled: false, pressed: true });
+    expect($(".award-alpha-nav button[aria-pressed='true']").text()).toBe("#");
+    expect(browseRowHrefs(html)).toEqual(rows.slice(2).map((row) => row.publicPath));
+    expect($("[aria-label='Letter navigation'] button:disabled")).toHaveLength(2);
+  });
+
+  it("traverses A to Z to # and back in rendered order, not character-code order", () => {
+    for (const [letter, previous, next] of [["A", null, "Z"], ["Z", "A", "#"], ["#", "Z", null]] as const) {
+      const $ = load(renderRows(rows, browsePresets({ letter })));
+      const buttons = $("[aria-label='Letter navigation'] button");
+      expect(buttons).toHaveLength(2);
+      expect(buttons.first().is(":disabled")).toBe(previous === null);
+      expect(buttons.last().is(":disabled")).toBe(next === null);
+      if (previous) expect(buttons.first().text()).toContain(previous);
+      if (next) expect(buttons.last().text()).toContain(next);
+      if (next === "#") {
+        expect(buttons.last().attr("aria-label")).toBe("Next letter: #, Numbers and other characters");
+        expect(buttons.last().attr("aria-label")).toContain(buttons.last().text());
+      }
+      expect($("[aria-label='Letter navigation'] [aria-current='true']").text()).toContain(letter);
+      if (letter === "#") {
+        const current = $("[aria-label='Letter navigation'] [aria-current='true']");
+        expect(current.find(".sr-only").text()).toBe("Current group: Numbers and other characters");
+        expect(current.find("[aria-hidden='true']").text()).toBe("#");
+      }
+    }
+  });
+
+  it("updates fallback and # availability when filters add or remove the bucket", () => {
+    const graduates = renderRows(rows, browsePresets({ letter: "Z", level: "Graduate" }));
+    expect(alphaButton(graduates, "#")).toEqual({ active: true, disabled: false, pressed: true });
+    expect(browseRowHrefs(graduates)).toEqual(rows.slice(2).map((row) => row.publicPath));
+
+    const undergraduate = renderRows(rows, browsePresets({ letter: "#", level: "Undergraduate" }));
+    const $ = load(undergraduate);
+    expect(alphaButton(undergraduate, "A")).toEqual({ active: true, disabled: false, pressed: true });
+    expect($(".award-alpha-nav button")).toHaveLength(26);
+    expect($(".award-alpha-nav button").map((_index, element) => $(element).text()).get()).not.toContain("#");
+    expect(browseRowHrefs(undergraduate)).toEqual([rows[0].publicPath]);
+  });
+
+  it("keeps pagination and canonical links for 31 awards in #", () => {
+    const numbered = fictionalRows(31).map((row, index) => ({ ...row, name: `${String(index + 1).padStart(3, "0")} Example Award` }));
+    const first = renderRows(numbered);
+    const second = renderRows(numbered, browsePresets({ letter: "#", pageIndex: 1 }));
+    expect(alphaButton(first, "#")).toEqual({ active: true, disabled: false, pressed: true });
+    expect(browseRowHrefs(first)).toEqual(fictionalHrefs(1, 30));
+    expect(pager(first)).toEqual({ previousDisabled: true, nextDisabled: false });
+    expect(browseRowHrefs(second)).toEqual(fictionalHrefs(31, 31));
+    expect(showingLines(second)).toEqual(["Showing 31-31 of 31 awards under #.", "Showing 31-31 of 31 awards under #."]);
+    expect(pager(second)).toEqual({ previousDisabled: false, nextDisabled: true });
+  });
+
+  it("keeps the original 26-button strip for A-Z-only catalogs and hides browsing for an empty catalog", () => {
+    const $ = load(renderRows(rows.slice(0, 2)));
+    expect($(".award-alpha-nav button").map((_index, element) => $(element).text()).get()).toEqual("ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""));
+    expect(load(renderRows([]))(".award-alpha-nav button")).toHaveLength(0);
+  });
+});
 
 describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
   it("keeps the letter boxes with a clear hover treatment and hand cursor", () => {
