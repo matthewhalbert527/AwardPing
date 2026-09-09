@@ -1,16 +1,12 @@
 import Link from "next/link";
-import { LayoutDashboard } from "lucide-react";
 import { getCurrentUser, getUserProfile, isSiteAdminEmail } from "@/lib/auth";
 import { BrandLogo } from "@/components/brand-logo";
 import { SiteHeaderNav } from "@/components/site-header-nav";
 import { ProfileMenu } from "@/components/profile-menu";
-import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
 
 export async function SiteHeader() {
   const user = await getCurrentUser();
   const profile = user ? await getUserProfile(user.id) : null;
-  const signedInHref = signedInLandingPath();
-  const signedInLabel = signedInLandingLabel();
   const isSiteAdmin = isSiteAdminEmail(user?.email);
 
   return (
@@ -25,17 +21,11 @@ export async function SiteHeader() {
 
           <div className="app-header-actions">
             {user ? (
-              <>
-                <Link href={signedInHref} className="button-secondary">
-                  <LayoutDashboard size={17} aria-hidden="true" />
-                  {signedInLabel}
-                </Link>
-                <ProfileMenu
-                  email={user.email}
-                  fullName={profile?.full_name}
-                  showAdminLink={isSiteAdmin}
-                />
-              </>
+              <ProfileMenu
+                email={user.email}
+                fullName={profile?.full_name}
+                showAdminLink={isSiteAdmin}
+              />
             ) : (
               <>
                 <Link href="/login" className="button-secondary">
