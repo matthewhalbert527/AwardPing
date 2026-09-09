@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { load } from "cheerio";
-import postcss, { type Rule } from "postcss";
+import postcss, { type AtRule, type Rule } from "postcss";
 import { describe, expect, it, vi } from "vitest";
 import { SiteHeaderNav } from "./site-header-nav";
 
@@ -100,5 +100,71 @@ describe("public header navigation geometry CSS", () => {
     expect(declarations(activeRules[0])).toEqual({
       background: "var(--surface-sunken)", color: "var(--text)",
     });
+  });
+});
+
+const NAV_SELECTOR = ".site-header-nav";
+const MENU_BUTTON_SELECTOR = ".site-header-menu-button";
+
+/** The single width bound of a plain media query, or a failure if it is not one. */
+function widthQueryBounds(params: string) {
+  const conditions = params.split(",").map((part) => part.trim());
+  expect(conditions, `one media condition for ${params}`).toHaveLength(1);
+  const match = /^\((min|max)-width:\s*(\d+)px\)$/.exec(conditions[0]);
+  expect(match, `only a plain width query may gate the header nav: ${params}`).not.toBeNull();
+  return { kind: match![1] as "min" | "max", px: Number(match![2]) };
+}
+
+/**
+ * The `display` the cascade settles on at one viewport width. Both selectors
+ * are single classes, so equal specificity makes source order decisive, which
+ * is what a plain last-write-wins walk reproduces.
+ */
+function displayAt(selector: string, width: number) {
+  let display = "none";
+  css.walkRules((rule) => {
+    if (!rule.selectors.includes(selector)) return;
+    const parent = rule.parent;
+    if (parent?.type === "atrule") {
+      const query = parent as AtRule;
+      expect(query.name, "header nav rules belong to media queries only").toBe("media");
+      const bounds = widthQueryBounds(query.params);
+      if (bounds.kind === "min" && width < bounds.px) return;
+      if (bounds.kind === "max" && width > bounds.px) return;
+    }
+    const value = declarations(rule).display;
+    if (value) display = value;
+  });
+  return display;
+}
+
+// A visitor needs one way to reach the other pages at every width. The pill
+// and the compact menu button are declared in separate blocks, so nothing but
+// their breakpoints keeps them from both vanishing, which is what happened
+// between 760px and 960px.
+describe("public header navigation affordance across viewports", () => {
+  it.each([320, 390, 759, 760, 960, 961, 1024, 1440])(
+    "shows exactly one navigation affordance at %ipx",
+    (width) => {
+      expect({
+        width,
+        pill: displayAt(NAV_SELECTOR, width) !== "none",
+        menuButton: displayAt(MENU_BUTTON_SELECTOR, width) !== "none",
+      }).toEqual({ width, pill: width > 960, menuButton: width <= 960 });
+    },
+  );
+
+  it("hands off at one shared compact bound, so the two rules cannot drift apart", () => {
+    const compactBounds: number[] = [];
+    css.walkAtRules("media", (query) => {
+      query.walkRules((rule) => {
+        if (!rule.selectors.includes(NAV_SELECTOR) && !rule.selectors.includes(MENU_BUTTON_SELECTOR)) return;
+        const bounds = widthQueryBounds(query.params);
+        if (bounds.kind === "max") compactBounds.push(bounds.px);
+      });
+    });
+    // One bound hides the pill, one reveals the button; both must be the same.
+    expect(compactBounds.length).toBeGreaterThanOrEqual(2);
+    expect([...new Set(compactBounds)]).toEqual([960]);
   });
 });

@@ -2819,7 +2819,9 @@ a {
   font-weight: 600;
 }
 
-@media (max-width: 759px) {
+/* One compact breakpoint: this bound must stay equal to the one that hides
+   .site-header-nav, or a width band is left with no way to reach the pages. */
+@media (max-width: 960px) {
   .site-header-menu-button {
     display: inline-flex;
   }
