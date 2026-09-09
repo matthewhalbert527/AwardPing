@@ -12,6 +12,7 @@ import {
 } from "@/lib/admin-ai-review-coverage";
 import { pageAuditFindingCategory } from "@/lib/admin-page-audits";
 import { sourceQualityDecision, type SourceQualitySource } from "@/lib/source-quality";
+import { sourceIntakeReviewExplanation } from "@/lib/source-intake-operator-actions";
 
 type AdminClient = SupabaseClient<Database>;
 type LocalWorkerRun = Database["public"]["Tables"]["local_worker_runs"]["Row"];
@@ -779,7 +780,8 @@ function sourceIntakeRowToIssue(row: Record<string, unknown>): AdminPageIssue {
     sourceUrl: cleanText(row.homepage_url) || null,
     message: cleanText(row.error || row.status_reason) || `Source intake status is ${status}.`,
     currentValue: status,
-    recommendedAction: "Open Source Intake, decide whether to retry, reject, attach to an award, or approve as a new award.",
+    recommendedAction: sourceIntakeReviewExplanation(row.status, row.status_reason)
+      ?? "Open Source Intake, decide whether to retry, reject, attach to an award, or approve as a new award.",
     relatedWorkerRunId: cleanText(row.worker_run_id) || null,
     checkedAt: cleanText(row.updated_at) || null,
     failures: status === "failed" ? 1 : 0,

@@ -953,3 +953,89 @@ function validActorEmail(value: unknown): boolean {
   const text = cleanText(value);
   return text === text.toLowerCase() && /^[^\s@]+@[^\s@]+$/.test(text);
 }
+
+/**
+ * Plain-English descriptions of the review outcomes that hold a source-intake
+ * request for a person. The intake panel and the operator inbox share this
+ * text so one wording change reaches both surfaces.
+ *
+ * Each description says what needs checking and asks for a comparison against
+ * the official source. None of them recommends an operator action: naming
+ * retry, attach or approve here would read as advice about a request nobody
+ * has examined yet. None of them states that anything is official, correct,
+ * published or verified either, because the review that held the request is
+ * the same review that could not establish those things.
+ *
+ * This adds a description beside the stored reason code. It does not replace
+ * the code, and it changes no action, permission or status.
+ */
+const SOURCE_INTAKE_HELD_REVIEW_STATUSES: ReadonlySet<string> = new Set([
+  "needs_manual_review",
+  "failed",
+]);
+
+/**
+ * A Map rather than an object literal on purpose: a plain object answers
+ * "__proto__", "constructor" and "toString" from its prototype, so a stray
+ * reason code could return something that is not copy at all.
+ */
+const SOURCE_INTAKE_REVIEW_EXPLANATIONS: ReadonlyMap<string, string> = new Map([
+  [
+    "invalid_fact_type_facts",
+    "The AI review returned award details in an unsupported format. Check the proposed details against the official source before deciding.",
+  ],
+  [
+    "invalid_fact_type_description",
+    "The AI review returned the description in an unsupported format. Check that detail against the official source before deciding.",
+  ],
+  [
+    "invalid_fact_type_deadline",
+    "The AI review returned the deadline in an unsupported format. Check that detail against the official source before deciding.",
+  ],
+  [
+    "invalid_fact_type_amount",
+    "The AI review returned the award amount in an unsupported format. Check that detail against the official source before deciding.",
+  ],
+  [
+    "invalid_fact_type_award_amount",
+    "The AI review returned the award amount in an unsupported format. Check that detail against the official source before deciding.",
+  ],
+  [
+    "source_relevance_unclear",
+    "The AI review could not confirm that this page is relevant to the award. Check the page against the award before deciding.",
+  ],
+  [
+    "cycle_relevance_unclear",
+    "The AI review could not confirm which award cycle this page applies to. Check the cycle on the official source before deciding.",
+  ],
+  [
+    "officialness_unclear",
+    "The AI review could not confirm that this is an official source. Check who publishes the page before deciding.",
+  ],
+  [
+    "confidence_low",
+    "The AI review did not provide enough confidence for automatic intake. Check the proposed details against the official source before deciding.",
+  ],
+]);
+
+/**
+ * Describes why a held request needs a person, for the review outcomes this
+ * copy covers.
+ *
+ * Both arguments must be exactly the strings the worker stored. Nothing is
+ * trimmed, lowercased or matched loosely, so an unrecognised status or reason
+ * returns null and the surface shows the stored code on its own rather than a
+ * description that may not fit it.
+ *
+ * @param status the stored source_page_requests.status
+ * @param statusReason the stored source_page_requests.status_reason
+ * @returns the description, or null when this pair is not covered
+ */
+export function sourceIntakeReviewExplanation(
+  status: unknown,
+  statusReason: unknown,
+): string | null {
+  if (typeof status !== "string" || typeof statusReason !== "string") return null;
+  if (!SOURCE_INTAKE_HELD_REVIEW_STATUSES.has(status)) return null;
+  return SOURCE_INTAKE_REVIEW_EXPLANATIONS.get(statusReason) ?? null;
+}

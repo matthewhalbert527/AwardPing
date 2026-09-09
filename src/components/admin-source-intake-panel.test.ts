@@ -6,6 +6,70 @@ import {
   sourceIntakeActionRequiresPaidRetryConfirmation,
   type SourceIntakeRequestView,
 } from "@/components/admin-source-intake-panel";
+import { sourceIntakeReviewExplanation } from "@/lib/source-intake-operator-actions";
+
+const reviewReasons = [
+  "invalid_fact_type_facts",
+  "invalid_fact_type_description",
+  "invalid_fact_type_deadline",
+  "invalid_fact_type_amount",
+  "invalid_fact_type_award_amount",
+  "source_relevance_unclear",
+  "cycle_relevance_unclear",
+  "officialness_unclear",
+  "confidence_low",
+] as const;
+
+describe("source intake review explanations", () => {
+  it.each(reviewReasons)("explains %s without changing ordinary review controls", (reason) => {
+    const request = ordinaryReviewRequest(reason);
+    const html = renderRequest(request);
+    const explanation = sourceIntakeReviewExplanation(request.status, reason);
+
+    expect(explanation).toBeTruthy();
+    expect(html).toContain(explanation);
+    expect(html).toContain(reason);
+    expect(html).toContain("Saved diagnostic stays visible.");
+    expect(html).toContain(">Retry<");
+    expect(html).toContain(">Rerun AI<");
+    expect(html).toContain(">Reject<");
+    expect(html).toMatch(/<button[^>]* disabled=""[^>]*>Attach<\/button>/);
+    expect(html.match(/<button\b[^>]*>[^<]*<\/button>/g)).toEqual(
+      renderRequest(ordinaryReviewRequest("future_review_reason")).match(/<button\b[^>]*>[^<]*<\/button>/g),
+    );
+    expect(html).not.toContain("Replay retained result - $0");
+  });
+
+  it.each(["added", "rejected", "pending", "capturing", "ai_review_submitted", "matching"] as const)(
+    "does not describe a stale review reason as a current problem at %s",
+    (status) => {
+      const request = ordinaryReviewRequest("invalid_fact_type_deadline");
+      request.status = status;
+      const html = renderRequest(request);
+
+      expect(html).toContain("invalid_fact_type_deadline");
+      expect(html).not.toContain(sourceIntakeReviewExplanation("needs_manual_review", request.status_reason));
+    },
+  );
+
+  it("keeps protected recovery guidance authoritative even with an ordinary review reason", () => {
+    const request = reconciliationRequest();
+    request.status_reason = "invalid_fact_type_deadline";
+    request.capture_metadata = {};
+    const html = renderRequest(request);
+
+    expect(html).toContain("accepted AI result exists without a completed verified capture");
+    expect(html).not.toContain(sourceIntakeReviewExplanation(request.status, request.status_reason));
+    expect(html).not.toContain(">Retry<");
+    expect(html).not.toContain(">Rerun AI<");
+  });
+
+  it("leaves an unknown reason visible without inventing an explanation", () => {
+    const html = renderRequest(ordinaryReviewRequest("future_review_reason"));
+    expect(html).toContain("future_review_reason");
+    expect(html).not.toContain("Check the proposed details against the official source");
+  });
+});
 
 describe("admin source intake reconciliation retry", () => {
   it("requires explicit confirmation only for actions that may create a new paid review", () => {
@@ -194,6 +258,20 @@ function renderRequest(request: SourceIntakeRequestView) {
     initialRequests: [request],
     awardOptions: [],
   }));
+}
+
+function ordinaryReviewRequest(reason: string): SourceIntakeRequestView {
+  const request = reconciliationRequest();
+  return {
+    ...request,
+    homepage_url: "https://example.org/award-guidance",
+    normalized_url: "https://example.org/award-guidance",
+    acquisition_kind: "admin_intake",
+    notification_mode: "baseline_only",
+    status_reason: reason,
+    capture_metadata: {},
+    error: "Saved diagnostic stays visible.",
+  };
 }
 
 function stagedCaptureMetadata(value: unknown) {

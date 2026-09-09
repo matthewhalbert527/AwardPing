@@ -16,6 +16,7 @@ import {
   sourceIntakeActionAllowedWithContext,
   sourceIntakeProtectedRecovery,
   sourceIntakeReconciliationRetryEligibility,
+  sourceIntakeReviewExplanation,
 } from "@/lib/source-intake-operator-actions";
 
 export type SourceIntakeRequestView = {
@@ -279,6 +280,9 @@ function SourceIntakeRow({
     request.status_reason === FREE_RECONCILIATION_FAILURE_REASON &&
     !canRetryReconciliation &&
     canRetry;
+  const reviewExplanation = !restrictedRecovery && !manualBackfillActivation
+    ? sourceIntakeReviewExplanation(request.status, request.status_reason)
+    : null;
   return (
     <article className={`admin-pipeline-row ${attentionStatus(request.status) ? "admin-pipeline-row-attention" : ""}`}>
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
@@ -292,6 +296,7 @@ function SourceIntakeRow({
           <p className="mt-1 break-all text-sm font-semibold text-[var(--muted)]">
             {request.normalized_url || request.homepage_url}
           </p>
+          {reviewExplanation ? <p className="mt-3 text-sm">{reviewExplanation}</p> : null}
           <dl className="mt-3 grid gap-2 text-sm md:grid-cols-2">
             <Detail label="Reason" value={request.status_reason || "Not reported"} />
             <Detail label="Sponsor" value={request.detected_sponsor || cleanText(ai.detected_sponsor) || "Not detected"} />
