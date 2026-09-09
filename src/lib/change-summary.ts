@@ -75,15 +75,8 @@ export function displayChangeSummary(
     cleanChangeDisplayText(changeDetailsToSummary(changeDetails, summary)),
     sourceUrl,
   );
-  const url = String(sourceUrl || "").toLowerCase();
-
-  if (
-    url.includes("udall.gov/ourprograms/scholarship/facultyreps") &&
-    /\bmay 25,\s*2026\b/i.test(clean)
-  ) {
-    return "The Udall Faculty Reps page lists the Scholarship submission deadline as May 26, 2026 in the Submitting Applications section.";
-  }
-
+  // Display cleanup may improve readability, but factual corrections belong in
+  // reviewed source evidence, not source-specific substitutions in the UI.
   return softenReplacementLanguage(clean);
 }
 

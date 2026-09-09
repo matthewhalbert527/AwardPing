@@ -548,13 +548,63 @@ describe("change summary filtering", () => {
     ).toBe(true);
   });
 
-  it("corrects the known Udall Faculty Reps date summary", () => {
-    expect(
-      displayChangeSummary(
-        'The Udall Scholarship submission deadline has been updated to May 25, 2026, on the "Submitting Applications" section of the Udall Faculty Reps page.',
-        "https://www.udall.gov/OurPrograms/Scholarship/FacultyReps",
-      ),
-    ).toContain("May 26, 2026");
+  it.each([
+    'The stored deadline is May 25, 2026, in the "Submitting Applications" section.',
+    "The previous deadline was May 25, 2026. Current stored wording lists June 1, 2026.",
+    'The archived guidance says "May 25, 2026"; no current deadline is listed.',
+    "The current deadline is May 26, 2026. The previous deadline was May 25, 2026.",
+  ])("preserves recorded dates and their context: %s", (summary) => {
+    const sourceUrl = "https://www.udall.gov/OurPrograms/Scholarship/FacultyReps";
+    expect(displayChangeSummary(summary, sourceUrl)).toBe(summary);
+    expect(changeSummaryDisplayParts(summary, sourceUrl, "Udall Faculty Reps").text).toBe(summary);
+    // A source label must not select a different factual correction policy.
+    expect(displayChangeSummary(summary, "https://example.org/faculty-reps")).toBe(summary);
+  });
+
+  it("preserves structured before/after evidence instead of applying a source-specific date rewrite", () => {
+    const changeDetails = {
+      reader_summary: "The previous deadline was May 25, 2026. The deadline is now June 1, 2026.",
+      before: "Applications close May 25, 2026.",
+      after: "Applications close June 1, 2026.",
+      exact_before: "Applications close May 25, 2026.",
+      exact_after: "Applications close June 1, 2026.",
+      section: "Submitting Applications",
+      change_type: "deadline",
+      is_alert_worthy: true,
+      confidence: "high",
+      structured_diff: {
+        added_text: ["Applications close June 1, 2026."],
+        removed_text: ["Applications close May 25, 2026."],
+        date_changes: ["Removed May 25, 2026", "Added June 1, 2026"],
+        amount_changes: [],
+        noise_flags: [],
+      },
+      source: { source_url: "https://www.udall.gov/OurPrograms/Scholarship/FacultyReps" },
+      quality_flags: [],
+    };
+    const originalEvidence = structuredClone(changeDetails);
+    const displayed = displayChangeSummary(
+      "Legacy summary with a different date: May 26, 2026.",
+      changeDetails.source.source_url,
+      changeDetails,
+    );
+    expect(displayed).toBe(changeDetails.reader_summary);
+    expect(displayed).not.toContain("May 26, 2026");
+    expect(changeSummaryDisplayParts(null, changeDetails.source.source_url, null, changeDetails)).toMatchObject({
+      label: "Date", text: changeDetails.reader_summary,
+    });
+    expect(changeDetails).toEqual(originalEvidence);
+  });
+
+  it("does not collapse distinct date reports into the same invented summary", () => {
+    const changes = ["May 25, 2026", "May 27, 2026"].map((date, index) => ({
+      id: String(index),
+      shared_award_id: "udall",
+      source_url: "https://www.udall.gov/OurPrograms/Scholarship/FacultyReps",
+      summary: `The stored deadline is ${date}; the prior deadline was May 25, 2026.`,
+    }));
+    expect(changeSummaryDedupeKey(changes[0])).not.toBe(changeSummaryDedupeKey(changes[1]));
+    expect(dedupeChangeSummaries(changes)).toEqual(changes);
   });
 
   it("dedupes identical displayed summaries for the same normalized source URL", () => {
