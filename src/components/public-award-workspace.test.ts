@@ -198,8 +198,10 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).toContain("Overview");
     expect(mainHtml).toContain("Deadline");
     expect(mainHtml).toContain("Eligibility");
-    expect(mainHtml).toContain("Award conditions");
-    expect(mainHtml).not.toContain("Requirements");
+    // The row carries the reviewed field's own name: the editorial policy
+    // defines `requirements` as what must be true of an application.
+    expect(mainHtml).toContain("Requirements");
+    expect(mainHtml).not.toContain("Award conditions");
     expect(mainHtml).toContain("Academic level");
     expect(mainHtml).toContain('<ul class="public-award-fact-list">');
     expect(mainHtml).toContain("<li>$1,000</li>");

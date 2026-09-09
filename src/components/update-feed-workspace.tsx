@@ -10,7 +10,7 @@ import { awardPageTypes, pageTypeLabel, type AwardPageType } from "@/lib/award-d
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import { changeDetailsSearchText } from "@/lib/change-details";
 import { readableSourceTitle } from "@/lib/display-text";
-import { formatCentralDate } from "@/lib/time-zone";
+import { centralDateKey, formatCentralDate } from "@/lib/time-zone";
 
 export type UpdateFeedRow = {
   id: string;
@@ -32,7 +32,14 @@ export type UpdateFeedRow = {
 
 type ScopeFilter = "watchlist" | "all";
 type SortFilter = "newest" | "oldest" | "award";
-type TimeFilter = "7d" | "30d" | "90d" | "all";
+type TimeFilter = "7d" | "30d" | "90d" | "all" | "custom";
+
+const timeFilters: readonly TimeFilter[] = ["7d", "30d", "90d", "all", "custom"];
+
+// Custom-range bounds are calendar days in the timezone the feed displays, so
+// "Sep 1 to Sep 7" means those days as the reader sees them rather than a UTC
+// window that clips the first and last evening.
+const dateKeyPattern = /^\d{4}-\d{2}-\d{2}$/;
 
 const defaultFilters = {
   scope: "watchlist" as ScopeFilter,
@@ -40,13 +47,18 @@ const defaultFilters = {
   time: "30d" as TimeFilter,
   type: "all",
   q: "",
+  from: "",
+  to: "",
 };
 type FilterKey = keyof typeof defaultFilters;
+type FilterPatch = Partial<Record<FilterKey, string>>;
+type Filters = ReturnType<typeof readFilters>;
 
 type AppliedFilter = {
   key: FilterKey;
   label: string;
   value: string;
+  clear: FilterPatch;
 };
 
 export function UpdateFeedWorkspace({
@@ -74,17 +86,29 @@ export function UpdateFeedWorkspace({
     });
   }
 
-  function setFilter(key: FilterKey, value: string) {
+  function setFilters(patch: FilterPatch) {
     const params = new URLSearchParams(searchParams.toString());
-    const defaultValue = String(defaultFilters[key] || "");
 
-    if (value === "" || value === defaultValue) {
-      params.delete(key);
-    } else {
-      params.set(key, value);
+    for (const [key, value] of Object.entries(patch) as [FilterKey, string][]) {
+      const defaultValue = String(defaultFilters[key] || "");
+      if (value === "" || value === defaultValue) {
+        params.delete(key);
+      } else {
+        params.set(key, value);
+      }
     }
 
     replaceParams(params);
+  }
+
+  function setFilter(key: FilterKey, value: string) {
+    setFilters({ [key]: value });
+  }
+
+  // Leaving the custom range drops its bounds so they cannot linger in the URL
+  // and reappear the next time someone picks "Custom range".
+  function setTimeFilter(value: string) {
+    setFilters(value === "custom" ? { time: value } : { time: value, from: "", to: "" });
   }
 
   function clearAllFilters() {
@@ -149,12 +173,13 @@ export function UpdateFeedWorkspace({
             <select
               className="input"
               value={filters.time}
-              onChange={(event) => setFilter("time", event.target.value)}
+              onChange={(event) => setTimeFilter(event.target.value)}
             >
               <option value="7d">Last 7 days</option>
               <option value="30d">Last 30 days</option>
               <option value="90d">Last 90 days</option>
               <option value="all">All time</option>
+              <option value="custom">Custom range</option>
             </select>
           </label>
           <label>
@@ -171,6 +196,31 @@ export function UpdateFeedWorkspace({
           </label>
         </div>
 
+        {filters.time === "custom" && (
+          <div className="update-advanced-panel">
+            <label>
+              <span>From</span>
+              <input
+                className="input"
+                type="date"
+                max={filters.to || undefined}
+                value={filters.from}
+                onChange={(event) => setFilter("from", event.target.value)}
+              />
+            </label>
+            <label>
+              <span>To</span>
+              <input
+                className="input"
+                type="date"
+                min={filters.from || undefined}
+                value={filters.to}
+                onChange={(event) => setFilter("to", event.target.value)}
+              />
+            </label>
+          </div>
+        )}
+
         {hasActiveFilters && (
           <div className="update-filter-chips" aria-label="Applied filters">
             {appliedFilters.map((filter) => (
@@ -178,7 +228,7 @@ export function UpdateFeedWorkspace({
                 className="update-filter-chip"
                 key={filter.key}
                 type="button"
-                onClick={() => setFilter(filter.key, "")}
+                onClick={() => setFilters(filter.clear)}
                 title={`Remove ${filter.label} filter`}
               >
                 <span>{filter.label}: {filter.value}</span>
@@ -261,29 +311,63 @@ function readFilters(searchParams: URLSearchParams) {
   return {
     scope: readEnum(searchParams.get("scope"), ["watchlist", "all"], defaultFilters.scope),
     sort: readEnum(searchParams.get("sort"), ["newest", "oldest", "award"], defaultFilters.sort),
-    time: readEnum(searchParams.get("time"), ["7d", "30d", "90d", "all"], defaultFilters.time),
+    time: readEnum(searchParams.get("time"), timeFilters, defaultFilters.time),
     type: readEnum(searchParams.get("type"), ["all", ...awardPageTypes], defaultFilters.type),
     q: searchParams.get("q") || "",
+    from: readDateKey(searchParams.get("from")),
+    to: readDateKey(searchParams.get("to")),
   };
 }
 
-function appliedFilterChips(filters: ReturnType<typeof readFilters>): AppliedFilter[] {
+function readDateKey(value: string | null) {
+  const clean = (value || "").trim();
+  if (!dateKeyPattern.test(clean)) return "";
+  return Number.isNaN(new Date(`${clean}T12:00:00Z`).getTime()) ? "" : clean;
+}
+
+// The applied range, with reversed bounds swapped so a backwards pick still
+// reads as a range instead of matching nothing. Null when no bound is set.
+function customRange(filters: Filters) {
+  if (filters.time !== "custom") return null;
+  const { from, to } = filters;
+  if (!from && !to) return null;
+  if (from && to && from > to) return { from: to, to: from };
+  return { from, to };
+}
+
+function appliedFilterChips(filters: Filters): AppliedFilter[] {
   const chips: AppliedFilter[] = [];
 
   if (filters.scope !== defaultFilters.scope) {
-    chips.push({ key: "scope", label: "Scope", value: filters.scope === "all" ? "All updates" : "Watchlist" });
+    chips.push({
+      key: "scope",
+      label: "Scope",
+      value: filters.scope === "all" ? "All updates" : "Watchlist",
+      clear: { scope: "" },
+    });
   }
   if (filters.q.trim()) {
-    chips.push({ key: "q", label: "Search", value: filters.q.trim() });
+    chips.push({ key: "q", label: "Search", value: filters.q.trim(), clear: { q: "" } });
   }
   if (filters.type !== defaultFilters.type) {
-    chips.push({ key: "type", label: "Type", value: pageTypeLabel(filters.type as AwardPageType) });
+    chips.push({
+      key: "type",
+      label: "Type",
+      value: pageTypeLabel(filters.type as AwardPageType),
+      clear: { type: "" },
+    });
   }
   if (filters.time !== defaultFilters.time) {
-    chips.push({ key: "time", label: "Time", value: timeFilterLabel(filters.time) });
+    // One chip covers the range, so removing it drops the bounds with it.
+    chips.push({
+      key: "time",
+      label: "Time",
+      value: timeFilterLabel(filters),
+      clear: { time: "", from: "", to: "" },
+    });
   }
   if (filters.sort !== defaultFilters.sort) {
-    chips.push({ key: "sort", label: "Sort", value: sortFilterLabel(filters.sort) });
+    chips.push({ key: "sort", label: "Sort", value: sortFilterLabel(filters.sort), clear: { sort: "" } });
   }
   return chips;
 }
@@ -292,14 +376,15 @@ function readEnum<T extends string>(value: string | null, allowed: readonly T[],
   return value && allowed.includes(value as T) ? (value as T) : fallback;
 }
 
-function filterRows(rows: UpdateFeedRow[], filters: ReturnType<typeof readFilters>) {
+function filterRows(rows: UpdateFeedRow[], filters: Filters) {
   const query = filters.q.trim().toLowerCase();
   const cutoff = cutoffDate(filters.time);
+  const range = customRange(filters);
 
   return rows
     .filter((row) => filters.scope === "all" || row.inWatchlist)
     .filter((row) => filters.type === "all" || row.sourcePageType === filters.type)
-    .filter((row) => !cutoff || new Date(row.detectedAt).getTime() >= cutoff)
+    .filter((row) => withinTimeFilter(row.detectedAt, cutoff, range))
     .filter((row) => {
       if (!query) return true;
       return [row.title, row.sourceTitle, row.sourceUrl, row.summary, changeDetailsSearchText(row.changeDetails)]
@@ -319,20 +404,50 @@ function filterRows(rows: UpdateFeedRow[], filters: ReturnType<typeof readFilter
 }
 
 function cutoffDate(time: TimeFilter) {
-  if (time === "all") return null;
+  if (time === "all" || time === "custom") return null;
   const days = Number(time.replace("d", ""));
   return Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+// Both bounds are inclusive whole days. A custom range with no bounds yet
+// behaves like "All time" so choosing it never blanks the feed mid-entry.
+function withinTimeFilter(
+  detectedAt: string,
+  cutoff: number | null,
+  range: { from: string; to: string } | null,
+) {
+  if (cutoff) return new Date(detectedAt).getTime() >= cutoff;
+  if (!range) return true;
+
+  const day = centralDateKey(detectedAt);
+  if (!day) return false;
+  if (range.from && day < range.from) return false;
+  if (range.to && day > range.to) return false;
+  return true;
 }
 
 function formatDate(value: string) {
   return formatCentralDate(value);
 }
 
-function timeFilterLabel(value: TimeFilter) {
-  if (value === "7d") return "Last 7 days";
-  if (value === "30d") return "Last 30 days";
-  if (value === "90d") return "Last 90 days";
+function timeFilterLabel(filters: Filters) {
+  if (filters.time === "7d") return "Last 7 days";
+  if (filters.time === "30d") return "Last 30 days";
+  if (filters.time === "90d") return "Last 90 days";
+  if (filters.time === "custom") {
+    const range = customRange(filters);
+    if (!range) return "Custom range";
+    if (range.from && range.to) return `${formatRangeDate(range.from)} – ${formatRangeDate(range.to)}`;
+    if (range.from) return `From ${formatRangeDate(range.from)}`;
+    return `Through ${formatRangeDate(range.to)}`;
+  }
   return "All time";
+}
+
+// A day key carries no time, so anchor it at midday UTC before formatting:
+// midnight would land on the previous day once shifted into Central.
+function formatRangeDate(key: string) {
+  return formatCentralDate(`${key}T12:00:00Z`);
 }
 
 function sortFilterLabel(value: SortFilter) {
