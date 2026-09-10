@@ -160,27 +160,16 @@ export function PublicAwardWorkspace({
     <div className={`public-award-console ${sidebarOpen ? "" : "public-award-console-collapsed"}`}>
       <header className="public-award-console-header">
         <div>
-          <p className="public-award-kicker">Nationally competitive award</p>
           <h1>{data.award.name}</h1>
-          <div className="public-award-meta-line">
-            <span>{countLabel(data.sources.length, "source page")}</span>
-          </div>
-          {data.facts.overview && <p>{data.facts.overview}</p>}
         </div>
-        <div className="public-award-console-actions">
-          {data.officialHomepage && (
+        {data.officialHomepage && (
+          <div className="public-award-console-actions">
             <a className="button-secondary" href={data.officialHomepage} rel="noreferrer" target="_blank">
               <ExternalLink size={15} aria-hidden="true" />
               Official homepage
             </a>
-          )}
-          {/* One public action for every visitor: the live feed, which also
-              offers the daily digest. Contact stays in the site footer. */}
-          <Link className="button-primary" href="/updates">
-            View all updates
-            <ArrowRight size={16} aria-hidden="true" />
-          </Link>
-        </div>
+          </div>
+        )}
       </header>
 
       <aside className="public-award-sidebar" aria-label={`${data.award.name} page outline`}>
@@ -191,7 +180,6 @@ export function PublicAwardWorkspace({
         <div className="public-award-sidebar-header">
           <div className="min-w-0">
             <p>On this award</p>
-            <span>{data.lastCheckedAt ? `Last source check ${formatDate(data.lastCheckedAt)}` : "Source check date unavailable"}</span>
           </div>
           <button
             aria-label={sidebarOpen ? "Collapse page outline" : "Expand page outline"}
@@ -214,35 +202,30 @@ export function PublicAwardWorkspace({
             active={selected.kind === "overview"}
             label="Overview"
             icon={BookOpen}
-            meta="About the award"
             onClick={() => activatePanel({ kind: "overview" })}
           />
           <PanelButton
             active={selected.kind === "eligibility"}
             label="Eligibility"
             icon={Users}
-            meta="Who can apply"
             onClick={() => activatePanel({ kind: "eligibility" })}
           />
           <PanelButton
             active={selected.kind === "dates"}
             label="Dates & deadlines"
             icon={CalendarDays}
-            meta="When to apply"
             onClick={() => activatePanel({ kind: "dates" })}
           />
           <PanelButton
             active={selected.kind === "application"}
             label="How to apply"
             icon={ListChecks}
-            meta="Steps & materials"
             onClick={() => activatePanel({ kind: "application" })}
           />
           <PanelButton
             active={selected.kind === "changes"}
             label="Updates"
             icon={Inbox}
-            meta={`${countLabel(data.changes.length, "update")} shown`}
             onClick={() => activatePanel({ kind: "changes" })}
             updateCount={unreadChangeCount}
           />
@@ -250,7 +233,6 @@ export function PublicAwardWorkspace({
             active={selected.kind === "sources" || selected.kind === "source"}
             label="Official sources"
             icon={FileText}
-            meta={countLabel(data.sources.length, "source page")}
             onClick={() => activatePanel({ kind: "sources" })}
           />
         </nav>
@@ -271,6 +253,7 @@ export function PublicAwardWorkspace({
           <OverviewPanel
             factRows={factRows}
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
+            overview={data.facts.overview}
           />
         )}
         {(selected.kind === "eligibility" || selected.kind === "dates" || selected.kind === "application") && (
@@ -377,14 +360,12 @@ export function changeIdsToMarkRead(
 function PanelButton({
   active,
   label,
-  meta,
   onClick,
   icon: Icon,
   updateCount = 0,
 }: {
   active: boolean;
   label: string;
-  meta?: string | null;
   onClick: () => void;
   icon: LucideIcon;
   updateCount?: number;
@@ -395,7 +376,7 @@ function PanelButton({
     <button
       aria-controls={PUBLIC_AWARD_PANEL_ID}
       aria-pressed={active}
-      aria-label={[label, meta, hasUpdate ? countLabel(updateCount, "unread update") : null].filter(Boolean).join(", ")}
+      aria-label={[label, hasUpdate ? countLabel(updateCount, "unread update") : null].filter(Boolean).join(", ")}
       title={label}
       className={`public-award-nav-button public-award-nav-button-profile ${active ? "public-award-nav-button-active" : ""} ${hasUpdate ? "public-award-nav-button-updated" : ""}`}
       type="button"
@@ -404,7 +385,6 @@ function PanelButton({
       <Icon className="public-award-nav-icon" size={18} aria-hidden="true" />
       <span className="public-award-nav-text">
         <strong>{label}</strong>
-        {meta && <small>{meta}</small>}
       </span>
       {hasUpdate && (
         <span className="public-award-update-count" aria-label={`${updateCount} unread update${updateCount === 1 ? "" : "s"}`}>
@@ -493,7 +473,7 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
       <div className="public-award-section-heading">
         <h2 id={headingId}>Official sources</h2>
         <p className="public-award-section-description">
-          Original pages behind this award. Choose a page to see the updates available here and open the official source.
+          {data.lastCheckedAt ? `Last source check ${formatDate(data.lastCheckedAt)}` : "Source check date unavailable"}
         </p>
       </div>
       {data.sources.length > 0 && (
@@ -504,7 +484,7 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
             <input id="award-source-search" ref={searchInputRef} type="search" placeholder="Search by title, type, or address" value={query}
               onChange={(event) => setQuery(event.target.value)} />
           </div>
-          <p role="status">{sources.length} of {countLabel(data.sources.length, "source page")}</p>
+          <p role="status">{query.trim() ? `${sources.length} of ${countLabel(data.sources.length, "source page")}` : countLabel(sources.length, "source page")}</p>
         </div>
       )}
       {sources.length > 0 ? (
@@ -543,15 +523,21 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
 function OverviewPanel({
   factRows,
   headingId,
+  overview,
 }: {
   factRows: FactRow[];
   headingId?: string;
+  overview: string | null;
 }) {
   const keyFacts = factRows.filter((fact) => KEY_FACT_LABELS.has(fact.label));
   const detailRows = factRows.filter((fact) => !KEY_FACT_LABELS.has(fact.label));
 
   return (
     <div className="public-award-panel-stack">
+      <div className="public-award-section-heading">
+        <h2 id={headingId}>Overview</h2>
+        {overview && <p className="public-award-section-description">{overview}</p>}
+      </div>
       {keyFacts.length > 0 && (
         <dl className="public-award-key-facts">
           {keyFacts.map((fact) => (
@@ -565,11 +551,7 @@ function OverviewPanel({
         </dl>
       )}
 
-      <div className="public-award-section-heading">
-        <h2 id={headingId}>Overview</h2>
-      </div>
-
-      {factRows.length === 0 && (
+      {factRows.length === 0 && !overview && (
         <EmptyState text="Award details are not available yet. Check the official sources before applying." />
       )}
 
@@ -632,7 +614,7 @@ function SourcePanel({
         listedSourceNames={listedSourceNames}
         showSnapshotPreviews
         sourceIdFallback={source.id}
-        title="Updates shown for this source"
+        showHeading={false}
       />
     </div>
   );
@@ -646,7 +628,7 @@ function ChangesPanel({
   listedSourceNames,
   showSnapshotPreviews = false,
   sourceIdFallback,
-  title = "Updates",
+  showHeading = true,
 }: {
   changes: PublicAwardPageData["changes"];
   emptyText?: string;
@@ -655,16 +637,18 @@ function ChangesPanel({
   listedSourceNames: ReadonlyMap<string, string>;
   showSnapshotPreviews?: boolean;
   sourceIdFallback?: string | null;
-  title?: string;
+  showHeading?: boolean;
 }) {
   const isHighlighted = (change: PublicAwardChange) =>
     highlightedChangeId !== null && change.id === highlightedChangeId;
 
   return (
     <div className="public-award-panel-stack">
-      <div className="public-award-section-heading">
-        <h2 id={headingId}>{title}</h2>
-      </div>
+      {showHeading && (
+        <div className="public-award-section-heading">
+          <h2 id={headingId}>Updates</h2>
+        </div>
+      )}
       {changes.length > 0 ? (
         <div className="public-award-change-table">
           {changes.map((change) => (

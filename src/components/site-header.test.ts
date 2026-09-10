@@ -45,7 +45,7 @@ describe("SiteHeader", () => {
     mocks.isSiteAdminEmail.mockReturnValue(false);
   });
 
-  it("offers anonymous visitors Log in and Find awards, with no contact action", async () => {
+  it("offers Log in and one primary destination per public page, without duplicated actions", async () => {
     const html = await renderHeader();
 
     expect(html.startsWith(COMPACT_SHELL)).toBe(true);
@@ -53,8 +53,10 @@ describe("SiteHeader", () => {
     expect($('nav[aria-label="Primary navigation"] a[href="/updates"]')).toHaveLength(1);
     expect($('a[href="/updates"]')).toHaveLength(1);
     expect(html).toContain(
-      '<div class="app-header-actions"><a class="button-secondary" href="/login">Log in</a><a class="button-primary" href="/award-directory">Find awards</a></div>',
+      '<div class="app-header-actions"><a class="button-secondary" href="/login">Log in</a></div>',
     );
+    expect($('a[href="/award-directory"]')).toHaveLength(1);
+    expect(html).not.toContain("Find awards");
     expect(html).not.toContain("/contact");
     expect(html).not.toContain("Get in touch");
     expect(html).not.toContain("data-profile-menu");

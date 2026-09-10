@@ -1,12 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowRight, BellRing, ExternalLink } from "lucide-react";
-import { ChangeSummaryDisplay } from "@/components/change-summary-display";
+import { BellRing } from "lucide-react";
+import { PublicUpdateCard } from "@/components/public-update-card";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { isFirstObservedOfficialDocument } from "@/lib/change-details";
 import type { LiveUpdateItem } from "@/lib/live-updates";
-import { liveUpdateAwardHref } from "@/lib/public-award-links";
 import { loadPublicUpdateFeed, publicUpdateFeedNotice } from "@/lib/public-update-feed";
 import { publicDigestStatusMessage, type PublicDigestStatusParams } from "@/lib/public-digest-copy";
 import { centralDateKey, formatCentralDate, previousCentralDateKey } from "@/lib/time-zone";
@@ -59,61 +57,9 @@ export default async function UpdatesPage({ searchParams }: Props) {
               <section className="public-live-day" key={`${group.key}-${groupIndex}`}>
                 <h2 className="public-live-day-label">{group.label}</h2>
                 <div className="public-live-day-list">
-                  {group.items.map((update) => {
-                    // The award link carries the exact source and change so the
-                    // award workspace opens on this update, not the overview.
-                    const awardHref = liveUpdateAwardHref(update);
-                    return (
-                      <article className="public-live-update-row" key={update.id}>
-                        <h3 className="public-live-update-title-row">
-                          <Link href={awardHref}>{update.awardName}</Link>
-                        </h3>
-                        <div className="public-live-update-time">
-                          <span>
-                            {update.detectedDateTime ? (
-                              <time dateTime={update.detectedDateTime} title={update.detectedTitle}>
-                                {update.detectedLabel}
-                                <span className="sr-only"> ({update.detectedTitle})</span>
-                              </time>
-                            ) : (
-                              update.detectedLabel
-                            )}
-                          </span>
-                          <strong>{update.changeTypeLabel}</strong>
-                        </div>
-                        {isFirstObservedOfficialDocument(update.changeDetails) && (
-                          <p className="public-live-update-source">{update.sourceTitle}</p>
-                        )}
-                        <ChangeSummaryDisplay
-                          compact
-                          summary={update.summary}
-                          sourceUrl={update.sourceUrl}
-                          sourceTitle={update.sourceTitle}
-                          changeDetails={update.changeDetails}
-                        />
-                        <div className="public-live-update-actions">
-                          <Link
-                            className="public-live-update-detail-link"
-                            href={awardHref}
-                            aria-label={`View update for ${update.awardName}`}
-                          >
-                            View update
-                            <ArrowRight size={15} aria-hidden="true" />
-                          </Link>
-                          <a
-                            className="public-live-update-source-link"
-                            href={update.sourceUrl}
-                            rel="noreferrer"
-                            target="_blank"
-                            aria-label={`Official source: ${update.sourceTitle}`}
-                          >
-                            Official source
-                            <ExternalLink size={15} aria-hidden="true" />
-                          </a>
-                        </div>
-                      </article>
-                    );
-                  })}
+                  {group.items.map((update) => (
+                    <PublicUpdateCard update={update} key={update.id} />
+                  ))}
                 </div>
               </section>
             ))}

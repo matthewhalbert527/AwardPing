@@ -1,16 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import {
-  Ban,
   CheckCircle2,
-  Database,
   FileText,
   Globe,
   Lock,
   Mail,
   School,
   Server,
-  ShieldCheck,
 } from "lucide-react";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
@@ -104,18 +101,12 @@ export default function SecurityPage() {
   return (
     <div className="page-shell">
       <SiteHeader />
-      <main>
-        <section className="mx-auto max-w-6xl px-5 pb-12 pt-14 lg:pb-16 lg:pt-18">
-          <div className="grid gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-start">
-            <div>
-              <span className="badge">
-                <ShieldCheck size={15} aria-hidden="true" />
-                Security and network access
-              </span>
-              <h1 className="display-title mt-5 text-4xl leading-[1.06] md:text-[3rem]">
-                University IT review details for AwardPing.
-              </h1>
-              <p className="mt-5 max-w-2xl text-lg leading-8 text-[var(--muted)]">
+      <main className="public-page-main public-page-main-narrow">
+        <section>
+          <div className="grid gap-5">
+            <header className="public-page-heading">
+              <h1>Security and network access</h1>
+              <p>
                 This page gives campus network, security, and help desk teams a
                 concise review of what AwardPing does, what domains it uses, and
                 how it should be categorized.
@@ -130,9 +121,9 @@ export default function SecurityPage() {
                   Privacy policy
                 </Link>
               </div>
-            </div>
+            </header>
 
-            <div className="card rounded-3xl p-5 sm:p-6">
+            <div className="card rounded-2xl p-5">
               <div className="flex items-center gap-3">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--brand-blue-soft)] text-[var(--foreground)]">
                   <Server size={20} aria-hidden="true" />
@@ -141,7 +132,7 @@ export default function SecurityPage() {
                   <p className="text-sm font-bold uppercase text-[var(--muted)]">
                     Network allowlist
                   </p>
-                  <h2 className="text-2xl font-bold">Primary domains</h2>
+                  <h2 className="text-xl font-bold">Primary domains</h2>
                 </div>
               </div>
               <div className="mt-5 grid gap-3">
@@ -170,14 +161,17 @@ export default function SecurityPage() {
           </div>
         </section>
 
-        <section className="home-feature-band border-y border-[var(--line)]">
-          <div className="mx-auto grid max-w-6xl gap-4 px-5 py-12 md:grid-cols-2 lg:grid-cols-4">
+        <section className="mt-8 border-t border-[var(--line)] pt-6">
+          <h2 className="text-xl font-bold">How AwardPing works</h2>
+          <div className="mt-4 grid gap-5 sm:grid-cols-2">
             {trustFacts.map((fact) => {
               const Icon = fact.icon;
               return (
-                <article className="card home-feature-card rounded-[1.6rem] p-6" key={fact.title}>
-                  <Icon className="home-feature-icon" size={24} aria-hidden="true" />
-                  <h2 className="mt-5 text-xl font-bold">{fact.title}</h2>
+                <article key={fact.title}>
+                  <h3 className="flex items-center gap-2 font-bold">
+                    <Icon size={18} aria-hidden="true" />
+                    {fact.title}
+                  </h3>
                   <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
                     {fact.text}
                   </p>
@@ -187,18 +181,14 @@ export default function SecurityPage() {
           </div>
         </section>
 
-        <section className="mx-auto max-w-6xl px-5 py-14">
-          <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-            <article className="card rounded-3xl p-5 sm:p-6">
-              <span className="badge">
-                <Ban size={15} aria-hidden="true" />
-                Not part of AwardPing
-              </span>
-              <h2 className="mt-5 text-3xl font-bold">Common filter concerns</h2>
-              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+        <section className="mt-8 border-t border-[var(--line)] pt-6">
+          <div className="grid gap-6 lg:grid-cols-2">
+            <article>
+              <h2 className="text-xl font-bold">Not part of AwardPing</h2>
+              <ul className="mt-4 grid gap-3">
                 {notPresent.map((item) => (
-                  <div
-                    className="flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4"
+                  <li
+                    className="flex items-center gap-3"
                     key={item}
                   >
                     <CheckCircle2
@@ -206,24 +196,17 @@ export default function SecurityPage() {
                       size={18}
                       aria-hidden="true"
                     />
-                    <span className="text-sm font-bold">{item}</span>
-                  </div>
+                    <span className="text-sm leading-6 text-[var(--muted)]">{item}</span>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </article>
 
-            <article className="card rounded-3xl p-5 sm:p-6">
-              <span className="badge">
-                <Database size={15} aria-hidden="true" />
-                Service providers
-              </span>
-              <h2 className="mt-5 text-3xl font-bold">Operational dependencies</h2>
-              <div className="mt-5 grid gap-3">
+            <article>
+              <h2 className="text-xl font-bold">Service providers</h2>
+              <div className="mt-4 grid gap-4">
                 {processors.map((processor) => (
-                  <div
-                    className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4"
-                    key={processor.title}
-                  >
+                  <div key={processor.title}>
                     <h3 className="font-bold">{processor.title}</h3>
                     <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
                       {processor.text}
@@ -235,34 +218,19 @@ export default function SecurityPage() {
           </div>
         </section>
 
-        <section className="mx-auto max-w-6xl px-5 pb-16">
-          <div className="grid gap-6 lg:grid-cols-[0.82fr_1.18fr]">
-            <article className="card rounded-3xl p-5 sm:p-6">
-              <span className="badge">
-                <School size={15} aria-hidden="true" />
-                IT review checklist
-              </span>
-              <h2 className="mt-5 text-3xl font-bold">Suggested review steps</h2>
-              <ol className="mt-5 grid gap-3">
-                {reviewChecklist.map((item, index) => (
-                  <li className="flex gap-3" key={item}>
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--brand-blue-soft)] text-sm font-bold">
-                      {index + 1}
-                    </span>
-                    <span className="pt-0.5 text-sm font-bold leading-6 text-[var(--foreground)]">
-                      {item}
-                    </span>
-                  </li>
+        <section className="mt-8 border-t border-[var(--line)] pt-6">
+          <div className="grid gap-6">
+            <article>
+              <h2 className="text-xl font-bold">IT review checklist</h2>
+              <ol className="mt-4 list-decimal space-y-2 pl-5 text-sm leading-6 text-[var(--muted)]">
+                {reviewChecklist.map((item) => (
+                  <li key={item}>{item}</li>
                 ))}
               </ol>
             </article>
 
-            <article className="card rounded-3xl p-5 sm:p-6">
-              <span className="badge">
-                <FileText size={15} aria-hidden="true" />
-                Help desk note
-              </span>
-              <h2 className="mt-5 text-3xl font-bold">Allowlist request text</h2>
+            <article>
+              <h2 className="text-xl font-bold">Allowlist request text</h2>
               <pre className="mt-5 max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold leading-6 text-[var(--foreground)]">
                 {allowlistNote}
               </pre>

@@ -14,13 +14,15 @@ export default function ForgotPasswordPage() {
   return (
     <div className="page-shell">
       <SiteHeader />
-      <main className="mx-auto flex max-w-md flex-col px-5 py-16">
-        <div className="card rounded-3xl p-6">
-          <h1 className="display-title text-3xl">Reset your password</h1>
-          <p className="mt-2 text-sm text-[var(--muted)]">
-            Enter the email for your invited AwardPing account. We will send a
-            one-time link if that account exists.
-          </p>
+      <main className="public-page-main public-page-main-narrow">
+        <div className="card mx-auto max-w-md rounded-2xl p-6">
+          <header className="public-page-heading">
+            <h1>Reset your password</h1>
+            <p>
+              Enter the email for your invited AwardPing account. We will send a
+              one-time link if that account exists.
+            </p>
+          </header>
           <div className="mt-6">
             {hasSupabaseConfig() ? (
               <PasswordRecoveryRequestForm />

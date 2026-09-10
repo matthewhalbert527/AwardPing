@@ -324,7 +324,7 @@ a {
 
 .app-header-actions .button-primary,
 .app-header-actions .button-secondary {
-  min-height: 2.55rem;
+  min-height: 2.75rem;
   padding: 0.58rem 0.92rem;
   white-space: nowrap;
 }
@@ -1318,11 +1318,11 @@ a {
   }
 
   .app-header-bar {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     min-height: 0;
-    flex-wrap: wrap;
-    gap: 0.65rem;
-    padding: 0.72rem;
+    gap: 0.5rem;
+    padding: 0.5rem;
   }
 
   .app-header-actions {
@@ -1330,8 +1330,16 @@ a {
   }
 
   .app-header-brand .brand-logo {
-    width: 9.1rem;
+    width: auto;
     height: 2.35rem;
+  }
+
+  .app-header-actions .button-secondary {
+    padding-inline: 0.65rem;
+  }
+
+  .app-header-bar .site-header-menu-button {
+    margin-right: 0;
   }
 
   .dashboard-header {
@@ -1483,10 +1491,11 @@ a {
 
 .dashboard-page-title {
   max-width: 62rem;
+  font-family: var(--font-serif-display);
   color: var(--foreground);
-  font-size: clamp(1.9rem, 3.6vw, 3.5rem);
+  font-size: 2rem;
   font-weight: 700;
-  line-height: 1.03;
+  line-height: 1.2;
   text-wrap: balance;
 }
 
@@ -2655,8 +2664,8 @@ a {
 
 .site-header-menu-button {
   display: none;
-  width: 2.35rem;
-  height: 2.35rem;
+  width: 2.75rem;
+  height: 2.75rem;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border);
@@ -2909,6 +2918,91 @@ a {
   max-width: 56rem;
   margin: 0 auto;
   padding: 2rem 1.25rem 3rem;
+}
+
+.public-page-main {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.public-page-main-narrow {
+  max-width: 48rem;
+}
+
+.public-page-heading {
+  margin-bottom: 1.25rem;
+}
+
+.public-page-heading h1 {
+  font-family: var(--font-serif-display);
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.public-page-heading p {
+  max-width: 65ch;
+  margin-top: 0.5rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.public-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.public-page-actions > a {
+  min-height: 44px;
+}
+
+.public-section-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.public-section-heading h2 {
+  font-size: 1.25rem;
+  font-weight: 650;
+}
+
+.site-footer {
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-secondary);
+}
+
+.site-footer-shell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 72rem;
+  margin: 0 auto;
+  gap: 0.75rem 2rem;
+  padding: 1.25rem;
+}
+
+.site-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1.25rem;
+  font-size: 0.875rem;
+}
+
+.site-footer-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 .public-directory-main {
@@ -3712,7 +3806,7 @@ a {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   width: 100%;
-  min-height: 2.15rem;
+  min-height: 2.75rem;
   align-items: center;
   gap: 0.55rem;
   border: 0;
@@ -3727,7 +3821,7 @@ a {
 }
 
 .public-award-nav-button-source {
-  min-height: 2rem;
+  min-height: 2.75rem;
 }
 
 .public-award-nav-button::before {
@@ -3988,10 +4082,10 @@ a {
 .public-award-console-header h1 {
   color: var(--text);
   font-family: var(--font-serif-display);
-  font-size: clamp(2rem, 3.8vw, 2.7rem);
+  font-size: 2rem;
   font-weight: 600;
   letter-spacing: -0.015em;
-  line-height: 1.08;
+  line-height: 1.2;
 }
 
 .public-award-meta-line {
@@ -4025,7 +4119,7 @@ a {
 
 .public-award-console-actions .button-primary,
 .public-award-console-actions .button-secondary {
-  min-height: 2.35rem;
+  min-height: 2.75rem;
   padding: 0.45rem 0.85rem;
 }
 
@@ -4531,11 +4625,10 @@ a {
     gap: 1.25rem;
   }
 
-  /* Room below the sticky app header when it wraps onto two rows at phone
-     widths (the signed-in profile menu row is 3rem), plus the panel's
-     focus-ring offset above it. A deliberately conservative single value. */
+  /* Clear the single-row sticky header, including its 3rem signed-in
+     profile control, padding, and the panel's focus ring. */
   .public-award-console-panel {
-    --public-award-compact-scroll-margin: 9.25rem;
+    --public-award-compact-scroll-margin: 6rem;
     scroll-margin-top: var(--public-award-compact-scroll-margin);
   }
 
@@ -4628,11 +4721,7 @@ a {
   }
 
   .public-award-console-header h1 {
-    font-size: clamp(1.6rem, 7vw, 2rem);
-  }
-
-  .public-award-console-header h1 {
-    font-size: clamp(1.28rem, 6.4vw, 1.62rem);
+    font-size: 2rem;
   }
 
   .public-award-console-header p {
@@ -4875,12 +4964,13 @@ a {
 }
 
 .admin-page-title {
-  margin-top: 0.65rem;
+  margin-top: 0;
+  font-family: var(--font-serif-display);
   color: var(--foreground);
-  font-size: 2.25rem;
+  font-size: 2rem;
   font-weight: 700;
   letter-spacing: 0;
-  line-height: 1;
+  line-height: 1.2;
 }
 
 .admin-page-copy {
@@ -7169,7 +7259,7 @@ a {
   }
 
   .admin-page-title {
-    font-size: 1.95rem;
+    font-size: 2rem;
   }
 
   .admin-page-copy {

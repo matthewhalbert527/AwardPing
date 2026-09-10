@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { load } from "cheerio";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveUpdateItem } from "@/lib/live-updates";
 import { describeDetectedAt, formatCentralDateTime } from "@/lib/time-zone";
@@ -141,9 +142,8 @@ async function renderHome() {
 }
 
 function previewLinks(html: string) {
-  return [...html.matchAll(/<a class="home-live-terminal-row" href="([^"]*)">/g)].map((match) =>
-    match[1].replace(/&amp;/g, "&"),
-  );
+  const $ = load(html);
+  return $(".public-live-update-title-row a").map((_index, link) => $(link).attr("href")!).get();
 }
 
 function previewTimes(html: string) {
@@ -156,7 +156,7 @@ const EMPTY_NOTICE = "No award page changes have been recorded yet.";
 const UNAVAILABLE_NOTICE = "Live updates are unavailable right now. Please check back soon.";
 
 function previewNotices(html: string) {
-  return [...html.matchAll(/<div class="home-live-terminal-empty">([^<]*)<\/div>/g)].map((match) => match[1]);
+  return [...html.matchAll(/<div class="public-live-feed-empty">([^<]*)<\/div>/g)].map((match) => match[1]);
 }
 
 function feedNotices(html: string) {
@@ -199,9 +199,9 @@ describe("homepage live update preview", () => {
     }
     expect(html).not.toContain('href="/goldwater-scholarship"');
     expect(html).not.toContain("Sixth Award Not Previewed");
-    expect(html).toContain("<strong>Barry Goldwater Scholarship</strong>");
+    expect(load(html)(".public-live-update-title-row").first().text()).toBe("Barry Goldwater Scholarship");
     expect(html).toContain('aria-label="Live award update preview"');
-    expect(html).toContain('<a class="home-live-terminal-footer" href="/updates">');
+    expect(html).toContain('<a class="public-live-update-detail-link" href="/updates">View all updates');
     // A loaded preview shows rows and no notice.
     expect(previewNotices(html)).toEqual([]);
   });
@@ -239,10 +239,12 @@ describe("homepage live update preview", () => {
 
     const html = await renderHome();
 
-    const rows = html.split('<a class="home-live-terminal-row"').slice(1);
+    const $ = load(html);
+    const rows = $(".public-live-update-row");
     expect(rows).toHaveLength(5);
-    expect(rows[2]).toContain("<span>Date unavailable</span><strong>Example Award</strong>");
-    expect(rows[2]).not.toContain("<time");
+    expect(rows.eq(2).find(".public-live-update-time").text()).toContain("Date unavailable");
+    expect(rows.eq(2).find(".public-live-update-title-row").text()).toBe("Example Award");
+    expect(rows.eq(2).find("time")).toHaveLength(0);
     expect(html.split("Date unavailable")).toHaveLength(2);
     // Every remaining time element carries a datetime; none is emitted bare.
     expect(previewTimes(html)).toHaveLength(4);
@@ -250,26 +252,34 @@ describe("homepage live update preview", () => {
     expect(html).not.toMatch(/<time(?![^>]*dateTime=)/);
   });
 
-  it("sends anonymous visitors to the award directory and signed-in visitors to their updates", async () => {
+  it("keeps the same useful public actions for anonymous and signed-in readers", async () => {
     const anonymous = await renderHome();
-    const hero = anonymous.slice(0, anonymous.indexOf('aria-label="Live award update preview"'));
-    expect(hero).toContain('<a class="button-primary" href="/award-directory">Find awards');
-    expect(hero).toContain('<a class="button-secondary" href="/updates">View live updates');
-    expect(anonymous).not.toContain("Get in touch");
-    expect(hero).not.toContain('href="/contact"');
-    // Contact stays reachable from the footer.
-    expect(anonymous).toContain('<a href="/contact">Contact</a>');
+    const $ = load(anonymous);
+    expect($("main h1").text()).toBe("Keep up with award changes.");
+    expect($(".public-page-actions a").map((_index, el) => ({text:$(el).text(), href:$(el).attr("href")})).get()).toEqual([
+      {text:"Browse awards", href:"/award-directory"},
+      {text:"Get daily emails", href:"/updates/subscribe"},
+    ]);
+    expect($("main a[href='/updates']")).toHaveLength(1);
+    expect($("main a[href='/updates']").text()).toBe("View all updates");
+    expect($(".home-journey-band, .home-matrix-grid, .home-terminal-hero")).toHaveLength(0);
+    expect($("a[href='/contact']").text()).toBe("Contact");
+    mocks.getCurrentUser.mockResolvedValue({id:"user-1", email:"person@example.edu"});
+    expect(await renderHome()).toBe(anonymous);
+  });
 
-    mocks.getCurrentUser.mockResolvedValue({ id: "user-1", email: "person@example.edu" });
-    const signedIn = await renderHome();
-    expect(signedIn).toContain('<a class="button-primary" href="/updates">Updates');
-    expect(signedIn).toContain('<a class="button-secondary" href="/updates">View live updates');
-    // The hero no longer offers the directory to a signed-in visitor; the
-    // footer's own directory link is unchanged.
-    const signedInHero = signedIn.slice(0, signedIn.indexOf('aria-label="Live award update preview"'));
-    expect(signedInHero).not.toContain("Find awards");
-    expect(signedIn).toContain('<a href="/award-directory">Find awards</a>');
-    expect(previewLinks(signedIn)).toEqual(previewLinks(anonymous));
+  it("renders the same complete update cards as the full Updates page", async () => {
+    const home = load(await renderHome());
+    const updates = load(await renderUpdatesPage());
+    home(".public-live-update-row").each((_index, node) => {
+      const card = home(node);
+      const href = card.find(".public-live-update-title-row a").attr("href");
+      const match = updates(".public-live-update-row").filter((_i, element) =>
+        updates(element).find(".public-live-update-title-row a").attr("href") === href,
+      );
+      expect(match).toHaveLength(1);
+      expect(card.html()).toBe(match.html());
+    });
   });
 
   it("shows the empty notice, and no promise of a next scan, when nothing has been recorded", async () => {
@@ -294,9 +304,9 @@ describe("homepage live update preview", () => {
     expect(html).not.toContain("connection refused");
     expect(previewLinks(html)).toEqual([]);
     // The hero and its actions render as usual around the notice.
-    expect(html).toContain('<a class="button-primary" href="/award-directory">Find awards');
-    expect(html).toContain('<a class="button-secondary" href="/updates">View live updates');
-    expect(html).toContain('<a class="home-live-terminal-footer" href="/updates">');
+    expect(html).toContain('<a class="button-primary" href="/award-directory">Browse awards');
+    expect(load(html)(".public-page-actions a[href='/updates/subscribe']").text()).toBe("Get daily emails");
+    expect(html).toContain('<a class="public-live-update-detail-link" href="/updates">View all updates');
     expect(consoleError).toHaveBeenCalledTimes(1);
     consoleError.mockRestore();
   });

@@ -24,17 +24,24 @@ describe("public daily digest pages", () => {
     const feed = renderToStaticMarkup(await UpdatesPage({ searchParams: Promise.resolve({}) }));
     const signup = await renderSubscribe();
     expect(metadata.title).toBe("Daily digest | AwardPing");
-    for (const html of [home, signup]) expect(html).toContain("Daily digest");
+    expect(signup).toContain("Daily digest");
     for (const html of [home, feed]) expect(html).toContain('href="/updates/subscribe"');
     const $ = load(feed);
     const emailLink = $('main a[href="/updates/subscribe"]');
     expect(emailLink).toHaveLength(1);
     expect(emailLink.text().trim()).toBe("Get daily emails");
     expect($("main .public-updates-cta")).toHaveLength(0);
-    expect(home).toContain("Quiet email updates when useful changes appear.");
+    const homeEmailLink = load(home)('main a[href="/updates/subscribe"]');
+    expect(homeEmailLink).toHaveLength(1);
+    expect(homeEmailLink.text().trim()).toBe("Get daily emails");
     expect(signup).toContain("Get a daily email when useful changes appear on official award pages. Quiet days stay quiet.");
     expect(signup).toContain("Confirm your email before the digest starts");
+    expect(signup).toContain("Every digest includes an unsubscribe link.");
     expect(signup).not.toContain("Double opt-in");
+    const signupPage = load(signup);
+    expect(signupPage("main.public-page-main.public-page-main-narrow")).toHaveLength(1);
+    expect(signupPage("main .public-page-heading > h1").text()).toBe("Daily digest");
+    expect(signupPage("main .display-title")).toHaveLength(0);
   });
 
   it.each<PublicDigestStatusParams>([

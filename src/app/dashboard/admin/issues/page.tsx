@@ -98,8 +98,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     return (
       <IssueShell>
         <div className="card p-6">
-          <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-bold">Admin workflows</h1>
+          <h1 className="admin-page-title">Admin workflows</h1>
           <p className="mt-2 text-[var(--muted)]">
             Supabase service-role access is not configured, so operator actions cannot be loaded.
           </p>
@@ -293,12 +292,9 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     <IssueShell>
       <div className="admin-page-header">
         <div>
-          <span className="badge">Admin</span>
           <h1 className="admin-page-title">Admin workflows</h1>
           <p className="admin-page-copy">
-            Everything that gates the 25-award beta in one place: the release stays closed until every proof
-            passes, and each tab holds one kind of work — repairs, rule promotions, quarantined cases,
-            evidence recovery, and lane budgets.
+            Review release checks and items needing attention. Publishing stays blocked until all required checks pass.
           </p>
           <p className="admin-page-timestamp">Refreshed {formatDate(renderedAt.toISOString())}.</p>
         </div>
@@ -451,8 +447,7 @@ function AccessDenied({ configured }: { configured: boolean }) {
   return (
     <IssueShell>
       <div className="card p-6">
-        <span className="badge">Admin</span>
-        <h1 className="mt-4 text-3xl font-bold">Admin workflows</h1>
+        <h1 className="admin-page-title">Admin workflows</h1>
         <p className="mt-2 text-[var(--muted)]">
           This page is limited to AwardPing site admins
           {configured ? "." : ". Set AWARDPING_ADMIN_EMAILS to enable access."}

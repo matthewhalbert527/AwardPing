@@ -1,3 +1,4 @@
+import { load } from "cheerio";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
@@ -37,6 +38,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import SlugPage, { generateMetadata } from "@/app/[slug]/page";
+import { seoPages } from "@/lib/seo-pages";
 
 const SOURCE_HOME = "3f1d3a2e-9d3b-4c5e-8a7f-1b2c3d4e5f60";
 const SOURCE_APPLY = "5d7c9b1a-3e2f-4a6b-9c8d-7e6f5a4b3c2d";
@@ -148,7 +150,7 @@ function mainMarkup(html: string) {
 function expectSelectedApplyChange(html: string) {
   const main = mainMarkup(html);
   expect(html).toContain("<h1>Example Fellowship</h1>");
-  expect(main).toContain("Updates shown for this source");
+  expect(load(main)('.public-award-source-detail-heading a[href="https://example.edu/fellowship/apply"]').text().trim()).toBe("Official source");
   expect(main).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
   expect(main).not.toContain('<h2 id="public-award-panel-heading">Overview</h2>');
   expect(main).not.toContain("The homepage changed.");
@@ -182,7 +184,7 @@ describe("public award page", () => {
     expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenCalledTimes(1);
     expect(html).toContain('aria-label="Example Fellowship page outline"');
     expect(html).toContain('aria-label="Award sections"');
-    expect(html).toContain('aria-label="Official sources, 2 source pages"');
+    expect(load(html)('aside button[aria-label="Official sources"]')).toHaveLength(1);
     // The route's main is the only main landmark; the award header and H1
     // come before the outline and the selected panel.
     expect(html.split("<main")).toHaveLength(2);
@@ -375,6 +377,11 @@ describe("public award page", () => {
     const html = await renderSlugPage({ source: SOURCE_APPLY, change: CHANGE_APPLY });
 
     expect(html).toContain("Under verification");
+    const $ = load(html);
+    expect($("main.public-page-main.public-page-main-narrow")).toHaveLength(1);
+    expect($("main .public-page-heading h1").text()).toBe("Under verification");
+    expect($("main").text()).toContain("AwardPing is checking this award's official pages, current cycle, evidence, and monitoring health. Application facts stay hidden until every release check passes.");
+    expect($("main .badge")).toHaveLength(0);
     expect(html).not.toContain("public-award-console");
     expect(mocks.getCurrentUser).not.toHaveBeenCalled();
 
@@ -382,5 +389,29 @@ describe("public award page", () => {
     await expect(renderSlugPage({ source: SOURCE_APPLY, change: CHANGE_APPLY })).rejects.toThrow(
       "NOT_FOUND",
     );
+  });
+
+  it("keeps the unavailable shell compact and its actual retry navigation intact", async () => {
+    mocks.getPublicAwardPageResolutionBySlug.mockResolvedValue({ kind: "unavailable" });
+    const $ = load(await renderSlugPage({ source: SOURCE_APPLY, change: CHANGE_APPLY }));
+    expect($("main.public-page-main.public-page-main-narrow")).toHaveLength(1);
+    expect($("main .public-page-heading h1").text()).toBe("Award details unavailable");
+    expect($("main [role=status]").text()).toBe("Award details are unavailable right now. Please try again.");
+    expect($("main a.button-primary").attr("href")).toBe(`/example-fellowship?source=${SOURCE_APPLY}&change=${CHANGE_APPLY}`);
+    expect($('main a[href="/award-directory"]').text().trim()).toBe("Browse awards");
+  });
+
+  it.each(seoPages)("gives $slug a compact heading and direct award navigation", async (page) => {
+    const $ = load(renderToStaticMarkup(await SlugPage({ params: Promise.resolve({ slug: page.slug }) })));
+    expect($("main.public-page-main.public-page-main-narrow")).toHaveLength(1);
+    expect($("main h1")).toHaveLength(1);
+    expect($("main .public-page-heading h1").text()).toBe(page.h1);
+    expect($("main .public-page-heading > p").text()).toBe(page.intro);
+    expect($('main a[href="/updates"]').text().trim()).toBe("View updates");
+    expect($('main a[href="/award-directory"]').text().trim()).toBe("Browse awards");
+    expect($("main .badge, main .display-title")).toHaveLength(0);
+    expect($("main #url-check")).toHaveLength(page.slug === "award-page-change-checker" ? 1 : 0);
+    expect(mocks.getPublicAwardPageResolutionBySlug).not.toHaveBeenCalled();
+    expect(await generateMetadata({ params: Promise.resolve({ slug: page.slug }) })).toEqual({ title: page.title, description: page.description });
   });
 });

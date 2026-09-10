@@ -4,9 +4,7 @@ import {
   Bell,
   Database,
   FileText,
-  Lock,
   Mail,
-  ShieldCheck,
   UserRound,
 } from "lucide-react";
 import { SiteFooter } from "@/components/site-footer";
@@ -69,32 +67,22 @@ export default function PrivacyPage() {
   return (
     <div className="page-shell">
       <SiteHeader />
-      <main>
-        <section className="mx-auto max-w-6xl px-5 pb-12 pt-14 lg:pb-16 lg:pt-18">
-          <div className="grid gap-10 lg:grid-cols-[0.86fr_1.14fr] lg:items-start">
-            <div>
-              <span className="badge">
-                <ShieldCheck size={15} aria-hidden="true" />
-                Privacy policy
-              </span>
-              <h1 className="display-title mt-5 text-4xl leading-[1.06] md:text-[3rem]">
-                Privacy for students, advisors, and award offices.
-              </h1>
-              <p className="mt-5 max-w-2xl text-lg leading-8 text-[var(--muted)]">
+      <main className="public-page-main public-page-main-narrow">
+        <section>
+          <div className="grid gap-5">
+            <header className="public-page-heading">
+              <h1>Privacy policy</h1>
+              <p>
                 AwardPing collects only the information needed to run account,
                 office, watchlist, source monitoring, alert, and support workflows.
               </p>
               <p className="mt-4 text-sm font-bold text-[var(--muted)]">
                 Last updated: June 21, 2026
               </p>
-            </div>
+            </header>
 
-            <article className="card rounded-3xl p-5 sm:p-6">
-              <span className="badge">
-                <Lock size={15} aria-hidden="true" />
-                Short version
-              </span>
-              <h2 className="mt-5 text-3xl font-bold">What AwardPing protects</h2>
+            <article>
+              <h2 className="text-xl font-bold">What AwardPing protects</h2>
               <p className="mt-4 leading-7 text-[var(--muted)]">
                 AwardPing is an educational monitoring tool. It does not sell user
                 contact details, does not run third-party ads, and does not collect
@@ -116,14 +104,17 @@ export default function PrivacyPage() {
           </div>
         </section>
 
-        <section className="home-feature-band border-y border-[var(--line)]">
-          <div className="mx-auto grid max-w-6xl gap-4 px-5 py-12 md:grid-cols-2 lg:grid-cols-4">
+        <section className="mt-8 border-t border-[var(--line)] pt-6">
+          <h2 className="text-xl font-bold">Information collected</h2>
+          <div className="mt-4 grid gap-5 sm:grid-cols-2">
             {collectedData.map((item) => {
               const Icon = item.icon;
               return (
-                <article className="card home-feature-card rounded-[1.6rem] p-6" key={item.title}>
-                  <Icon className="home-feature-icon" size={24} aria-hidden="true" />
-                  <h2 className="mt-5 text-xl font-bold">{item.title}</h2>
+                <article key={item.title}>
+                  <h3 className="flex items-center gap-2 font-bold">
+                    <Icon size={18} aria-hidden="true" />
+                    {item.title}
+                  </h3>
                   <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
                     {item.text}
                   </p>
@@ -133,56 +124,41 @@ export default function PrivacyPage() {
           </div>
         </section>
 
-        <section className="mx-auto max-w-6xl px-5 py-14">
+        <section className="mt-8 border-t border-[var(--line)] pt-6">
           <div className="grid gap-6 lg:grid-cols-2">
-            <article className="card rounded-3xl p-5 sm:p-6">
-              <h2 className="text-3xl font-bold">How data is used</h2>
-              <ul className="mt-5 grid gap-3">
+            <article>
+              <h2 className="text-xl font-bold">How data is used</h2>
+              <ul className="mt-4 list-disc space-y-2 pl-5 text-sm leading-6 text-[var(--muted)]">
                 {useCases.map((item) => (
-                  <li className="flex gap-3" key={item}>
-                    <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-[var(--brand-pink)]" />
-                    <span className="text-sm font-bold leading-6 text-[var(--foreground)]">
-                      {item}
-                    </span>
-                  </li>
+                  <li key={item}>{item}</li>
                 ))}
               </ul>
             </article>
 
-            <article className="card rounded-3xl p-5 sm:p-6">
-              <h2 className="text-3xl font-bold">Service providers</h2>
-              <ul className="mt-5 grid gap-3">
+            <article>
+              <h2 className="text-xl font-bold">Service providers</h2>
+              <ul className="mt-4 list-disc space-y-2 pl-5 text-sm leading-6 text-[var(--muted)]">
                 {processors.map((item) => (
-                  <li
-                    className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold leading-6 text-[var(--muted)]"
-                    key={item}
-                  >
-                    {item}
-                  </li>
+                  <li key={item}>{item}</li>
                 ))}
               </ul>
             </article>
           </div>
         </section>
 
-        <section className="mx-auto max-w-6xl px-5 pb-14">
+        <section className="mt-8 border-t border-[var(--line)] pt-6">
          <div className="grid gap-6 lg:grid-cols-2">
-            <article className="card rounded-3xl p-5 sm:p-6">
-              <h2 className="text-3xl font-bold">Privacy rights</h2>
-              <ul className="mt-5 grid gap-3">
+            <article>
+              <h2 className="text-xl font-bold">Privacy rights</h2>
+              <ul className="mt-4 list-disc space-y-2 pl-5 text-sm leading-6 text-[var(--muted)]">
                 {rights.map((item) => (
-                  <li
-                    className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold leading-6 text-[var(--muted)]"
-                    key={item}
-                  >
-                    {item}
-                  </li>
+                  <li key={item}>{item}</li>
                 ))}
               </ul>
             </article>
 
-            <article className="card rounded-3xl p-5 sm:p-6">
-              <h2 className="text-3xl font-bold">Encryption and safeguards</h2>
+            <article>
+              <h2 className="text-xl font-bold">Encryption and safeguards</h2>
               <p className="mt-4 leading-7 text-[var(--muted)]">
                 AwardPing uses HTTPS in transit and encrypted hosted storage.
                 Public update subscriber email addresses and selected profile
@@ -199,11 +175,11 @@ export default function PrivacyPage() {
           </div>
         </section>
 
-        <section className="mx-auto max-w-6xl px-5 pb-16">
-          <div className="card rounded-3xl p-5 sm:p-6">
-            <div className="grid gap-8 lg:grid-cols-3">
+        <section className="mt-8 border-t border-[var(--line)] pt-6">
+          <div>
+            <div className="grid gap-6">
               <div>
-                <h2 className="text-2xl font-bold">Retention</h2>
+                <h2 className="text-xl font-bold">Retention</h2>
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
                   Account, office, watchlist, and monitoring data is retained
                   while the account or workspace is active, unless deletion is
@@ -211,7 +187,7 @@ export default function PrivacyPage() {
                 </p>
               </div>
               <div>
-                <h2 className="text-2xl font-bold">Deletion</h2>
+                <h2 className="text-xl font-bold">Deletion</h2>
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
                   Logged-in users can export or delete account data from dashboard
                   privacy controls. AwardPing may retain minimal records needed
@@ -219,7 +195,7 @@ export default function PrivacyPage() {
                 </p>
               </div>
               <div>
-                <h2 className="text-2xl font-bold">Security</h2>
+                <h2 className="text-xl font-bold">Security</h2>
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
                   AwardPing uses HTTPS, access-controlled account workflows, and
                   hosted infrastructure providers. Security or abuse reports can

@@ -43,12 +43,12 @@ export default async function LoginPage({ searchParams }: Props) {
   return (
     <div className="page-shell">
       <SiteHeader />
-      <main className="mx-auto flex max-w-md flex-col px-5 py-16">
-        <div className="card rounded-3xl p-6">
-          <h1 className="display-title text-3xl">Log in</h1>
-          <p className="mt-2 text-sm text-[var(--muted)]">
-            Open your AwardPing dashboard.
-          </p>
+      <main className="public-page-main public-page-main-narrow">
+        <div className="card mx-auto max-w-md rounded-2xl p-6">
+          <header className="public-page-heading">
+            <h1>Log in</h1>
+            <p>Open your AwardPing dashboard.</p>
+          </header>
           {statusMessage && (
             <p className="mt-4 rounded-xl border border-[var(--line)] bg-[var(--panel-soft)] p-3 text-sm">
               {statusMessage}

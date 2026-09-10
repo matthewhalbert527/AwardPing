@@ -25,6 +25,7 @@ export function DashboardNav() {
           <Link
             className={`dashboard-nav-link dashboard-nav-link-${link.section} ${active ? "dashboard-nav-link-active" : ""}`}
             href={link.href}
+            aria-current={active ? "page" : undefined}
             key={link.href}
           >
             <Icon size={16} aria-hidden="true" />
@@ -36,18 +37,14 @@ export function DashboardNav() {
   );
 }
 
-function currentDashboardSection(pathname: string) {
-  if (pathname.startsWith("/award-directory")) {
+function currentDashboardSection(pathname: string | null) {
+  if (pathname === "/award-directory" || pathname?.startsWith("/award-directory/")) {
     return "database";
   }
 
-  if (pathname.startsWith("/updates")) {
+  if (pathname === "/updates" || pathname?.startsWith("/updates/")) {
     return "updates";
   }
 
-  if (pathname.startsWith("/dashboard/admin") || pathname.startsWith("/dashboard/ops")) {
-    return "admin";
-  }
-
-  return "updates";
+  return null;
 }

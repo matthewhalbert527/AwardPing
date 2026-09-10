@@ -27,16 +27,9 @@ export async function SiteHeader() {
                 showAdminLink={isSiteAdmin}
               />
             ) : (
-              <>
-                <Link href="/login" className="button-secondary">
-                  Log in
-                </Link>
-                {/* The directory is the visitor's first stop; it is a heavy dynamic
-                    route, so it is not prefetched, matching its other links. */}
-                <Link href="/award-directory" className="button-primary" prefetch={false}>
-                  Find awards
-                </Link>
-              </>
+              <Link href="/login" className="button-secondary">
+                Log in
+              </Link>
             )}
           </div>
         </div>

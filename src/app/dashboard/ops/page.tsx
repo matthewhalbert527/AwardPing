@@ -27,9 +27,8 @@ export default async function OpsPage() {
   if (!isSiteAdminEmail(user.email)) {
     return (
       <div>
-        <div className="mb-8">
-          <span className="badge">Ops</span>
-          <h1 className="mt-4 text-4xl font-bold">Private beta health</h1>
+        <div className="dashboard-page-header">
+          <h1 className="dashboard-page-title">Monitoring health</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           This view is available only to AwardPing site administrators.
@@ -43,9 +42,8 @@ export default async function OpsPage() {
   if (!canManage) {
     return (
       <div>
-        <div className="mb-8">
-          <span className="badge">Ops</span>
-          <h1 className="mt-4 text-4xl font-bold">Private beta health</h1>
+        <div className="dashboard-page-header">
+          <h1 className="dashboard-page-title">Monitoring health</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           This view is available to office owners and admins.
@@ -57,9 +55,8 @@ export default async function OpsPage() {
   if (!hasSupabaseAdminConfig()) {
     return (
       <div>
-        <div className="mb-8">
-          <span className="badge">Ops</span>
-          <h1 className="mt-4 text-4xl font-bold">Private beta health</h1>
+        <div className="dashboard-page-header">
+          <h1 className="dashboard-page-title">Monitoring health</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           Operational data is unavailable because trusted server access is not configured.
@@ -218,11 +215,10 @@ export default async function OpsPage() {
 
   return (
     <div>
-      <div className="mb-8">
-        <span className="badge">Ops</span>
-        <h1 className="mt-4 text-4xl font-bold">Private beta health</h1>
-        <p className="mt-2 text-[var(--muted)]">
-          Review the shared visual worker, independent downstream lanes, source failures, and alert delivery.
+      <div className="dashboard-page-header">
+        <h1 className="dashboard-page-title">Monitoring health</h1>
+        <p className="dashboard-page-copy">
+          Check source monitoring, background jobs, and email delivery.
         </p>
       </div>
 

@@ -84,10 +84,10 @@ describe("award console header layout", () => {
     expect(rule(".public-award-console-collapsed")).toContain("grid-template-columns: 3.4rem minmax(0, 1fr);");
   });
 
-  it("fixes the header without shrinking or clipping any text", () => {
-    // The title keeps the type scale it had at every width.
-    expect(rule(`${HEADER} h1`)).toContain("font-size: clamp(2rem, 3.8vw, 2.7rem);");
-    expect(compact).toContain("font-size: clamp(1.28rem, 6.4vw, 1.62rem);");
+  it("uses the shared readable title scale without clipping long names", () => {
+    expect(rule(`${HEADER} h1`)).toContain("font-size: 2rem;");
+    expect(rule(`${HEADER} h1`)).toContain("line-height: 1.2;");
+    expect(rule(`${HEADER} h1`, compact)).toContain("font-size: 2rem;");
 
     // Neither rule may hide the overflow it is supposed to prevent.
     for (const selector of [HEADER, TITLE_BLOCK]) {
@@ -99,10 +99,11 @@ describe("award console header layout", () => {
     }
   });
 
-  it("keeps both action links reachable when they wrap onto their own row", () => {
-    // On a narrow row the two links stack rather than overflow sideways.
+  it("keeps official-page actions easily tappable when they wrap onto their own row", () => {
     expect(rule(ACTIONS)).toContain("flex-wrap: wrap;");
-    expect(rule(`${ACTIONS} .button-primary,\n${ACTIONS} .button-secondary`)).toContain("min-height: 2.35rem;");
+    const minimum = rule(`${ACTIONS} .button-primary,\n${ACTIONS} .button-secondary`).match(/min-height: ([\d.]+)(rem|px);/);
+    expect(minimum).not.toBeNull();
+    expect(Number(minimum![1]) * (minimum![2] === "rem" ? 16 : 1)).toBeGreaterThanOrEqual(44);
   });
 
   it("keeps the one-column layout the phone widths already had", () => {

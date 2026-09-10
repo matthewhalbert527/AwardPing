@@ -20,8 +20,7 @@ export default async function AdminSourceIntakePage() {
     return (
       <AdminSourceIntakeShell>
         <div className="card p-6">
-          <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-bold">Source Intake</h1>
+          <h1 className="admin-page-title">Source intake</h1>
           <p className="mt-2 text-[var(--muted)]">
             This page is limited to AwardPing site admins
             {appConfig.adminEmails.length ? "." : ". Set AWARDPING_ADMIN_EMAILS to enable access."}
@@ -35,8 +34,7 @@ export default async function AdminSourceIntakePage() {
     return (
       <AdminSourceIntakeShell>
         <div className="card p-6">
-          <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-bold">Source Intake</h1>
+          <h1 className="admin-page-title">Source intake</h1>
           <p className="mt-2 text-[var(--muted)]">
             Supabase service-role access is not configured for this deployment.
           </p>
@@ -68,15 +66,13 @@ export default async function AdminSourceIntakePage() {
     <AdminSourceIntakeShell>
       <div className="admin-page-header">
         <div>
-          <span className="badge">Admin</span>
-          <h1 className="admin-page-title">Source Intake</h1>
+          <h1 className="admin-page-title">Source intake</h1>
           <p className="admin-page-copy">
-            Queue pasted official source URLs, classify them, match or create awards, and hand accepted
-            sources into reconciliation and monitoring.
+            Review official source URLs and match them to awards before monitoring.
           </p>
         </div>
         <Link className="button-secondary" href="/dashboard/admin/issues">
-          Back to Action Inbox
+          Admin workflows
         </Link>
       </div>
 

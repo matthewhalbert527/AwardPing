@@ -26,13 +26,15 @@ export default async function ResetPasswordPage({ searchParams }: Props) {
   return (
     <div className="page-shell">
       <SiteHeader />
-      <main className="mx-auto flex max-w-md flex-col px-5 py-16">
-        <div className="card rounded-3xl p-6">
-          <h1 className="display-title text-3xl">Choose a new password</h1>
-          <p className="mt-2 text-sm text-[var(--muted)]">
-            Your one-time recovery link was verified. Set a new password for
-            your invited account.
-          </p>
+      <main className="public-page-main public-page-main-narrow">
+        <div className="card mx-auto max-w-md rounded-2xl p-6">
+          <header className="public-page-heading">
+            <h1>Choose a new password</h1>
+            <p>
+              Your one-time recovery link was verified. Set a new password for
+              your invited account.
+            </p>
+          </header>
           <div className="mt-6">
             <PasswordUpdateForm nextPath={nextPath} />
           </div>

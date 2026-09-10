@@ -102,7 +102,7 @@ function DashboardNavFallback() {
   return (
     <nav className="dashboard-nav" aria-label="Dashboard navigation">
       <Link
-        className="dashboard-nav-link dashboard-nav-link-updates dashboard-nav-link-active"
+        className="dashboard-nav-link dashboard-nav-link-updates"
         href="/updates"
       >
         <Inbox size={16} aria-hidden="true" />

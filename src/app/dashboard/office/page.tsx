@@ -58,10 +58,9 @@ export default async function OfficePage() {
   return (
     <div className="dashboard-page">
       <div className="dashboard-page-header">
-        <span className="badge w-fit">Settings</span>
         <h1 className="dashboard-page-title">Office settings</h1>
         <p className="dashboard-page-copy">
-          Manage your profile, shared advisor access, and each member&apos;s alert preference.
+          Manage your profile, team access, and email preferences.
         </p>
       </div>
 
