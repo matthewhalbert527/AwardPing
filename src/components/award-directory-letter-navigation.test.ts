@@ -138,7 +138,7 @@ describe("award directory footer letter navigation", () => {
     const next = render(rows);
     expect(activeLetter(next.html)).toBe("F");
     expect(next.$('[aria-label="Alphabetical award pages"]').attr("aria-describedby")).toBe("award-letter-page-status");
-    expect(next.$('#award-letter-page-status[role="status"]').text()).toBe("Showing 1-1 of 1 awards under F.");
+    expect(next.$('#award-letter-page-status[role="status"]').text()).toBe("F · 1 award");
     expect(hrefs(next.html)).toEqual([rows[1].publicPath]);
     expect(text(nextLetterButton(next.tree).props.children)).toBe("Next letter: Z");
     expect(state.refs[1].current).toBe(destination);
@@ -154,7 +154,7 @@ describe("award directory footer letter navigation", () => {
     state.values[slot] = value;
     if (slot === 8) state.values[9] = NOW_MS;
     const first = render(rows);
-    expect(first.html).toContain("2 of 3 monitored awards match.");
+    expect(first.html).toContain("2 of 3 awards");
     expect(first.$('.award-alpha-letter').filter((_index, node) => first.$(node).text() === "C").is(":disabled")).toBe(true);
     const button = nextLetterButton(first.tree);
     expect(text(button.props.children)).toBe("Next letter: F");
@@ -227,12 +227,61 @@ describe("award directory footer letter navigation", () => {
     expect(hrefs(render(rows).html)).toEqual(many("B", 30).map(row => row.publicPath));
   });
 
-  it("hides useless Previous/Next page buttons for one page while retaining page-size and letter controls", () => {
+  it("hides unnecessary page controls for a short letter while retaining letter navigation", () => {
     const { tree, html } = render([award("B"), award("F")]);
     expect(pageButton(tree, "Previous")).toBeUndefined();
     expect(pageButton(tree, "Next")).toBeUndefined();
-    expect(html).toContain("Awards per page");
+    expect(html).not.toContain("Awards per page");
     expect(text(nextLetterButton(tree).props.children)).toBe("Next letter: F");
+  });
+
+  it.each([1, 30])("omits page size for %i awards under a letter", (count) => {
+    const { tree, html, $ } = render([...many("B", count), award("F")]);
+    expect(html).not.toContain("Awards per page");
+    expect(pageButton(tree, "Previous")).toBeUndefined();
+    expect(pageButton(tree, "Next")).toBeUndefined();
+    expect($('#award-letter-page-status[role="status"]')).toHaveLength(1);
+    expect(html.split(`B · ${count} award${count === 1 ? "" : "s"}`)).toHaveLength(2);
+    expect(text(nextLetterButton(tree).props.children)).toBe("Next letter: F");
+  });
+
+  it("keeps page size available after 31 awards fit at a larger size and lets the reader return to 30", () => {
+    const rows = [...many("B", 31), award("F")];
+    const first = render(rows);
+    const pageSizeLabel = elements(first.tree).find(element => element.type === "label" && text(element.props.children).startsWith("Awards per page"));
+    const select = elements(pageSizeLabel).find(element => element.type === "select");
+    expect(select?.props.onChange).toBeDefined();
+    select!.props.onChange!({ target: { value: "100" } });
+
+    const expanded = render(rows);
+    expect(state.values[3]).toBe(100);
+    expect(hrefs(expanded.html)).toHaveLength(31);
+    expect(expanded.html).toContain("Awards per page");
+    expect(pageButton(expanded.tree, "Next")).toBeUndefined();
+    const expandedLabel = elements(expanded.tree).find(element => element.type === "label" && text(element.props.children).startsWith("Awards per page"));
+    elements(expandedLabel).find(element => element.type === "select")!.props.onChange!({ target: { value: "30" } });
+
+    const restored = render(rows);
+    expect(state.values[3]).toBe(30);
+    expect(hrefs(restored.html)).toHaveLength(30);
+    expect(pageButton(restored.tree, "Next")?.props.disabled).toBe(false);
+    expect(restored.html).toContain("Awards per page");
+  });
+
+  it("hides page size for a short destination letter without losing the larger saved preference", () => {
+    const rows = [...many("B", 31), award("F")];
+    state.values[3] = 100;
+    const first = render(rows);
+    expect(first.html).toContain("Awards per page");
+    nextLetterButton(first.tree).props.onClick!();
+    const shortLetter = render(rows);
+    expect(shortLetter.html).not.toContain("Awards per page");
+    expect(state.values[3]).toBe(100);
+    previousLetterButton(shortLetter.tree).props.onClick!();
+    const restored = render(rows);
+    expect(restored.html).toContain("Awards per page");
+    expect(restored.$('select option[value="100"][selected]')).toHaveLength(1);
+    expect(hrefs(restored.html)).toHaveLength(31);
   });
 
   it.each(["unfiltered", "filtered"])("renders no letter or pagination controls for an empty %s result", (kind) => {
@@ -271,7 +320,7 @@ describe("award directory footer previous-letter navigation", () => {
     const second = render(rows);
     expect(activeLetter(second.html)).toBe("B");
     expect(hrefs(second.html)).toEqual([rows[0].publicPath]);
-    expect(second.$('#award-letter-page-status[role="status"]').text()).toBe("Showing 1-1 of 1 awards under B.");
+    expect(second.$('#award-letter-page-status[role="status"]').text()).toBe("B · 1 award");
     expect(state.refs[1].current).toBe(destination);
     expect(previousLetterButton(second.tree).props.disabled).toBe(true);
     expect(text(nextLetterButton(second.tree).props.children)).toBe("Next letter: F");
@@ -298,7 +347,7 @@ describe("award directory footer previous-letter navigation", () => {
     state.values[slot] = value;
     if (slot === 8) state.values[9] = NOW_MS;
     const first = render(rows);
-    expect(first.html).toContain("2 of 3 monitored awards match.");
+    expect(first.html).toContain("2 of 3 awards");
     expect(first.$('.award-alpha-letter').filter((_index, node) => first.$(node).text() === "C").is(":disabled")).toBe(true);
     const button = previousLetterButton(first.tree);
     expect(text(button.props.children)).toBe("Previous letter: B");

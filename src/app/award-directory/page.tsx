@@ -107,14 +107,12 @@ function DirectoryFrame({ children }: { children: ReactNode }) {
   return (
     <div className="page-shell">
       <SiteHeader />
-      <main className="mx-auto max-w-6xl px-5 py-10 lg:py-12">
-        <div className="mb-5 max-w-3xl">
-          <div><p className="page-kicker">Award directory</p>
-          <h1 className="display-title text-4xl leading-[1.06] md:text-[2.9rem]">Every monitored award, in one place</h1></div>
-          <p className="mt-4 max-w-[58ch] text-base leading-7 text-[var(--text-secondary)] md:text-[1.05rem] md:leading-8">
-            Search the awards AwardPing already checks. Open any award to see
-            its official sources and updates.
-          </p>
+      <main className="public-directory-main">
+        <div className="public-directory-heading">
+          <div>
+            <h1 className="display-title">Award directory</h1>
+            <p>Find an award, check its deadline, and see what changed.</p>
+          </div>
         </div>
 
         {children}

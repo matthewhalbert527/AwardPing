@@ -2911,7 +2911,18 @@ a {
   padding: 2rem 1.25rem 3rem;
 }
 
-.public-updates-heading {
+.public-directory-main {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.public-directory-heading {
+  margin-bottom: 1.25rem;
+}
+
+.public-updates-heading,
+.public-directory-heading {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2919,12 +2930,14 @@ a {
   gap: 1rem;
 }
 
-.public-updates-heading h1 {
+.public-updates-heading h1,
+.public-directory-heading h1 {
   font-size: 2rem;
   line-height: 1.2;
 }
 
-.public-updates-heading p {
+.public-updates-heading p,
+.public-directory-heading p {
   margin-top: 0.5rem;
   color: var(--text-secondary);
   line-height: 1.6;
@@ -4472,6 +4485,25 @@ a {
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   padding: 0.75rem 1rem;
+}
+
+.award-directory-filter-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.award-directory-filter-summary > button {
+  min-height: 44px;
+}
+
+@media (min-width: 480px) and (max-width: 759px) {
+  .award-directory-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .source-snapshot-evidence > .source-snapshot-evidence-summary {

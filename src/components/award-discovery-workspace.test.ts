@@ -472,7 +472,7 @@ describe("AwardDiscoveryWorkspace", () => {
       expect(browseRowHrefs(html), `authenticated=${isAuthenticated}`).toEqual(["/goldwater-scholarship"]);
       expect(html, `authenticated=${isAuthenticated}`).toContain('aria-label="Alphabetical award pages"');
       expect(html, `authenticated=${isAuthenticated}`).toContain('aria-label="Browse all awards"');
-      expect(html, `authenticated=${isAuthenticated}`).toContain("2 of 2 monitored awards match.");
+      expect(html, `authenticated=${isAuthenticated}`).toContain("2 awards");
     }
   });
 
@@ -505,6 +505,21 @@ describe("AwardDiscoveryWorkspace", () => {
         expect(selected.text()).toBe("All");
       });
     }
+  });
+
+  it("shows one short catalog count and reserves total-of wording for active filters", () => {
+    const countText = (html: string) => {
+      const $ = load(html);
+      return $(".award-directory-filter-summary p").not("#award-filter-guidance").map((_index, node) => $(node).text()).get();
+    };
+    expect(countText(renderRows([goldwater]))).toEqual(["1 award"]);
+    expect(countText(renderRows([goldwater, truman]))).toEqual(["2 awards"]);
+    const graduate = { ...truman, academicLevels: ["Graduate"] };
+    expect(countText(renderRows([goldwater, graduate], browsePresets({ level: "Undergraduate" })))).toEqual(["1 of 2 awards"]);
+    expect(countText(renderRows([goldwater, truman], browsePresets({ level: "Undergraduate" })))).toEqual(["2 of 2 awards"]);
+    expect(countText(renderRows([]))).toEqual([]);
+    expect(countText(renderRows([graduate], browsePresets({ level: "Undergraduate" })))).toEqual([]);
+    expect(countText(renderRows([goldwater, truman], ["goldwater", true]))).toEqual([]);
   });
 
   it("condenses reviewed aliases into logically ordered options without rewriting detailed source criteria", () => {
@@ -696,11 +711,11 @@ describe("AwardDiscoveryWorkspace update status", () => {
     const $ = load(unfiltered);
     expect($(".award-directory-filter-grid select").eq(3).children("option").toArray().map(option => [$(option).attr("value"), $(option).text()])).toEqual(updateChoices);
     expect(unfiltered).not.toContain("Recently updated");
-    expect(unfiltered).toContain("3 of 3 monitored awards match.");
+    expect(unfiltered).toContain("3 awards");
 
     const filtered = renderRows(rows, UPDATES_FILTER_PRESETS);
     expect(load(filtered)(".award-directory-filter-grid select").eq(3).children("option[selected]").text()).toBe("Last week");
-    expect(filtered).toContain("2 of 3 monitored awards match.");
+    expect(filtered).toContain("2 of 3 awards");
     // The filter still uses recorded events, not presence of any date. Gates
     // has a first-capture date but no recorded change and must be excluded.
     expect(browseRowHrefs(filtered)).toEqual([
@@ -726,7 +741,7 @@ describe("AwardDiscoveryWorkspace update status", () => {
     }));
     const before = structuredClone(rows);
     const html = renderRows(rows, ["", false, "G", 30, 0, "all", "all", "all", window, NOW_MS]);
-    expect(html).toContain("3 of 5 monitored awards match.");
+    expect(html).toContain("3 of 5 awards");
     expect(browseRowHrefs(html)).toEqual(["/window-0", "/window-1", "/window-2"]);
     expect(load(html)(".award-directory-filter-grid select").eq(3).children("option[selected]").attr("value")).toBe(window);
     expect(browseRowHrefs(renderRows(rows))).toEqual(rows.map(row => row.publicPath));
@@ -748,7 +763,7 @@ describe("AwardDiscoveryWorkspace update status", () => {
     const rows = [excluded, { ...goldwaterRow, recentlyUpdated: false }];
     const before = structuredClone(rows);
     const html = renderRows(rows, ["", false, "G", 30, 0, "all", "all", "all", "year", NOW_MS]);
-    expect(html).toContain("1 of 2 monitored awards match.");
+    expect(html).toContain("1 of 2 awards");
     expect(browseRowHrefs(html)).toEqual([goldwaterRow.publicPath]);
     expect(rows).toEqual(before);
   });
@@ -931,8 +946,8 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     ]);
     expect(html).not.toContain("T17:00:00");
     // Formatting remains display-only; deadline text never removes a row.
-    const matchCount = (markup: string) => markup.match(/\d+ of \d+ monitored awards match/)?.[0];
-    expect(matchCount(html)).toBe("4 of 4 monitored awards match");
+    expect(html).toContain("4 awards");
+    expect(html).not.toContain("4 of 4");
     expect(browseRowHrefs(html)).toEqual(rows.map(row => row.publicPath));
     expect(rows).toEqual(before);
   });
@@ -950,7 +965,7 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
       expect($("select option[value='listed'], select option[value='missing']")).toHaveLength(0);
       expect(html).not.toContain("Deadline listed");
       expect(html).not.toContain("Deadline not listed");
-      expect(html).toContain("5 of 5 monitored awards match.");
+      expect(html).toContain("5 awards");
       expect(browseRowHrefs(html)).toEqual(deadlineRows.map(row => row.publicPath));
       expect(deadlineCells(html)).toEqual(["January 15, 2019", "Not listed", "Not listed", "January 29, 2026", "Rolling; check the official page"]);
       expect(html).toBe(anonymous);
@@ -991,9 +1006,12 @@ function browsePresets({ letter = "A", pageSize = 30, pageIndex = 0, level = "al
   return ["", false, letter, pageSize, pageIndex, level];
 }
 
-// The "Showing a-b of n awards under X." line renders above and below the list.
+// One useful letter/count status renders above the list, without a repeated footer.
 function showingLines(html: string) {
-  return [...html.matchAll(/Showing \d+-\d+ of \d+ awards under [A-Z#]\./g)].map((match) => match[0]);
+  const $ = load(html);
+  return $("p").map((_index, element) => $(element).text()).get().filter((value) =>
+    /^(?:Showing \d+-\d+ of \d+ awards under [A-Z#]\.|[A-Z#] · \d+ awards?)$/.test(value),
+  );
 }
 
 function pager(html: string) {
@@ -1034,16 +1052,13 @@ describe("AwardDiscoveryWorkspace numbers and other initials", () => {
     const hash = $(".award-alpha-nav button").last();
     expect(hash.text()).toBe("#");
     expect(hash.attr("aria-label")).toContain("Numbers and other characters");
-    expect(initial).toContain("4 of 4 monitored awards match.");
+    expect(initial).toContain("4 awards");
 
     const reachable = buckets.flatMap((letter) => {
       const html = renderRows(rows, browsePresets({ letter }));
       expect(alphaButton(html, letter)).toEqual({ active: true, disabled: false, pressed: true });
       const count = browseRowHrefs(html).length;
-      expect(showingLines(html)).toEqual([
-        `Showing 1-${count} of ${count} awards under ${letter}.`,
-        `Showing 1-${count} of ${count} awards under ${letter}.`,
-      ]);
+      expect(showingLines(html)).toEqual([`${letter} · ${count} award${count === 1 ? "" : "s"}`]);
       return browseRowHrefs(html);
     });
     expect(reachable).toHaveLength(rows.length);
@@ -1103,7 +1118,7 @@ describe("AwardDiscoveryWorkspace numbers and other initials", () => {
     expect(browseRowHrefs(first)).toEqual(fictionalHrefs(1, 30));
     expect(pager(first)).toEqual({ previousDisabled: true, nextDisabled: false });
     expect(browseRowHrefs(second)).toEqual(fictionalHrefs(31, 31));
-    expect(showingLines(second)).toEqual(["Showing 31-31 of 31 awards under #.", "Showing 31-31 of 31 awards under #."]);
+    expect(showingLines(second)).toEqual(["Showing 31-31 of 31 awards under #."]);
     expect(pager(second)).toEqual({ previousDisabled: false, nextDisabled: true });
   });
 
@@ -1212,16 +1227,16 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
     const rows = fictionalRows(31);
 
     const first = renderRows(rows);
-    expect(first).toContain("31 of 31 monitored awards match.");
+    expect(first).toContain("31 awards");
     expect(browseRowHrefs(first)).toEqual(fictionalHrefs(1, 30));
-    expect(showingLines(first)).toEqual(["Showing 1-30 of 31 awards under F.", "Showing 1-30 of 31 awards under F."]);
+    expect(showingLines(first)).toEqual(["Showing 1-30 of 31 awards under F."]);
     expect(pager(first)).toEqual({ previousDisabled: true, nextDisabled: false });
     expect(alphaButton(first, "F")).toEqual({ active: true, disabled: false, pressed: true });
     expect(alphaButton(first, "A")).toEqual({ active: false, disabled: true, pressed: false });
 
     const second = renderRows(rows, browsePresets({ letter: "F", pageIndex: 1 }));
     expect(browseRowHrefs(second)).toEqual(["/fictional-award-031"]);
-    expect(showingLines(second)).toEqual(["Showing 31-31 of 31 awards under F.", "Showing 31-31 of 31 awards under F."]);
+    expect(showingLines(second)).toEqual(["Showing 31-31 of 31 awards under F."]);
     expect(pager(second)).toEqual({ previousDisabled: false, nextDisabled: true });
 
     // A stale page index past the end clamps to the last page, never to nothing.
@@ -1234,15 +1249,15 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
     const rows = fictionalRows(101);
 
     const first = renderRows(rows, browsePresets({ letter: "F", pageSize: 100 }));
-    expect(first).toContain("101 of 101 monitored awards match.");
+    expect(first).toContain("101 awards");
     expect(first).toContain('<option value="100" selected="">100</option>');
     expect(browseRowHrefs(first)).toEqual(fictionalHrefs(1, 100));
-    expect(showingLines(first)).toEqual(["Showing 1-100 of 101 awards under F.", "Showing 1-100 of 101 awards under F."]);
+    expect(showingLines(first)).toEqual(["Showing 1-100 of 101 awards under F."]);
     expect(pager(first)).toEqual({ previousDisabled: true, nextDisabled: false });
 
     const second = renderRows(rows, browsePresets({ letter: "F", pageSize: 100, pageIndex: 1 }));
     expect(browseRowHrefs(second)).toEqual(["/fictional-award-101"]);
-    expect(showingLines(second)).toEqual(["Showing 101-101 of 101 awards under F.", "Showing 101-101 of 101 awards under F."]);
+    expect(showingLines(second)).toEqual(["Showing 101-101 of 101 awards under F."]);
     expect(pager(second)).toEqual({ previousDisabled: false, nextDisabled: true });
   });
 
@@ -1256,9 +1271,9 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
 
     const html = renderRows(rows, browsePresets({ letter: "F", level: "Undergraduate" }));
 
-    expect(html).toContain("3 of 6 monitored awards match.");
+    expect(html).toContain("3 of 6 awards");
     expect(browseRowHrefs(html)).toEqual(["/mock-fellowship-004", "/mock-fellowship-005"]);
-    expect(showingLines(html)).toEqual(["Showing 1-2 of 2 awards under M.", "Showing 1-2 of 2 awards under M."]);
+    expect(showingLines(html)).toEqual(["M · 2 awards"]);
     expect(alphaButton(html, "F")).toEqual({ active: false, disabled: true, pressed: false });
     expect(alphaButton(html, "M")).toEqual({ active: true, disabled: false, pressed: true });
     expect(alphaButton(html, "Z")).toEqual({ active: false, disabled: false, pressed: false });
@@ -1272,16 +1287,18 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
     }));
 
     const graduate = renderRows(rows, browsePresets({ letter: "F", pageIndex: 1, level: "Graduate" }));
-    expect(graduate).toContain("34 of 35 monitored awards match.");
+    expect(graduate).toContain("34 of 35 awards");
     expect(browseRowHrefs(graduate)).toEqual(fictionalHrefs(31, 34));
-    expect(showingLines(graduate)).toEqual(["Showing 31-34 of 34 awards under F.", "Showing 31-34 of 34 awards under F."]);
+    expect(showingLines(graduate)).toEqual(["Showing 31-34 of 34 awards under F."]);
     expect(pager(graduate)).toEqual({ previousDisabled: false, nextDisabled: true });
+    expect(graduate).toContain("Awards per page");
 
     const undergraduate = renderRows(rows, browsePresets({ letter: "F", pageIndex: 1, level: "Undergraduate" }));
-    expect(undergraduate).toContain("1 of 35 monitored awards match.");
+    expect(undergraduate).toContain("1 of 35 awards");
     expect(browseRowHrefs(undergraduate)).toEqual(["/fictional-award-035"]);
-    expect(showingLines(undergraduate)).toEqual(["Showing 1-1 of 1 awards under F.", "Showing 1-1 of 1 awards under F."]);
+    expect(showingLines(undergraduate)).toEqual(["F · 1 award"]);
     expect(pager(undergraduate)).toBeNull();
+    expect(undergraduate).not.toContain("Awards per page");
   });
 
   it("lets search reach an award beyond the first page and beyond the open letter, at its canonical link", () => {

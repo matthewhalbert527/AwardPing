@@ -140,8 +140,10 @@ function publicEvent(id: string, detectedAt: string, awardId = AWARD_ID): Public
 // A notice state frames the heading, intro and footer around the notice and
 // shows nothing that belongs to a loaded catalog.
 function expectNoticeFrame(html: string) {
-  expect(html).toContain("Every monitored award, in one place");
-  expect(html).toContain("Open any award to see its official sources and updates.");
+  const $ = load(html);
+  expect($("h1").text()).toBe("Award directory");
+  expect(html).toContain("Find an award, check its deadline, and see what changed.");
+  expect(html).not.toContain("Every monitored award, in one place");
   expect(html).toContain('<a href="/contact">Contact</a>');
   expect(html).not.toContain('id="award-directory-search"');
   expect(html).not.toContain("monitored awards match");
@@ -238,14 +240,18 @@ describe("award directory page", () => {
     },
   );
 
-  it("describes opening an award, which is what every row and search result does", async () => {
+  it("introduces the directory with one compact heading and its useful tasks", async () => {
     const html = await renderDirectory();
+    const $ = load(html);
 
     expect(html).toContain(
-      "Search the awards AwardPing already checks. Open any award to see its official sources and updates.",
+      "Find an award, check its deadline, and see what changed.",
     );
     expect(html).not.toContain("Expand any award");
-    expect(html).toContain("Every monitored award, in one place");
+    expect($("h1")).toHaveLength(1);
+    expect($("h1").text()).toBe("Award directory");
+    expect(html).not.toContain("Every monitored award, in one place");
+    expect(html).not.toContain("Search the awards AwardPing already checks.");
     // A loaded catalog shows the workspace and no notice.
     expect(html).not.toContain(EMPTY_NOTICE);
     expect(html).not.toContain(UNAVAILABLE_NOTICE);

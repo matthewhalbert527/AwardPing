@@ -13,21 +13,20 @@ export default function AwardDirectoryLoading() {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-5 py-10 lg:py-12">
-        <div className="award-directory-loading">
+      <main className="public-directory-main" aria-busy="true">
+        <div className="public-directory-heading">
           <div>
-            <p className="dashboard-label">Award directory</p>
-            <h1>Loading award directory</h1>
-            <p>Preparing searchable fellowship records.</p>
+            <h1 className="display-title">Award directory</h1>
+            <p role="status">Loading awards…</p>
           </div>
-          <div className="award-directory-loading-grid" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-          </div>
+        </div>
+        <div className="award-directory-loading-grid" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
         </div>
       </main>
     </div>

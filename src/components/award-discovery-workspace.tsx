@@ -278,8 +278,11 @@ export function AwardDiscoveryWorkspace({
             })}
           </div>
           <p id="award-letter-page-status" role="status" className="mt-3 text-sm font-medium text-[var(--text-tertiary)]">
-            Showing {letterAwards.length ? visibleStart + 1 : 0}-{visibleEnd} of{" "}
-            {letterAwards.length} awards under {activeLetter}.
+            {letterPageCount > 1 ? (
+              <>Showing {visibleStart + 1}-{visibleEnd} of {letterAwards.length} awards under {activeLetter}.</>
+            ) : (
+              <>{activeLetter} · {letterAwards.length} {letterAwards.length === 1 ? "award" : "awards"}</>
+            )}
           </p>
         </div>
       );
@@ -287,14 +290,9 @@ export function AwardDiscoveryWorkspace({
 
     return (
       <div className="mt-2 min-w-0 max-w-full border-t border-[var(--border-subtle)] pt-4">
-        <div className="flex min-w-0 max-w-full flex-col gap-4 md:flex-row md:items-end md:justify-between">
-          <p className="text-sm font-medium text-[var(--text-tertiary)]">
-            Showing {letterAwards.length ? visibleStart + 1 : 0}-{visibleEnd} of{" "}
-            {letterAwards.length} awards under {activeLetter}.
-          </p>
-
+        <div className="flex min-w-0 max-w-full justify-end">
           <div className="flex min-w-0 flex-wrap items-end gap-2">
-            <label className="grid gap-1 text-sm font-bold text-[var(--muted)]">
+            {letterAwards.length > pageSizeOptions[0] && <label className="grid gap-1 text-sm font-bold text-[var(--muted)]">
               Awards per page
               <select
                 className="input min-w-28 py-2 text-base text-[var(--foreground)]"
@@ -310,7 +308,7 @@ export function AwardDiscoveryWorkspace({
                   </option>
                 ))}
               </select>
-            </label>
+            </label>}
             {letterPageCount > 1 && <button
               className="button-secondary cursor-pointer px-3 py-3 disabled:cursor-default disabled:opacity-40"
               type="button"
@@ -546,25 +544,25 @@ export function AwardDiscoveryWorkspace({
           </label>
         </div>
 
-        <p id="award-filter-guidance" className="mt-3 text-sm text-[var(--muted)]">
-          Broad categories only. Check each award for full eligibility.
-        </p>
-
-        {hasActiveFilters && (
-          <div className="mt-3 flex justify-end">
+        <div className="award-directory-filter-summary">
+          <div>
+            <p id="award-filter-guidance" className="text-sm text-[var(--muted)]">
+              Broad categories only. Check each award for full eligibility.
+            </p>
+            {!browseHiddenBySearch && awards.length > 0 && (
+              <p className="mt-2 text-sm font-medium text-[var(--text-secondary)]">
+                {hasActiveFilters
+                  ? `${awards.length.toLocaleString()} of ${sharedAwards.length.toLocaleString()} awards`
+                  : `${awards.length.toLocaleString()} ${awards.length === 1 ? "award" : "awards"}`}
+              </p>
+            )}
+          </div>
+          {hasActiveFilters && (
             <button className="button-secondary" type="button" onClick={resetFilters}>
               Reset filters
             </button>
-          </div>
-        )}
-
-        {!browseHiddenBySearch && awards.length > 0 && (
-          <div className="mt-5 border-t border-[var(--border-subtle)] pt-4">
-            <p className="text-sm font-medium text-[var(--text-tertiary)]">
-              {awards.length.toLocaleString()} of {sharedAwards.length.toLocaleString()} monitored awards match.
-            </p>
-          </div>
-        )}
+          )}
+        </div>
       </section>
 
       {!browseHiddenBySearch && awards.length === 0 && (

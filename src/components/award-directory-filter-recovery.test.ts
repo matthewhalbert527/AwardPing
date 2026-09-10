@@ -171,7 +171,7 @@ describe("award directory filter recovery", () => {
     state.values[4] = 2;
     const first = render(rows);
     expectAllFilterDefaults(first.html);
-    expect(first.html).toContain("2 of 2 monitored awards match.");
+    expect(first.html).toContain("2 awards");
     const labelElements = elements(first.tree).filter(element => element.type === "label" &&
       elements(element.props.children).some(child => child.type === "span" && child.props.children === label));
     expect(labelElements).toHaveLength(1);
@@ -186,7 +186,7 @@ describe("award directory filter recovery", () => {
     expect(state.values[4]).toBe(0);
     const filtered = render(rows);
     const $ = load(filtered.html);
-    expect(filtered.html).toContain("1 of 2 monitored awards match.");
+    expect(filtered.html).toContain("1 of 2 awards");
     expect($(".award-row-summary").map((_index, link) => $(link).attr("href")).get()).toEqual([matching.publicPath]);
     expect($(".award-directory-filter-grid select").eq(slot - 5).children("option[selected]").attr("value")).toBe(value);
     const input = elements(filtered.tree).find(element => element.props.id === "award-directory-search")!;
@@ -198,7 +198,7 @@ describe("award directory filter recovery", () => {
     expect(state.values).toEqual(["", false, "A", 50, 0, "all", "all", "all", "all", slot === 8 ? NOW_MS : 0]);
     const reset = render(rows);
     expectAllFilterDefaults(reset.html);
-    expect(reset.html).toContain("2 of 2 monitored awards match.");
+    expect(reset.html).toContain("2 awards");
     const resetHtml = load(reset.html);
     expect(resetHtml(".award-row-summary").map((_index, link) => resetHtml(link).attr("href")).get()).toEqual([matching.publicPath, other.publicPath]);
     expect(reset.html).not.toContain("Reset filters");
@@ -242,7 +242,7 @@ describe("award directory filter recovery", () => {
       expect(select.props.onChange).toBeDefined();
       select.props.onChange!({ target: { value } });
       const filtered = render(rows);
-      expect(filtered.html).toContain(`${count} of 4 monitored awards match.`);
+      expect(filtered.html).toContain(`${count} of 4 awards`);
       expect(state.values[4]).toBe(0);
     }
     const filtered = render(rows);
@@ -277,17 +277,17 @@ describe("award directory filter recovery", () => {
     };
     choose("day");
     expect(state.values).toEqual(["Fictional", false, "F", 50, 0, "all", "all", "all", "day", NOW_MS]);
-    expect(render(rows).html).toContain("1 of 3 monitored awards match.");
+    expect(render(rows).html).toContain("1 of 3 awards");
     vi.setSystemTime(NOW_MS + 86_400_000);
     // A rerender alone does not move the chosen window's captured clock.
-    expect(render(rows).html).toContain("1 of 3 monitored awards match.");
+    expect(render(rows).html).toContain("1 of 3 awards");
     expect(state.values[9]).toBe(NOW_MS);
     choose("month");
     expect(state.values[9]).toBe(NOW_MS + 86_400_000);
-    expect(render(rows).html).toContain("2 of 3 monitored awards match.");
+    expect(render(rows).html).toContain("2 of 3 awards");
     choose("year");
     const filtered = render(rows);
-    expect(filtered.html).toContain("3 of 3 monitored awards match.");
+    expect(filtered.html).toContain("3 of 3 awards");
     const input = elements(filtered.tree).find(element => element.props.id === "award-directory-search")!;
     state.focus.mockImplementation(() => input.props.onFocus!());
     resetButton(filtered.tree).props.onClick!();
@@ -302,7 +302,7 @@ describe("award directory filter recovery", () => {
     resetButton(render().tree).props.onClick!();
     expect(state.values).toEqual(["", false, "F", 50, 0, "all", "all", "all", "all", 0]);
     const { html } = render();
-    expect(html).toContain("Showing 1-1 of 1 awards under F.");
+    expect(html).toContain("F · 1 award");
     expect(html).toContain('href="/fictional-award"');
     expect(html).not.toContain("No awards match");
   });
