@@ -302,6 +302,18 @@ describe("AwardDiscoveryWorkspace", () => {
     expectNativeSearchSemantics(broader);
   });
 
+  it.each([false, true])("still finds awards by summary-only keywords without showing the blurb (signed in: %s)", (isAuthenticated) => {
+    const original = structuredClone([goldwater, truman]);
+    const researchers = render(isAuthenticated, { search: "researchers" });
+    expect(searchOptionHrefs(researchers)).toEqual([goldwater.publicPath]);
+    expect(researchers).toContain('<p role="status">1 matching award</p>');
+    expect(researchers).not.toContain(goldwater.summary!);
+    const service = render(isAuthenticated, { search: "public service" });
+    expect(searchOptionHrefs(service)).toEqual([truman.publicPath]);
+    expect(service).not.toContain(truman.summary!);
+    expect([goldwater, truman]).toEqual(original);
+  });
+
   it("wires search-result closure to onNavigate, not onClick (app wiring only)", () => {
     searchState.captureWiring = true;
     const html = render(false, { search: "Goldwater" });
@@ -622,17 +634,43 @@ function statusChips(html: string) {
 }
 
 describe("AwardDiscoveryWorkspace update status", () => {
-  it("places one update stamp directly after the award name, before the description, without eligibility fields", () => {
+  it("places one update stamp directly after the award name, without a description or eligibility fields", () => {
     const $ = load(renderRows([{ ...goldwaterRow, summary: "Supports undergraduate STEM researchers." }]));
     const card = $(".award-row-card");
     const stamp = card.find('dl[aria-label="Award last update"]');
     expect(stamp).toHaveLength(1);
     expect(stamp.parent().prev().text()).toBe("Goldwater Scholarship");
-    expect(stamp.parent().next().is("p.award-row-one-line-description")).toBe(true);
+    expect(stamp.parent().next()).toHaveLength(0);
+    expect(card.find(".award-row-one-line-description")).toHaveLength(0);
     expect(card.find("dt").map((_index, element) => $(element).text()).get()).toEqual(["Last update"]);
     expect(card.find('[data-field="level"], [data-field="citizenship"]')).toHaveLength(0);
     expect(card.find(".award-row-deadline").text()).toContain("Deadline");
     expect(card.find("a.award-row-summary").attr("href")).toBe("/goldwater-scholarship");
+  });
+
+  it.each([
+    null,
+    "",
+    "Supports undergraduate STEM researchers.",
+    "The Gilman International Scholarship provides grants for U.S. citizens with limited financial means to study abroad.",
+    "AwardPing is monitoring this award. Visit the official source for the latest details.",
+  ])("keeps only the award name, update stamp and deadline on cards for summary %j", (summary) => {
+    const row = { ...goldwater, summary };
+    const original = structuredClone(row);
+    for (const isAuthenticated of [false, true]) {
+      const $ = load(renderRows([row], [], isAuthenticated));
+      const card = $(".award-row-card");
+      expect(card).toHaveLength(1);
+      expect(card.find("a.award-row-summary")).toHaveLength(1);
+      expect(card.find("a.award-row-summary").attr("href")).toBe(goldwater.publicPath);
+      expect(card.find('dl[aria-label="Award last update"]').parent().prev().text()).toBe(goldwater.name);
+      expect(card.find('dl[aria-label="Award last update"]')).toHaveLength(1);
+      expect(card.find('dd[data-field="updates"]').text()).toBe("September 7, 2026");
+      expect(card.find(".award-row-deadline").text()).toBe("DeadlineJanuary 29, 2026");
+      expect(card.find("p, .award-row-one-line-description, [data-field='level'], [data-field='citizenship']")).toHaveLength(0);
+      if (summary) expect(card.text()).not.toContain(summary);
+    }
+    expect(row).toEqual(original);
   });
 
   it("states the last update date, using first capture only for an award with zero public changes", () => {
@@ -832,11 +870,11 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
   });
 
   it.each([
-    { raw: "2026-03-27T17:00:00-05:00", text: "March 27, 2026 at 5:00 p.m. (UTC-05:00)", zone: "(UTC-05:00)", summaryText: "March 27, 2026 at 5:00 p.m." },
-    { raw: "2026-03-27T09:30:00+05:30", text: "March 27, 2026 at 9:30 a.m. (UTC+05:30)", zone: "(UTC+05:30)", summaryText: "March 27, 2026 at 9:30 a.m." },
-    { raw: "2026-03-27T17:00:00Z", text: "March 27, 2026 at 5:00 p.m. (UTC)", zone: "(UTC)", summaryText: "March 27, 2026 at 5:00 p.m." },
-    { raw: "Last Friday in January, 5:00 p.m. (UTC-05:00)", text: "Last Friday in January at 5:00 p.m. (UTC-05:00)", zone: "(UTC-05:00)", summaryText: "Last Friday in January at 5:00 p.m." },
-  ])("groups only the directory UTC token for $raw with unchanged ASCII text", ({ raw, text, zone, summaryText }) => {
+    { raw: "2026-03-27T17:00:00-05:00", text: "March 27, 2026 at 5:00 p.m. (UTC-05:00)", zone: "(UTC-05:00)" },
+    { raw: "2026-03-27T09:30:00+05:30", text: "March 27, 2026 at 9:30 a.m. (UTC+05:30)", zone: "(UTC+05:30)" },
+    { raw: "2026-03-27T17:00:00Z", text: "March 27, 2026 at 5:00 p.m. (UTC)", zone: "(UTC)" },
+    { raw: "Last Friday in January, 5:00 p.m. (UTC-05:00)", text: "Last Friday in January at 5:00 p.m. (UTC-05:00)", zone: "(UTC-05:00)" },
+  ])("groups only the directory UTC token for $raw with unchanged ASCII text", ({ raw, text, zone }) => {
     const row = { ...gaither, deadline: raw, summary: text };
     const before = structuredClone(row);
     const html = renderRows([row]);
@@ -847,10 +885,9 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     expect(cell.find("span.award-date-zone").length).toBe(1);
     expect(cell.find("span.award-date-zone").text()).toBe(zone);
     expect(cell.text()).not.toMatch(/[\u00a0\u2011]/);
-    // The independent, pre-existing summary policy removes parentheticals;
-    // deadline token grouping must not alter that policy or add summary spans.
-    expect($(".award-row-one-line-description").text()).toBe(summaryText);
-    expect($(".award-row-one-line-description .award-date-zone").length).toBe(0);
+    // The summary stays in data for search, but the card does not repeat it.
+    expect($(".award-row-one-line-description")).toHaveLength(0);
+    expect($(".award-row-card .award-date-zone")).toHaveLength(1);
     expect(browseRowHrefs(html)).toEqual([gaither.publicPath]);
     expect(row).toEqual(before);
   });

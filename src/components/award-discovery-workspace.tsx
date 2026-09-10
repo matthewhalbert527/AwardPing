@@ -12,7 +12,6 @@ import { presentAwardDateField } from "@/lib/award-date-presentation";
 import { directoryFilterOptions, getAwardDirectoryCategories } from "@/lib/award-directory-filters";
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
-import { compactAwardDirectorySummary } from "@/lib/award-summary";
 import { awardMatchesUpdateWindow, UPDATE_WINDOW_OPTIONS } from "@/lib/award-update-window";
 import { AwardCardGlance } from "@/components/award-card-glance";
 import { AwardDateValue } from "@/components/award-date-value";
@@ -598,11 +597,6 @@ export function AwardDiscoveryWorkspace({
                           latestUpdateAt={award.latestUpdateAt}
                           firstPublishedCaptureAt={award.firstPublishedCaptureAt}
                         />
-                        {compactAwardBlurb(award.summary, award.name) && (
-                          <p className="award-row-one-line-description mt-2 text-sm leading-6 text-[var(--muted)]">
-                            {compactAwardBlurb(award.summary, award.name)}
-                          </p>
-                        )}
                       </div>
                       <div className="award-row-deadline">
                         <span>{deadline.label}</span>
@@ -672,8 +666,4 @@ function sourceStatusText(award: SharedAwardCard) {
 
 function recordedUpdatesText(changeCount: number) {
   return `${changeCount} recorded update${changeCount === 1 ? "" : "s"}`;
-}
-
-function compactAwardBlurb(summary: string | null, awardName: string) {
-  return compactAwardDirectorySummary(summary, awardName);
 }
