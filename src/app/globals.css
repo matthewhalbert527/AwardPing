@@ -326,6 +326,7 @@ a {
 .app-header-actions .button-secondary {
   min-height: 2.55rem;
   padding: 0.58rem 0.92rem;
+  white-space: nowrap;
 }
 
 .app-header-loading-pill {
@@ -1313,6 +1314,7 @@ a {
 
   .app-header-shell {
     border-radius: var(--radius-panel);
+    padding-inline: 0;
   }
 
   .app-header-bar {

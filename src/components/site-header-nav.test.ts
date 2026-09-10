@@ -106,6 +106,27 @@ describe("public header navigation geometry CSS", () => {
 const NAV_SELECTOR = ".site-header-nav";
 const MENU_BUTTON_SELECTOR = ".site-header-menu-button";
 
+describe("compact public header actions", () => {
+  it("keeps short action labels on one line", () => {
+    const rules: Rule[] = [];
+    css.walkRules((rule) => {
+      if (rule.parent === css && rule.selectors.includes(".app-header-actions .button-secondary")) rules.push(rule);
+    });
+    expect(rules).toHaveLength(1);
+    expect(declarations(rules[0])["white-space"]).toBe("nowrap");
+  });
+
+  it("removes the extra nested horizontal padding on phones", () => {
+    const rules: Rule[] = [];
+    css.walkAtRules("media", (query) => {
+      if (query.params !== "(max-width: 760px)") return;
+      query.walkRules(".app-header-shell", (rule) => { rules.push(rule); });
+    });
+    expect(rules).toHaveLength(1);
+    expect(declarations(rules[0])["padding-inline"]).toBe("0");
+  });
+});
+
 /** The single width bound of a plain media query, or a failure if it is not one. */
 function widthQueryBounds(params: string) {
   const conditions = params.split(",").map((part) => part.trim());
