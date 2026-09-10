@@ -40,10 +40,10 @@ export const seoPages: SeoPage[] = [
     slug: "award-page-change-checker",
     title: "Award Page Update Checker",
     description:
-      "Paste an exact official award URL and check whether AwardPing can read the page.",
-    h1: "Free award page update checker",
+      "Paste a page URL to check whether AwardPing can read its text.",
+    h1: "Check an award page",
     intro:
-      "Use the free checker to see if an exact official award deadline, application, eligibility, or PDF page can be monitored before saving it for recurring alerts.",
+      "Paste a page URL to check whether AwardPing can read its text.",
     bullets: [
       "Quick public URL validation",
       "Readable award text preview",

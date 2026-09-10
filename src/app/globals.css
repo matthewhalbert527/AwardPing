@@ -2921,9 +2921,12 @@ a {
 }
 
 .public-page-main {
+  width: 100%;
+  min-width: 0;
   max-width: 72rem;
   margin: 0 auto;
   padding: 2rem 1.25rem 3rem;
+  overflow-wrap: anywhere;
 }
 
 .public-page-main-narrow {
