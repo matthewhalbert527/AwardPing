@@ -1,3 +1,4 @@
+import { load } from "cheerio";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { PublicDigestStatusParams } from "@/lib/public-digest-copy";
@@ -18,16 +19,20 @@ async function renderSubscribe(params: PublicDigestStatusParams = {}) {
 }
 
 describe("public daily digest pages", () => {
-  it("names the same feature on home, feed, signup and metadata", async () => {
+  it("keeps one compact email action on the feed and the full digest explanation on signup", async () => {
     const home = renderToStaticMarkup(await Home());
     const feed = renderToStaticMarkup(await UpdatesPage({ searchParams: Promise.resolve({}) }));
     const signup = await renderSubscribe();
     expect(metadata.title).toBe("Daily digest | AwardPing");
-    for (const html of [home, feed, signup]) expect(html).toContain("Daily digest");
+    for (const html of [home, signup]) expect(html).toContain("Daily digest");
     for (const html of [home, feed]) expect(html).toContain('href="/updates/subscribe"');
-    for (const html of [feed, signup]) {
-      expect(html).toContain("Get a daily email when useful changes appear on official award pages. Quiet days stay quiet.");
-    }
+    const $ = load(feed);
+    const emailLink = $('main a[href="/updates/subscribe"]');
+    expect(emailLink).toHaveLength(1);
+    expect(emailLink.text().trim()).toBe("Get daily emails");
+    expect($("main .public-updates-cta")).toHaveLength(0);
+    expect(home).toContain("Quiet email updates when useful changes appear.");
+    expect(signup).toContain("Get a daily email when useful changes appear on official award pages. Quiet days stay quiet.");
     expect(signup).toContain("Confirm your email before the digest starts");
     expect(signup).not.toContain("Double opt-in");
   });

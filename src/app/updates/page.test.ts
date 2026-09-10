@@ -1,6 +1,6 @@
+import { load } from "cheerio";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { LiveUpdateItem } from "@/lib/live-updates";
 import { describeDetectedAt, formatCentralDateTime } from "@/lib/time-zone";
 
@@ -77,13 +77,16 @@ async function renderUpdatesPage(searchParams: { confirmed?: string; unsubscribe
 }
 
 function awardLinks(html: string) {
-  return [...html.matchAll(/<div class="public-live-update-title-row"><a href="([^"]*)">([^<]*)<\/a>/g)].map(
-    (match) => ({ href: match[1].replace(/&amp;/g, "&"), label: match[2] }),
-  );
+  const $ = load(html);
+  return $("h3.public-live-update-title-row > a").toArray().map((link) => ({
+    href: $(link).attr("href")!,
+    label: $(link).text(),
+  }));
 }
 
 function dayHeadings(html: string) {
-  return [...html.matchAll(/<h3 class="public-live-day-label">([^<]*)<\/h3>/g)].map((match) => match[1]);
+  const $ = load(html);
+  return $("h2.public-live-day-label").toArray().map((heading) => $(heading).text());
 }
 
 function rowTimes(html: string) {
@@ -117,6 +120,36 @@ describe("public updates page", () => {
     expect(metadata.description).toBe(
       "A public, chronological feed of plain-English changes detected on nationally competitive fellowship and scholarship source pages.",
     );
+  });
+
+  it("puts the award updates first, with one secondary email link and no repeated promotion", async () => {
+    useFeed([makeSeed()]);
+
+    const $ = load(await renderUpdatesPage());
+    const main = $("main");
+
+    expect(main.find("h1").map((_index, heading) => $(heading).text()).get()).toEqual(["Award updates"]);
+    expect(main.text()).toContain("Latest changes found on official award pages.");
+    const emailLinks = main.find('a[href="/updates/subscribe"]');
+    expect(emailLinks).toHaveLength(1);
+    expect(emailLinks.text().trim()).toBe("Get daily emails");
+    expect(emailLinks.hasClass("button-primary")).toBe(false);
+    expect(main.find(".public-updates-hero, .public-updates-cta, .page-kicker")).toHaveLength(0);
+    expect(main.find('a[href="/award-directory"]')).toHaveLength(0);
+    expect(main.text()).not.toContain("Plain-English award changes as they are found.");
+    expect(main.text()).not.toContain("Latest source-page changes");
+
+    const feed = main.find('section[aria-label="Live award updates"]');
+    expect(feed).toHaveLength(1);
+    expect(feed.text()).toContain("Newest first. Dates use Central Time.");
+    expect(main.find("h1, h2, h3").map((_index, heading) => ({
+      tag: heading.tagName,
+      text: $(heading).text(),
+    })).get()).toEqual([
+      { tag: "h1", text: "Award updates" },
+      { tag: "h2", text: "Today" },
+      { tag: "h3", text: "Barry Goldwater Scholarship" },
+    ]);
   });
 
   it("links every update to its canonical award page with the exact source and change", async () => {
@@ -169,6 +202,21 @@ describe("public updates page", () => {
     for (const link of awardLinks(html)) {
       expect(new URL(link.href, "https://awardping.example/updates").origin).toBe(
         "https://awardping.example",
+      );
+    }
+    const $ = load(html);
+    const detailLinks = $(".public-live-update-detail-link").toArray();
+    expect(detailLinks).toHaveLength(3);
+    for (const [index, link] of detailLinks.entries()) {
+      const award = awardLinks(html)[index];
+      expect($(link).attr("href")).toBe(award.href);
+      expect($(link).attr("aria-label")).toBe(`View update for ${award.label}`);
+      expect($(link).text().trim()).toBe("View update");
+      expect($(link).attr("target")).toBeUndefined();
+      const row = $(link).closest(".public-live-update-row");
+      expect(row.find(".change-summary")).toHaveLength(1);
+      expect(row.html()!.indexOf('class="change-summary')).toBeLessThan(
+        row.html()!.indexOf('class="public-live-update-detail-link"'),
       );
     }
   });
@@ -249,17 +297,55 @@ describe("public updates page", () => {
     expect(html).not.toMatch(/<time(?![^>]*dateTime=)/);
   });
 
-  it("preserves the external official-source link and its accessible label", async () => {
+  it("labels the official-source action and shows one category without redundant source metadata", async () => {
     useFeed([makeSeed()]);
 
-    const html = await renderUpdatesPage();
+    const $ = load(await renderUpdatesPage());
+    const row = $(".public-live-update-row");
+    const sourceLink = row.find("a.public-live-update-source-link");
 
-    expect(html).toContain(
-      '<a class="public-live-update-source-link" href="https://goldwater.example/apply" rel="noreferrer" target="_blank" aria-label="Open Application Instructions">',
+    expect(sourceLink).toHaveLength(1);
+    expect(sourceLink.attr("href")).toBe("https://goldwater.example/apply");
+    expect(sourceLink.attr("rel")).toBe("noreferrer");
+    expect(sourceLink.attr("target")).toBe("_blank");
+    expect(sourceLink.attr("aria-label")).toBe("Official source: Application Instructions");
+    expect(sourceLink.text().trim()).toBe("Official source");
+    expect(row.find(".public-live-update-time > strong").map((_index, item) => $(item).text()).get()).toEqual(["Deadline"]);
+    expect(row.find(".badge, .change-summary-label, .public-live-update-source")).toHaveLength(0);
+    expect(row.text()).not.toContain("Application Instructions");
+    expect(row.find(".change-summary").text()).toBe("The application deadline moved to January 30.");
+  });
+
+  it("retains the document identity and observation limit without repeating arbitrary PDF quotations", async () => {
+    useFeed([makeSeed({
+      awardName: "Marshall Scholarship",
+      sourceTitle: "2027 Rules for Marshall Scholarship Candidates",
+      sourceUrl: "https://marshall.example/2027-rules.pdf",
+      sourcePageType: "pdf",
+      changeTypeLabel: "New official document",
+      summary: "The publisher posted a new document today.",
+      changeDetails: {
+        event_kind: "new_official_document",
+        reader_summary: "The publisher posted a new document today.",
+        exact_after: "Candidates must indicate their first- and second-choice courses.",
+      },
+    })]);
+
+    const $ = load(await renderUpdatesPage());
+    const row = $(".public-live-update-row");
+
+    expect(row.find(".public-live-update-source").text()).toBe("2027 Rules for Marshall Scholarship Candidates");
+    expect(row.find(".public-live-update-time > strong").map((_index, item) => $(item).text()).get()).toEqual(["New official document"]);
+    expect(row.find(".badge, .change-summary-label")).toHaveLength(0);
+    expect(row.find(".change-summary").text()).toBe(
+      "AwardPing first recorded this official document. This does not establish when it was published.",
     );
-    expect(html).toContain('aria-label="Live award updates"');
-    expect(html).toContain("<h2>Latest source-page changes</h2>");
-    expect(html).toContain(`<span class="badge">${pageTypeLabel("application")}</span>`);
+    expect(row.text()).not.toContain("The publisher posted");
+    expect(row.text()).not.toContain("first- and second-choice courses");
+    expect(row.find(".public-live-update-source-link").attr("href")).toBe("https://marshall.example/2027-rules.pdf");
+    expect(row.find(".public-live-update-source-link").attr("aria-label")).toBe(
+      "Official source: 2027 Rules for Marshall Scholarship Candidates",
+    );
   });
 
   it("keeps the subscription status messages", async () => {
@@ -294,10 +380,11 @@ describe("public updates page", () => {
     expect(html).not.toContain('class="public-live-update-row"');
     expect(html).not.toContain("connection refused");
     expect(html).not.toContain("Supabase");
-    // The rest of the page still works: heading, digest signup, directory link.
-    expect(html).toContain("<h2>Latest source-page changes</h2>");
-    expect(html).toContain('<a class="button-primary" href="/updates/subscribe">');
-    expect(html).toContain('href="/award-directory"');
+    // Heading and optional email signup remain available without a working feed.
+    const $ = load(html);
+    expect($("main h1").text()).toBe("Award updates");
+    expect($('main a[href="/updates/subscribe"]').text().trim()).toBe("Get daily emails");
+    expect($('main a[href="/award-directory"]')).toHaveLength(0);
     expect(consoleError).toHaveBeenCalledTimes(1);
     consoleError.mockRestore();
   });

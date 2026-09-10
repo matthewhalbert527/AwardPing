@@ -865,26 +865,48 @@ function readableChangeParagraphs(value: string) {
     .trim();
   if (!clean) return [];
 
-  const structured = clean
-    .replace(
-      /\s+(?=(?:Answer Question #?\d+|Alert the\b|Examples include|Write about)\b)/g,
-      "\n",
-    )
-    .replace(
-      /\s+(?=(?:Applicants?|Candidates?|Students?|Recipients?|Finalists?)\s+(?:must|will|are|who|should)\b)/g,
-      "\n",
-    )
-    .replace(
-      /\s+(?=(?:Eligibility|Application|Deadline|Selection|Recommendation|Recommendations|Essay|Essays|Interview|Requirements?)\b:)/g,
-      "\n",
-    );
+  // Only separate complete evidence-generated claims. Keyword-based breaks can
+  // split a quoted condition and invent punctuation that changes its meaning.
+  // Unrecognized prose stays intact; this is layout, not a new summary.
+  const paragraphs: string[] = [];
+  let start = 0;
+  let closingQuote: string | null = null;
+  for (let index = 0; index < clean.length; index += 1) {
+    const character = clean[index];
+    const previous = clean[index - 1] || "";
+    const next = clean[index + 1] || "";
+    const apostropheInWord = /['’]/.test(character) && /[\p{L}\p{N}]/u.test(previous) && /[\p{L}\p{N}]/u.test(next);
+    const escaped = (clean.slice(0, index).match(/\\+$/)?.[0].length || 0) % 2 === 1;
 
-  const paragraphs = structured
-    .split(/\n+/)
-    .map((paragraph) => normalizeDiffSentence(paragraph.replace(/\s+/g, " ").trim()))
-    .filter(Boolean);
+    if (!apostropheInWord && !escaped) {
+      if (closingQuote) {
+        if (character === closingQuote) closingQuote = null;
+      } else if (character === '"' || character === "“" || character === "‘") {
+        closingQuote = character === "“" ? "”" : character === "‘" ? "’" : '"';
+      } else if (character === "'" && !/[\p{L}\p{N}]/u.test(previous) && /\S/.test(next)) {
+        closingQuote = "'";
+      }
+    }
+
+    if (closingQuote) continue;
+    const explicitBreak = character === "\n";
+    const claimBoundary = /[.!?]/.test(character) &&
+      !ambiguousSentenceEnding(clean.slice(start, index + 1)) &&
+      /^\s+(?:Application deadline or cycle date|Award amount or funding|Applicant eligibility|Application requirements or materials|Application instructions|Applicant-facing visual content|Applicant-facing award information) (?:changed from|now includes|no longer includes|changed in the reviewed before-and-after screenshots)\b/.test(clean.slice(index + 1));
+    if (!explicitBreak && !claimBoundary) continue;
+    const end = explicitBreak ? index : index + 1;
+    const paragraph = clean.slice(start, end).trim();
+    if (paragraph) paragraphs.push(paragraph);
+    start = index + 1;
+  }
+  const remainder = clean.slice(start).trim();
+  if (remainder) paragraphs.push(remainder);
 
   return paragraphs.length > 0 ? paragraphs : [clean];
+}
+
+function ambiguousSentenceEnding(value: string) {
+  return /(?:\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|No|Nos|approx|Fig|Vol|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.|(?:\b[A-Za-z]\.){2,}|\bPh\.D\.|\b[A-Z]\.)$/i.test(value);
 }
 
 function narrativeTextChange(

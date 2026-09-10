@@ -469,18 +469,77 @@ describe("change summary filtering", () => {
     });
   });
 
-  it("breaks long added text into readable paragraphs for display", () => {
+  it("preserves added wording instead of inserting full stops at instruction keywords", () => {
     const parts = changeSummaryDisplayParts(
       'Added text includes: "Briefly identify and explain any activities or honors that readers are unlikely to understand Answer Question #8 (additional personal information) Write about an interest, activity, research project, or anything else that hasn\'t been expanded upon elsewhere in the application. Alert the Udall Foundation to any unusual circumstances or hardship Examples include situations that may have affected your academic performance or limited your activities.".',
     );
 
     expect(parts.paragraphs).toEqual([
       "The source page added the following wording.",
-      "Briefly identify and explain any activities or honors that readers are unlikely to understand.",
-      "Answer Question #8 (additional personal information).",
-      "Write about an interest, activity, research project, or anything else that hasn't been expanded upon elsewhere in the application.",
-      "Alert the Udall Foundation to any unusual circumstances or hardship.",
-      "Examples include situations that may have affected your academic performance or limited your activities.",
+      "Briefly identify and explain any activities or honors that readers are unlikely to understand Answer Question #8 (additional personal information) Write about an interest, activity, research project, or anything else that hasn't been expanded upon elsewhere in the application. Alert the Udall Foundation to any unusual circumstances or hardship Examples include situations that may have affected your academic performance or limited your activities.",
+    ]);
+    expect(parts.paragraphs.join(" ")).toBe(parts.text.replace(/\s+/g, " "));
+  });
+
+  it.each([
+    ['"', '"'],
+    ["“", "”"],
+    ["'", "'"],
+    ["‘", "’"],
+  ])("separates complete claims without changing %s %s quoted evidence", (open, close) => {
+    const claims = [
+      `Applicant eligibility changed from ${open}2026 Eligibility Requirements${close} to ${open}2027 Eligibility Requirements${close}.`,
+      `Applicant-facing award information changed from ${open}Be a college junior during the 2025–2026 academic year.${close} to ${open}Be a college junior during the 2026–2027 academic year.${close}.`,
+      `Application instructions changed from ${open}Expect a bachelor’s degree between December 2026 and August 2027.${close} to ${open}Expect a bachelor’s degree between December 2027 and August 2028.${close}.`,
+    ];
+    const details = { reader_summary: claims.join(" "), change_type: "eligibility" };
+    const original = structuredClone(details);
+    const parts = changeSummaryDisplayParts("Unused fallback.", null, null, details);
+
+    expect(parts.paragraphs).toEqual(claims);
+    expect(parts.paragraphs.join(" ")).toBe(parts.text);
+    expect(details).toEqual(original);
+  });
+
+  it.each([
+    'Applicant eligibility now includes "Applicants must be enrolled. Application instructions now includes a separate exception: Students who have already applied twice are not eligible.".',
+    "Applicant eligibility now includes “Applicants must be enrolled. Application instructions now includes a separate exception: Students who have already applied twice are not eligible.”.",
+    "Applicant eligibility now includes ‘Applicants must be enrolled. Application instructions now includes a separate exception: Students who have already applied twice are not eligible.’.",
+    'Applicant eligibility now includes "Applicants must be enrolled. Application instructions now includes an unfinished quoted condition',
+  ])("does not split a claim-like phrase inside quoted evidence: %s", (summary) => {
+    const parts = changeSummaryDisplayParts(summary);
+    expect(parts.paragraphs).toEqual([parts.text]);
+  });
+
+  it.each([
+    'Applicant eligibility now includes “Applicants must maintain a 3.5 GPA and U.S. citizenship, unless the stated exception applies.”. Application instructions no longer includes “Contact Dr. Smith at 5 p.m. for M.D./Ph.D. requirements.”.',
+    'Applicant eligibility now includes "Candidates may apply without a nomination only if their institution does not participate.". Application instructions now includes "This does not establish that the exception existed before July 1, 2026.".',
+    'Applicant eligibility now includes “Students who meet the \'first-generation\' definition are eligible only if they meet all other criteria.”. Application instructions now includes “Candidates must submit their own application.”.',
+  ])("preserves abbreviations, exclusions and uncertainty across claim paragraphs: %s", (summary) => {
+    const parts = changeSummaryDisplayParts(summary);
+    expect(parts.paragraphs).toHaveLength(2);
+    expect(parts.paragraphs.join(" ")).toBe(parts.text);
+  });
+
+  it.each([
+    "The deadline is 5 p.m. Application instructions now includes a request to contact the office.",
+    "For applicants in the U.S. Application instructions now includes additional guidance.",
+    "Contact Dr. Application instructions now includes the office's contact details.",
+    'Applicant eligibility now includes "Enrollment is required" Application instructions now includes "An exception may apply".',
+    "Applicants may submit without a nomination only if their institution does not participate. This does not establish whether earlier applicants could do so.",
+    'The source says "Applicants must apply, except Students who hold another award are not eligible" and does not identify a publication date.',
+  ])("keeps ambiguous boundaries and conditional prose intact: %s", (summary) => {
+    const parts = changeSummaryDisplayParts(summary);
+    expect(parts.paragraphs).toEqual([parts.text]);
+  });
+
+  it("keeps the complete first-observation disclaimer together", () => {
+    const parts = changeSummaryDisplayParts(null, null, null, {
+      event_kind: "new_official_document",
+      reader_summary: "The publisher posted this document today.",
+    });
+    expect(parts.paragraphs).toEqual([
+      "AwardPing first recorded this official document. This does not establish when it was published.",
     ]);
   });
 
