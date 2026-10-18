@@ -146,6 +146,7 @@ export type ChangeEventVisualEvidenceStatus =
   | "historical_artifact_unrecoverable"
   | "full_screenshot_fallback"
   | "not_applicable_pdf"
+  | "not_applicable_source_html"
   | "not_applicable_new_document";
 export type ManualQuarantineClassification =
   "actionable_quarantine" | "historical_limitation";

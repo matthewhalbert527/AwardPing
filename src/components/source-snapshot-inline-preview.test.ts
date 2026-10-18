@@ -180,6 +180,26 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("source HTML updates", () => {
+  it("does not fetch or render screenshot controls for the typed source-only event", async () => {
+    const fetchMock = mockFetch(Promise.resolve(response(200, emptySnapshot())));
+    const props = { ...eventProps, changeDetails: { evidence_kind: "source_html", capture_profile: "scrapling-source-html-v1" } };
+    const harness = new InlineHarness();
+    harnesses.push(harness);
+    expect(harness.render(props)).toBe("");
+    harness.commitEffects();
+    await flush();
+    expect(harness.render(props)).toBe("");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("also hides an explicitly source-only API response when an older caller omitted display markers", async () => {
+    const html = await loaded({ ...emptySnapshot(), evidence_status: "not_applicable_source_html",
+      latest: { captured_at: null, kind: "source_html", objects: {} }, previous: { captured_at: null, kind: "source_html", objects: {} } });
+    expect(html).toBe("");
+  });
+});
+
 describe("inline verified crop outlines", () => {
   it("shares the crop-relative outline and caption without marking a generic current source", async () => {
     const crop = { ...asset("crop.jpg"), width: 900, height: 500 };

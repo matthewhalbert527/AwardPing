@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sourceHtmlReviewPairingVerified } from "./source-html-review-contract.mjs";
 
 const MAX_CONTEXT_CHARS = 500_000;
 const normalize = (value) => typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
@@ -35,7 +36,7 @@ function sourceTextPair(candidate, diff) {
     const current = candidate?.prompt_payload?.new_text_excerpt;
     return bounded(previous) && bounded(current) ? { previous, current } : null;
   }
-  if (semantics?.complete !== true || semantics?.visible_prose_corroborated !== true) return null;
+  if (semantics?.complete !== true || (semantics?.visible_prose_corroborated !== true && !sourceHtmlReviewPairingVerified(candidate, diff))) return null;
   const current = semantics.current_source_prose;
   if (!bounded(current)) return null;
   if (semantics.version === 2) {

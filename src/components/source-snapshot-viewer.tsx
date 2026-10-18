@@ -110,6 +110,7 @@ export function SourceSnapshotViewerButton({
     [changeDetails, changeSummary, sourceTitle, sourceUrl],
   );
   const requestPath = snapshotRequestPath(sourceId, evidence, changeEventId);
+  if (isSourceHtmlOnlyUpdate(changeDetails)) return null;
   if (!requestPath) return null;
 
   // The selected-detail panel can reuse this button for another event/source.
@@ -374,6 +375,7 @@ export function SourceSnapshotInlinePreview({
   changeSummary?: string | null;
   changeDetails?: unknown;
 }) {
+  const sourceHtmlOnly = isSourceHtmlOnlyUpdate(changeDetails);
   const [snapshotState, setSnapshotState] = useState<{
     request: { path: string };
     outcome: SnapshotLoadOutcome;
@@ -389,8 +391,8 @@ export function SourceSnapshotInlinePreview({
     [changeDetails, changeSummary, sourceTitle, sourceUrl],
   );
   const requestPath = useMemo(
-    () => snapshotRequestPath(sourceId, evidence, changeEventId),
-    [changeEventId, evidence, sourceId],
+    () => sourceHtmlOnly ? null : snapshotRequestPath(sourceId, evidence, changeEventId),
+    [changeEventId, evidence, sourceId, sourceHtmlOnly],
   );
   // Returning to the same URL starts a new request, not a reuse of an older
   // result. The identity changes only when the requested path changes.
@@ -442,6 +444,7 @@ export function SourceSnapshotInlinePreview({
   }, [request]);
 
   if ((!sourceId && !changeEventId) || !requestPath) return null;
+  if (snapshot?.evidence_status === "not_applicable_source_html") return null;
 
   if (!outcome) {
     return (
@@ -553,6 +556,7 @@ function SnapshotBody({
   if (error) {
     return <div className="source-snapshot-state source-snapshot-state-error" role="status">{error}</div>;
   }
+  if (evidenceStatus === "not_applicable_source_html" || activeSnapshot?.kind === "source_html") return null;
 
   if (!activeSnapshot || !primaryObject) {
     return (
@@ -621,6 +625,12 @@ function SnapshotBody({
       />
     </div>
   );
+}
+
+export function isSourceHtmlOnlyUpdate(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const details = value as Record<string, unknown>;
+  return details.evidence_kind === "source_html" && details.capture_profile === "scrapling-source-html-v1";
 }
 
 function SnapshotInlineBody({

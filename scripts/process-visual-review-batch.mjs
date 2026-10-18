@@ -28,6 +28,7 @@ import { acquireVisualReviewPublicationClaim } from "./lib/visual-publication-cl
 import { persistVisualChangeAndReconciliation } from "./lib/visual-change-publication.mjs";
 import {
   isDeterministicVisualArtifactError,
+  preflightPublishedSourceHtmlEventEvidence,
   preparePublishedInitialOfficialDocumentEvidence,
   preparePublishedVisualEventEvidence,
 } from "./lib/visual-event-evidence.mjs";
@@ -311,6 +312,7 @@ const report = {
   event_evidence_verified: 0,
   event_evidence_full_fallback: 0,
   event_evidence_upload_failed: 0,
+  event_evidence_preflight_failed: 0,
   initial_official_documents_published: 0,
   initial_official_document_duplicates: 0,
   initial_official_document_rejected: 0,
@@ -2534,6 +2536,31 @@ async function publishCandidateResultUnlocked({
       updated_at: now,
     });
     return { status: "rejected", reason: policyDecision.reason };
+  }
+
+  // Source-only evidence must be publishable as an immutable document pair
+  // before any approved baseline moves. A repairable artifact failure retains
+  // the completed provider answer; it does not resubmit paid review work.
+  try {
+    preflightPublishedSourceHtmlEventEvidence({ candidate, source, changeDetails, archiveRoot });
+  } catch (error) {
+    const message = errorMessage(error);
+    report.event_evidence_preflight_failed += 1;
+    report.event_evidence_failures.push({ candidate_id: candidate.id, source_id: candidate.shared_award_source_id,
+      stage: "source_html_preflight_before_baseline", reason: message,
+      solution: "Restore the exact candidate-bound HTML, text and metadata before retrying the saved review result." });
+    report.errors.push({ candidate_id: candidate.id, source_id: candidate.shared_award_source_id,
+      message: `Source HTML evidence preflight failed before baseline promotion: ${message}` });
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "succeeded", ai_result: result, actual_usage: usage,
+      rejection_reason: "publish_retry_pending:source_html_evidence_preflight_failed",
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        policy_guard: policyDecision, baseline_advanced: false, source_html_evidence_preflight_error: message,
+        reuse_completed_batch_response: true, creates_api_charge: false,
+      }),
+      completed_at: now, updated_at: now,
+    });
+    return { status: "retry_pending", reason: "source_html_evidence_preflight_failed" };
   }
 
   const baselinePromotion = await promoteApprovedBaselineForCandidate({

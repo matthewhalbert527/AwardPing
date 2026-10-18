@@ -105,6 +105,8 @@ import {
 } from "./lib/scrapling-worker.mjs";
 import { buildScraplingReviewDiff } from "./lib/scrapling-review-diff.mjs";
 import { verifyScraplingRuntimeBinding } from "./lib/scrapling-runtime-binding.mjs";
+import { SOURCE_HTML_PROFILE } from "./lib/source-html-evidence.mjs";
+import { verifyLocalSourceHtmlCapture, sourceHtmlBaselineEvidence, sourceHtmlR2Metadata } from "./lib/source-html-worker-state.mjs";
 import {
   discoverExpansionStateDescriptors,
   verifyExpansionStateIsolation,
@@ -3752,7 +3754,7 @@ async function processSourceUnlocked(
   const pendingStage1Activation = isStage1PendingBaselineActivationSource(source);
   const scraplingSource = pdfSource ? null : selectScraplingSource(source, scraplingManifest);
   if (!pdfSource) assertScraplingBaselineCompatibility(baseline, {
-    useScrapling: Boolean(scraplingSource), baselineRefresh,
+    useScrapling: Boolean(scraplingSource), captureProfile: scraplingSource?.capture_profile || SCRAPLING_WORKER_PROFILE, baselineRefresh,
   });
   if (scraplingSource && pendingStage1Activation) {
     throw new Error("Scrapling rollout cannot replace the separate reviewed Stage 1 baseline activation protocol.");
@@ -7940,9 +7942,10 @@ async function captureConfiguredScraplingSource(source, context, browserMeta, re
   const capture = await captureScraplingWorkerSource(source, {
     archiveRoot, pythonPath: scraplingPythonPath, executablePath: browserMeta.executable_path,
     timeoutMs: Math.min(sourceTimeoutMs, 90000),
+    captureProfile: selectScraplingSource(source, scraplingManifest)?.capture_profile || SCRAPLING_WORKER_PROFILE,
   });
   if (sourceDeadline?.expired?.()) throw new Error("Scrapling capture exceeded the source deadline; no baseline or discovery mutation allowed.");
-  if (discoveryMode && discoverPdfSubpages) {
+  if (capture.capture_profile !== SOURCE_HTML_PROFILE && discoveryMode && discoverPdfSubpages) {
     const discovery = pdfDiscoveryFromObservedLinks({ links: capture.scrapling_discovered_links, truncated: false }, source);
     // Passive HTML includes closed markup but does not prove click/scroll-loaded
     // content was discovered. Do not advance the historical discovery watermark.
@@ -8831,6 +8834,7 @@ async function captureExpansionStateEvidence(
         const fileName = `expansion-state-${String(stateNumber).padStart(2, "0")}.jpg`;
         const pagePath = join(captureDir, fileName);
         const layoutPath = join(captureDir, `expansion-state-${String(stateNumber).padStart(2, "0")}-layout.json`);
+        const stateCaptureDeadline = Date.now() + expansionStateTimeoutPerStateMs;
         try {
           // A state page can load with its accordion JS throttled or not yet
           // engaged (worst right after the heavy base capture), so the first
@@ -8866,87 +8870,123 @@ async function captureExpansionStateEvidence(
               }).catch(() => null);
             },
             capture: async (statePage, openedIsolation) => {
-              await activateScrollTriggeredContent(statePage, { source, profile });
-              await hideNoiseElements(statePage);
-              const captureStateSettle = await waitForPageSettledForSnapshot(statePage);
-              if (!captureStateSettle.stable) {
-                throw new Error(
-                  `Expansion state page did not settle before geometry capture: waited_ms=${captureStateSettle.waited_ms}.`,
-                );
-              }
-              const isolation = await verifyExpansionStateIsolation(statePage, {
-                descriptor: candidate,
-                descriptors: isolationDescriptors,
-              });
-              if (!isolation.verified) {
-                throw new Error(
-                  `Capture geometry expansion state isolation failed for "${candidate.label}": ${isolation.reason}`,
-                );
-              }
-              const stateCapturedAt = new Date().toISOString();
-              const resourceSnapshot = await capturePageResourceSnapshot(statePage, { stateId });
-              const finalStateText = resourceSnapshot.text.text;
-              let stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
-                capturedAt: stateCapturedAt,
-                stateId,
-              });
-              const pageBuffer = await statePage.screenshot({
-                fullPage: true,
-                type: "jpeg",
-                quality: jpegQuality,
-                timeout: timeoutMs,
-              });
-              const imageHash = hashBuffer(pageBuffer);
-              const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
-                stateId,
-              });
-              assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId });
-              const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(statePage, {
-                capturedAt: stateCapturedAt,
-                stateId,
-              });
-              stateTextGeometry = verifyVisualScreenshotLayoutCapture({
-                before: stateTextGeometry,
-                after: afterScreenshotGeometry,
-                screenshot: screenshotBinding,
-                stateId,
-              });
-              const textGeometry = bindVisualTextGeometry(stateTextGeometry, {
-                capturedAt: stateCapturedAt,
-                imageHash,
-                imageRef: toArchiveRelative(pagePath),
-                screenshot: screenshotBinding,
-              });
-              writeFileSync(pagePath, pageBuffer);
-              writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
+              // Retry observations of this same opened state, not its controls.
+              // The deadline is shared with navigation and any control retry.
+              let firstObservedText = null;
+              for (let screenshotAttempt = 1; screenshotAttempt <= 3; screenshotAttempt += 1) {
+                if (Date.now() >= stateCaptureDeadline || sourceDeadline?.expired?.()) {
+                  throw new Error("Expansion state screenshot observation exceeded its existing state budget.");
+                }
+                await activateScrollTriggeredContent(statePage, { source, profile });
+                await hideNoiseElements(statePage);
+                const captureStateSettle = await waitForPageSettledForSnapshot(statePage);
+                if (!captureStateSettle.stable) {
+                  throw new Error(
+                    `Expansion state page did not settle before geometry capture: waited_ms=${captureStateSettle.waited_ms}.`,
+                  );
+                }
+                const isolation = await verifyExpansionStateIsolation(statePage, {
+                  descriptor: candidate,
+                  descriptors: isolationDescriptors,
+                });
+                if (!isolation.verified) {
+                  throw new Error(
+                    `Capture geometry expansion state isolation failed for "${candidate.label}": ${isolation.reason}`,
+                  );
+                }
+                if (isolation.target_state_key !== openedIsolation.target_state_key ||
+                    isolation.target_selector !== openedIsolation.target_selector) {
+                  throw new Error("Expansion state control identity changed before screenshot observation.");
+                }
+                const stateCapturedAt = new Date().toISOString();
+                const resourceSnapshot = await capturePageResourceSnapshot(statePage, { stateId });
+                const finalStateText = resourceSnapshot.text.text;
+                if (firstObservedText !== null && finalStateText !== firstObservedText) {
+                  throw new Error("Expansion state content changed across screenshot attempts.");
+                }
+                firstObservedText = finalStateText;
+                let stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
+                  capturedAt: stateCapturedAt,
+                  stateId,
+                });
+                if (Date.now() >= stateCaptureDeadline || sourceDeadline?.expired?.()) {
+                  throw new Error("Expansion state screenshot observation exceeded its existing state budget.");
+                }
+                const pageBuffer = await statePage.screenshot({
+                  fullPage: true,
+                  type: "jpeg",
+                  quality: jpegQuality,
+                  timeout: Math.max(1, Math.min(timeoutMs, stateCaptureDeadline - Date.now())),
+                });
+                const imageHash = hashBuffer(pageBuffer);
+                const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
+                  stateId,
+                });
+                assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId });
+                const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(statePage, {
+                  capturedAt: stateCapturedAt,
+                  stateId,
+                });
+                stateTextGeometry = verifyVisualScreenshotLayoutCapture({
+                  before: stateTextGeometry,
+                  after: afterScreenshotGeometry,
+                  screenshot: screenshotBinding,
+                  stateId,
+                });
+                const afterIsolation = await verifyExpansionStateIsolation(statePage, {
+                  descriptor: candidate,
+                  descriptors: isolationDescriptors,
+                });
+                const afterResourceSnapshot = await capturePageResourceSnapshot(statePage, { stateId });
+                if (!afterIsolation.verified ||
+                    afterIsolation.target_state_key !== isolation.target_state_key ||
+                    afterIsolation.target_selector !== isolation.target_selector ||
+                    afterResourceSnapshot.text.text !== finalStateText) {
+                  throw new Error("Expansion state content or control identity changed during screenshot observation.");
+                }
+                if (Date.now() >= stateCaptureDeadline || sourceDeadline?.expired?.()) {
+                  throw new Error("Expansion state screenshot observation exceeded its existing state budget.");
+                }
+                if (stateTextGeometry.availability_status === "unavailable_layout_changed_during_screenshot" &&
+                    screenshotAttempt < 3) continue;
+                const textGeometry = bindVisualTextGeometry(stateTextGeometry, {
+                  capturedAt: stateCapturedAt,
+                  imageHash,
+                  imageRef: toArchiveRelative(pagePath),
+                  screenshot: screenshotBinding,
+                });
+                writeFileSync(pagePath, pageBuffer);
+                writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
 
-              const normalizedText = normalizeVisibleText(finalStateText);
-              return {
-                state_id: stateId,
-                index: candidate.index,
-                tag: candidate.tag || null,
-                label: cleanText(candidate.label) || `Section ${stateNumber}`,
-                page: toArchiveRelative(pagePath),
-                page_path: pagePath,
-                image_hash: imageHash,
-                layout: toArchiveRelative(layoutPath),
-                layout_path: layoutPath,
-                layout_hash: textGeometry.geometry_hash,
-                text_geometry: textGeometry,
-                captured_at: stateCapturedAt,
-                page_bytes: pageBuffer.length,
-                text: normalizedText,
-                text_hash: hashText(normalizedText),
-                text_length: normalizedText.length,
-                targets: candidate.state_kind === "targets"
-                  ? Math.max(1, candidate.state_selectors?.length || 0)
-                  : 0,
-                isolation: {
-                  ...openedIsolation,
-                  ...isolation,
-                  fresh_page: true,
-                },
-              };
+                const normalizedText = normalizeVisibleText(finalStateText);
+                return {
+                  state_id: stateId,
+                  index: candidate.index,
+                  tag: candidate.tag || null,
+                  label: cleanText(candidate.label) || `Section ${stateNumber}`,
+                  page: toArchiveRelative(pagePath),
+                  page_path: pagePath,
+                  image_hash: imageHash,
+                  layout: toArchiveRelative(layoutPath),
+                  layout_path: layoutPath,
+                  layout_hash: textGeometry.geometry_hash,
+                  text_geometry: textGeometry,
+                  captured_at: stateCapturedAt,
+                  page_bytes: pageBuffer.length,
+                  text: normalizedText,
+                  text_hash: hashText(normalizedText),
+                  text_length: normalizedText.length,
+                  targets: candidate.state_kind === "targets"
+                    ? Math.max(1, candidate.state_selectors?.length || 0)
+                    : 0,
+                  isolation: {
+                    ...openedIsolation,
+                    ...isolation,
+                    fresh_page: true,
+                  },
+                };
+              }
+              throw new Error("Expansion state screenshot observation did not complete.");
             },
           });
           let state;
@@ -11878,7 +11918,7 @@ async function markSharedSourceVisualCheckSucceeded(
     return false;
   }
 
-  if (!preserveReviewedUrl && capture.capture_profile !== SCRAPLING_WORKER_PROFILE) {
+  if (!preserveReviewedUrl && ![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(capture.capture_profile)) {
     await maybeUpdateSafeRedirectUrl(source, capture, now, report);
   }
   return true;
@@ -12850,6 +12890,7 @@ async function uploadR2CaptureFiles(client, sourceId, files, capture) {
     {
       layoutClaimed,
       expansionStateCount: retainedExpansionStateCount,
+      captureProfile: capture?.capture_profile,
     },
   );
   assertR2CaptureArtifactIdentity(capture, prepared, { sourceId });
@@ -13023,6 +13064,9 @@ function materializeRetainedCaptureAuthority(source, capture, {
 } = {}) {
   if (!capture || typeof capture !== "object") {
     throw new Error("A capture is required before retained artifact projection.");
+  }
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) {
+    return verifyLocalSourceHtmlCapture(capture, { archiveRoot, source });
   }
 
   const preProjectionRetainedStates = Array.isArray(capture.expansion_state_screenshots)
@@ -13234,6 +13278,9 @@ function rewriteMatchingBaselineRetainedProjection(source, capture, projection) 
 }
 
 function attachHtmlComparisonDiagnostic(source, baseline, capture, report) {
+  // This profile has its own raw-response capsule; never rewrite its immutable
+  // metadata through the legacy rendered-DOM diagnostic/materialization path.
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) return;
   const previousFiles = baseline?.capture || {};
   const previous = baseline ? {
     ...baseline,
@@ -13495,6 +13542,7 @@ function r2CaptureHashes(capture, artifactBindings = {}) {
 }
 
 function r2CaptureMetadata(capture, artifactBindings) {
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) return sourceHtmlR2Metadata(capture, artifactBindings);
   const retainedProjection = projectRetainedCaptureArtifacts(capture, {
     exists: existsSync,
     artifactBindings,
@@ -14465,6 +14513,8 @@ function writeBaseline(source, capture, details, options = {}) {
     dimensions: capture.dimensions,
     hidden_noise_counts: capture.hidden_noise_counts,
     ...(capture.html_capture ? { html_capture: capture.html_capture } : {}),
+    ...(capture.capture_profile === SOURCE_HTML_PROFILE ? { source_html: capture.source_html,
+      source_html_body_hash: capture.source_html.capture.source_http.body_sha256 } : {}),
     capture: {
       dir: toArchiveRelative(capture.dir),
       page: capture.page_path ? toArchiveRelative(capture.page_path) : null,
@@ -14572,11 +14622,13 @@ function readBaselineEvidence(baseline) {
     ...evidence,
     text: readFileSync(evidence.textPath, "utf8"),
     meta: readJsonIfExists(evidence.metaPath),
+    ...(baseline.capture_profile === SOURCE_HTML_PROFILE ? { html: readFileSync(evidence.htmlPath, "utf8") } : {}),
   };
 }
 
 function baselineEvidenceStatus(baseline) {
   if (!baseline || typeof baseline !== "object") return { ok: false, missing: ["baseline"] };
+  if (baseline.capture_profile === SOURCE_HTML_PROFILE) return sourceHtmlBaselineEvidence(baseline, { archiveRoot });
   const capture = baseline.capture || {};
   const kind = baseline.kind || (capture.pdf ? "pdf" : "webpage");
   const r2LocalizationStatus = String(

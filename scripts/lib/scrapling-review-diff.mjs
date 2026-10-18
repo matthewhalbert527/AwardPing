@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { normalizeVisibleText } from "./capture-stability.mjs";
 import { normalizePublicHttpUrl } from "./public-network-safety.mjs";
+import { SOURCE_HTML_PROFILE, validateSourceHtmlEvidence, sourceHtmlReviewText } from "./source-html-evidence.mjs";
 
 const PROFILE = "scrapling-evidence-v1";
 const MARKER = "HTML source context and link attributes (may include hidden or stale content; not screenshot locations):";
@@ -77,14 +78,15 @@ export function parseScraplingReviewText(value, { finalUrl, maxArtifactBytes = M
 }
 
 function identities({ source, baseline, previous, capture }) {
-  if (!source?.id || !source.shared_award_id || baseline?.capture_profile !== PROFILE || capture?.capture_profile !== PROFILE) {
+  const profile = capture?.capture_profile;
+  if (!source?.id || !source.shared_award_id || ![PROFILE, SOURCE_HTML_PROFILE].includes(profile) || baseline?.capture_profile !== profile) {
     fail("capture_profile_mismatch");
   }
   publicUrl(source.url);
   for (const metadata of [baseline, capture, ...(previous?.meta ? [previous.meta] : [])]) {
     if (metadata?.source?.id !== source.id || metadata.source.shared_award_id !== source.shared_award_id ||
         metadata.source.url !== source.url) fail("source_identity_mismatch");
-    if (metadata.capture_profile !== PROFILE) fail("capture_profile_mismatch");
+    if (metadata.capture_profile !== profile) fail("capture_profile_mismatch");
   }
   publicUrl(baseline.final_url);
   publicUrl(capture.final_url);
@@ -94,6 +96,20 @@ function identities({ source, baseline, previous, capture }) {
   if (previous?.meta && (previous.meta.final_url !== baseline.final_url || previous.meta.captured_at !== baseline.captured_at ||
       previous.meta.text_hash !== baseline.text_hash)) fail("previous_metadata_mismatch");
   if (!/^[a-f0-9]{64}$/.test(baseline.text_hash || "") || !/^[a-f0-9]{64}$/.test(capture.text_hash || "")) fail("missing_text_integrity");
+}
+
+function sourceMainEvidence(metadata, html, retainedText, source) {
+  const record = validateSourceHtmlEvidence(metadata, { html, source });
+  if (normalizeVisibleText(retainedText) !== sourceHtmlReviewText(record)) fail("source_html_review_text_mismatch");
+  if (metadata.page_title !== record.html_document.title) fail("source_html_title_binding_mismatch");
+  const context = Object.fromEntries(["blocks", "links", "base_hrefs"].map(key => [key, record.html_document[key]]));
+  validateContext(context, record.final_url);
+  // The main-element parser intentionally has no document <head>. Bind title
+  // identity to the full response, not a fabricated title on the main fragment.
+  return { title: flow(record.html_document.title), text: flow(record.source_main_document.text),
+    sha256: record.integrity.source_main_document_sha256, record,
+    parsed: { prose: normalizeVisibleText([record.html_document.title, record.html_document.text].join("\n\n")),
+      context, text_hash: hash(normalizeVisibleText(retainedText)), artifact_sha256: hash(retainedText) } };
 }
 
 function withoutBlockText(block) {
@@ -206,6 +222,10 @@ function countdownBlock(value) {
     pairs = [...body.matchAll(/(\d{1,6}) (days?|hours?|minutes?|seconds?)/gi)].map(match => [match[2], Number(match[1])]);
   } else if (/^Days \d{1,6} Hours \d{1,6} Minutes \d{1,6} Seconds \d{1,6}$/i.test(body)) {
     pairs = [...body.matchAll(/(Days|Hours|Minutes|Seconds) (\d{1,6})/gi)].map(match => [match[1], Number(match[2])]);
+  } else if (/^Days\d{1,6} Hours\d{1,6} Minutes\d{1,6}(?: Seconds\d{1,6})?$/i.test(body)) {
+    // SMART's retained native text joins each label to its number. Recognize
+    // only the complete ordered timer, still a manual hold, never accepted noise.
+    pairs = [...body.matchAll(/(Days|Hours|Minutes|Seconds)(\d{1,6})/gi)].map(match => [match[1], Number(match[2])]);
   } else return null;
   const units = ["day", "hour", "minute", "second"], seconds = [86400, 3600, 60, 1];
   let previousUnit = -1, duration = 0;
@@ -385,8 +405,15 @@ export function buildScraplingReviewDiff(input = {}, {
         !Number.isInteger(maxProseChars) || maxProseChars < 1 || maxProseChars > MAX_PROSE_CHARS) fail("invalid_limits");
     identities(input);
     const { source, baseline, previous, capture } = input;
-    const before = parseScraplingReviewText(previous?.text, { finalUrl: baseline.final_url, maxArtifactBytes });
-    const after = parseScraplingReviewText(capture.text, { finalUrl: capture.final_url, maxArtifactBytes });
+    const sourceOnly = capture.capture_profile === SOURCE_HTML_PROFILE;
+    // Source-only evidence is validated even when comparison text is unchanged.
+    // It is not native visible text, and can never authorize a screenshot claim.
+    const sourcePair = sourceOnly ? [
+      sourceMainEvidence(previous?.meta, previous?.html, previous?.text, source),
+      sourceMainEvidence(capture, capture.html, capture.text, source),
+    ] : null;
+    const before = sourceOnly ? sourcePair[0].parsed : parseScraplingReviewText(previous?.text, { finalUrl: baseline.final_url, maxArtifactBytes });
+    const after = sourceOnly ? sourcePair[1].parsed : parseScraplingReviewText(capture.text, { finalUrl: capture.final_url, maxArtifactBytes });
     if (before.text_hash !== baseline.text_hash || after.text_hash !== capture.text_hash) fail("text_integrity_mismatch");
     const fields = ["prose", "blocks", "links", "base_hrefs"].filter(key =>
       !equal(key === "prose" ? before.prose : before.context[key], key === "prose" ? after.prose : after.context[key]));
@@ -394,10 +421,20 @@ export function buildScraplingReviewDiff(input = {}, {
       previous_captured_at: baseline.captured_at, current_captured_at: capture.captured_at,
       previous_text_hash: before.text_hash, current_text_hash: after.text_hash,
       previous_artifact_sha256: before.artifact_sha256, current_artifact_sha256: after.artifact_sha256 };
-    if (!fields.length) return { ...base, status: "unchanged", reason: "complete_semantics_equal", fields, evidence };
+    if (sourceOnly) Object.assign(evidence, { capture_profile: SOURCE_HTML_PROFILE,
+      previous_html_sha256: sourcePair[0].record.integrity.html_sha256,
+      current_html_sha256: sourcePair[1].record.integrity.html_sha256,
+      previous_source_main_sha256: sourcePair[0].sha256, current_source_main_sha256: sourcePair[1].sha256 });
+    if (!fields.length) {
+      if (sourceOnly && sourcePair[0].record.integrity.main_document_sha256 !== sourcePair[1].record.integrity.main_document_sha256) {
+        return { ...base, status: "manual_review_required", reason: "source_main_semantics_changed",
+          fields, evidence, retain_both_captures: true, diff: null };
+      }
+      return { ...base, status: "unchanged", reason: "complete_semantics_equal", fields, evidence };
+    }
     const manual = reason => ({ ...base, status: "manual_review_required", reason, fields, evidence,
       retain_both_captures: true, diff: null,
-      instructions: "Keep both exact text/HTML/screenshot artifacts. Do not use sentence-noise rejection, publish a change, or advance the baseline." });
+      instructions: "Keep both exact retained captures. Do not use sentence-noise rejection, publish a change, or advance the baseline." });
     if (!fields.includes("prose")) return manual("structural_only_change");
     if (fields.includes("links") || fields.includes("base_hrefs")) return manual("link_or_base_context_changed");
     if (before.context.blocks.length !== after.context.blocks.length || isBlockReordering(before.context.blocks, after.context.blocks)) {
@@ -405,8 +442,8 @@ export function buildScraplingReviewDiff(input = {}, {
     }
     if (!equal(before.context.blocks.map(withoutBlockText), after.context.blocks.map(withoutBlockText))) return manual("structural_relationship_changed");
     const needsSharedContext = before.prose.length > maxProseChars || after.prose.length > maxProseChars;
-    const previousVisible = visibleProseEvidence(previous?.meta, { maxArtifactBytes });
-    const currentVisible = visibleProseEvidence(capture, { maxArtifactBytes });
+    const previousVisible = sourceOnly ? sourcePair[0] : visibleProseEvidence(previous?.meta, { maxArtifactBytes });
+    const currentVisible = sourceOnly ? sourcePair[1] : visibleProseEvidence(capture, { maxArtifactBytes });
     if (previousVisible.reason) return manual(`previous_${previousVisible.reason}`);
     if (currentVisible.reason) return manual(`current_${currentVisible.reason}`);
     const screenshotPairing = [previous?.meta?.scrapling?.screenshot?.semantics_bracketed,
@@ -414,16 +451,34 @@ export function buildScraplingReviewDiff(input = {}, {
     // The existing publication path can show a generic full-image fallback but
     // cannot disclose primary-HTML/supplementary-image semantic mismatches yet.
     // Retain those captures without queueing; true is not a geometry claim.
-    if (screenshotPairing.includes(false)) return manual("supplementary_screenshot_semantics_changed");
-    if (screenshotPairing.some(value => value !== true)) return manual("supplementary_screenshot_pairing_unverified");
+    if (!sourceOnly && screenshotPairing.includes(false)) return manual("supplementary_screenshot_semantics_changed");
+    if (!sourceOnly && screenshotPairing.some(value => value !== true)) return manual("supplementary_screenshot_pairing_unverified");
     const visibleChanges = visibleBlockChanges(before, after, previousVisible, currentVisible, previous?.meta, capture);
-    if (visibleChanges.reason) return manual(visibleChanges.reason);
+    if (visibleChanges.reason) return manual(sourceOnly ? visibleChanges.reason.replaceAll("visible", "source_main") : visibleChanges.reason);
+    if (sourceOnly) {
+      const oldMain = sourcePair[0].record.source_main_document, newMain = sourcePair[1].record.source_main_document;
+      const oldContext = Object.fromEntries(["blocks", "links", "base_hrefs"].map(key => [key, oldMain[key]]));
+      const newContext = Object.fromEntries(["blocks", "links", "base_hrefs"].map(key => [key, newMain[key]]));
+      validateContext(oldContext, baseline.final_url);
+      validateContext(newContext, capture.final_url);
+      if (!equal(oldMain.links, newMain.links) || !equal(oldMain.base_hrefs, newMain.base_hrefs) ||
+          !equal(oldMain.blocks.map(withoutBlockText), newMain.blocks.map(withoutBlockText))) {
+        return manual("source_main_relationship_changed");
+      }
+      const mainChanged = oldMain.blocks.map((block, index) => [block.text, newMain.blocks[index].text])
+        .filter(([oldText, newText]) => flow(oldText) !== flow(newText));
+      if (!equal(mainChanged, visibleChanges.changed.map(pair => [pair.before.text, pair.after.text]))) {
+        return manual("source_main_changed_blocks_mismatch");
+      }
+    }
     if (visibleChanges.changed.reduce((total, pair) => total + pair.before.text.length, 0) > maxProseChars ||
         visibleChanges.changed.reduce((total, pair) => total + pair.after.text.length, 0) > maxProseChars) {
       return manual("complete_changed_prose_exceeds_review_bound");
     }
-    evidence.previous_visible_text_sha256 = previousVisible.sha256;
-    evidence.current_visible_text_sha256 = currentVisible.sha256;
+    if (!sourceOnly) {
+      evidence.previous_visible_text_sha256 = previousVisible.sha256;
+      evidence.current_visible_text_sha256 = currentVisible.sha256;
+    }
     if (onlyCountdownBlocksChanged(visibleChanges.changed)) return manual("countdown_only_change_requires_manual_review");
     const diff = {
       candidate_scope: "scrapling_html_source", source_context: { award_name: source.shared_awards?.name || null,
@@ -434,13 +489,18 @@ export function buildScraplingReviewDiff(input = {}, {
       previous_text_length: before.prose.length, new_text_length: after.prose.length,
       text_length_delta: after.prose.length - before.prose.length,
       scrapling_semantics: { version: 2, fields, complete: true, visibility_verified: false,
-        visible_prose_corroborated: true,
-        visible_prose_rule: "unique_complete_changed_blocks_with_ordered_visible_context",
+        visible_prose_corroborated: !sourceOnly,
+        ...(sourceOnly ? { acquisition: "ordinary_anonymous_http", capture_profile: SOURCE_HTML_PROFILE,
+          source_main_prose_corroborated: true,
+          source_main_prose_rule: "unique_complete_changed_blocks_with_ordered_source_main_context",
+          screenshot_available: false } : { visible_prose_rule: "unique_complete_changed_blocks_with_ordered_visible_context" }),
         screenshot_alignment: "not_verified", evidence,
         previous_source_prose: before.prose, current_source_prose: after.prose,
         changed_block_indices: visibleChanges.changed.map(pair => pair.index),
         previous_context: before.context, current_context: after.context,
-        caution: "Only the complete changed blocks are uniquely corroborated in native visible text with ordered context. Other full HTML source context may be hidden or stale. This is not proof of current award facts or screenshot coordinates. Review the named award, audience and cycle; structural context is not a source quotation." },
+        caution: sourceOnly
+          ? "These are complete changes in official HTTP HTML source, uniquely corroborated within its main element and full body with ordered context. No browser visibility, screenshot, client-loaded content or form journey was verified. Hidden or stale source content can still exist. Review the complete named-award, audience, cycle and exception context; reject uncertainty. Structural context is not a source quotation."
+          : "Only the complete changed blocks are uniquely corroborated in native visible text with ordered context. Other full HTML source context may be hidden or stale. This is not proof of current award facts or screenshot coordinates. Review the named award, audience and cycle; structural context is not a source quotation." },
     };
     const compactBound = Math.min(maxDiffBytes, COMPACT_DIFF_BYTES);
     if (needsSharedContext || Buffer.byteLength(JSON.stringify(diff), "utf8") > compactBound) {
@@ -462,7 +522,8 @@ export function buildScraplingReviewDiff(input = {}, {
     }
     if (Buffer.byteLength(JSON.stringify(diff), "utf8") > maxDiffBytes) return manual("complete_diff_exceeds_review_bound");
     return { ...base, status: "changed_needs_review", reason: "complete_bounded_prose_change", fields, evidence, diff,
-      visible_prose_corroborated: true,
+      visible_prose_corroborated: !sourceOnly,
+      ...(sourceOnly ? { source_main_prose_corroborated: true, screenshot_available: false } : {}),
       deterministic: { classification: "candidate_change", reason: "scrapling_complete_prose_change_requires_review",
         candidate_change: true, comparison_basis: "html-source-main-document", evidence_complete: true },
       retain_both_captures: true };

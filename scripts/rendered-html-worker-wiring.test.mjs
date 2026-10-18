@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { captureRenderedHtml } from "./lib/rendered-html-capture.mjs";
 import { buildVisualSnapshotRef, visualSnapshotArtifactManifest } from "./lib/visual-review-queue.mjs";
 import { compareStableCaptureHashes } from "./lib/capture-stability.mjs";
+import { SOURCE_HTML_PROFILE } from "./lib/source-html-evidence.mjs";
 
 const worker = readFileSync(new URL("./capture-visual-snapshots.mjs", import.meta.url), "utf8");
 const temporaryDirectories = [];
@@ -85,6 +86,14 @@ describe("rendered HTML worker integration", () => {
       kind: "webpage", captured_at: capturedAt, meta_path: "current/meta.json",
     }, fixture.report)).toThrow(/Capture identity changed/);
     expect(fixture.writes).toHaveLength(0);
+  });
+
+  it("never appends browser diagnostics to sealed source-only metadata", () => {
+    const fixture = diagnosticHookFixture();
+    fixture.invoke({ id: "source-1" }, null, { kind: "webpage", capture_profile: SOURCE_HTML_PROFILE }, fixture.report);
+    expect(fixture.reads).toEqual([]);
+    expect(fixture.writes).toEqual([]);
+    expect(fixture.report.html_comparison.checked).toBe(0);
   });
 
   it("captures after the accepted screenshot, before further section mutations, and before network finalization", () => {
@@ -167,10 +176,10 @@ describe("rendered HTML worker integration", () => {
   it("requires a declared HTML file on local baseline reuse, but accepts old baselines", () => {
     const paths = new Set(["page.jpg", "thumb.jpg", "text.txt", "layout.json", "meta.json"]);
     let metadata = {};
-    const status = Function("fromArchiveRelative", "existsSync", "readJsonIfExists", "jsonObjectOrEmpty", "retainedCaptureArtifactProjectionSchema",
+    const status = Function("fromArchiveRelative", "existsSync", "readJsonIfExists", "jsonObjectOrEmpty", "retainedCaptureArtifactProjectionSchema", "SOURCE_HTML_PROFILE",
       `${functionBody("baselineEvidenceStatus", "readRetainedBaselineLayout")}\nreturn baselineEvidenceStatus;`)(
       (path) => path || null, (path) => paths.has(path), () => metadata,
-      (value) => value || {}, "awardping.capture-retained-artifact-projection.v1",
+      (value) => value || {}, "awardping.capture-retained-artifact-projection.v1", SOURCE_HTML_PROFILE,
     );
     const baseline = { kind: "webpage", capture: { page: "page.jpg", thumb: "thumb.jpg", text: "text.txt", layout: "layout.json", meta: "meta.json" } };
     expect(status(baseline).ok).toBe(true);
@@ -186,12 +195,13 @@ function diagnosticHookFixture({ metadataSourceId = "source-1" } = {}) {
   const diagnostic = { schema: "awardping.html-comparison.v1", mode: "shadow", status: "changed", reason: null, publishable: false, changes: { text_changed: true } };
   const writes = [];
   const reads = [];
-  const invoke = Function("fromArchiveRelative", "compareRetainedHtmlCaptures", "archiveRoot", "baselineRefresh", "readJsonIfExists", "atomicWriteJson", "incrementCounterObject",
+  const invoke = Function("fromArchiveRelative", "compareRetainedHtmlCaptures", "archiveRoot", "baselineRefresh", "readJsonIfExists", "atomicWriteJson", "incrementCounterObject", "SOURCE_HTML_PROFILE",
     `${functionBody("attachHtmlComparisonDiagnostic", "captureR2Files")}\nreturn attachHtmlComparisonDiagnostic;`)(
     (path) => path, () => diagnostic, "archive", false,
     (path) => { reads.push(path); return { captured_at: capturedAt, source: { id: metadataSourceId } }; },
     (path, metadata) => writes.push({ path, metadata }),
     (counters, reason) => { counters[reason] = (counters[reason] || 0) + 1; },
+    SOURCE_HTML_PROFILE,
   );
   return { invoke, diagnostic, writes, reads, report: { html_comparison: { checked: 0, changed: 0, unchanged: 0, first_observation: 0, unavailable: 0, reasons: {} } } };
 }

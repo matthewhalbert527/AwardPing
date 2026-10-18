@@ -1,17 +1,21 @@
 import { HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import crypto from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { extname, isAbsolute, relative, resolve } from "node:path";
 import sharp from "sharp";
 import {
   localizeVisualEventSide,
+  normalizeVisualExactText,
   verifyVisualTextGeometryBinding,
   visualChangeSemanticManifest,
 } from "./visual-event-localization.mjs";
 import { visualSnapshotArtifactManifest } from "./visual-review-queue.mjs";
+import { SOURCE_HTML_PROFILE, assertSourceHtmlArtifactIdentity } from "./source-html-evidence.mjs";
+import { sourceHtmlReviewPairingVerified } from "./source-html-review-contract.mjs";
 
 export const PUBLISHED_VISUAL_EVIDENCE_PREFIX = "visual-snapshots/published";
 export const VISUAL_EVENT_EVIDENCE_SCHEMA_VERSION = "visual-event-evidence-v2";
+export const SOURCE_HTML_EVENT_EVIDENCE_SCHEMA_VERSION = "source-html-event-evidence-v1";
 
 export class DeterministicVisualArtifactError extends Error {
   constructor(message, code = "deterministic_visual_artifact_unavailable") {
@@ -37,9 +41,14 @@ export async function preparePublishedVisualEventEvidence({
   legacyFallback = false,
 } = {}) {
   assertCandidateIdentity(candidate, source);
+  const sourceHtml = preflightPublishedSourceHtmlEventEvidence({ candidate, source, changeDetails, archiveRoot });
+  if (sourceHtml.applicable && (historical || legacyFallback)) {
+    throw new DeterministicVisualArtifactError("Source HTML evidence cannot use a historical or legacy image fallback.", "source_html_fallback_forbidden");
+  }
   const ownsStore = !artifactStore;
   const store = artifactStore || createPublishedVisualArtifactStore(config);
   try {
+    if (sourceHtml.applicable) return await prepareSourceHtmlEventEvidence({ candidate, checked: sourceHtml, store, now });
     const prepare = async (side) => {
       try {
         return await prepareSide({
@@ -109,6 +118,113 @@ export async function preparePublishedVisualEventEvidence({
   } finally {
     if (ownsStore) store.destroy?.();
   }
+}
+
+/** Read-only publication-contract check, callable before any baseline promotion.
+ * Both sides are read and verified before the first upload. The same immutable
+ * buffers are then used by publication, avoiding a validation/upload reread race.
+ */
+export function preflightPublishedSourceHtmlEventEvidence({ candidate, source, changeDetails, archiveRoot } = {}) {
+  const refs = [candidateVisualSnapshotRef(candidate, "previous"), candidateVisualSnapshotRef(candidate, "current")];
+  const diff = candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff;
+  const applicable = refs.some(ref => ref?.capture_profile === SOURCE_HTML_PROFILE || ref?.metadata?.capture_profile === SOURCE_HTML_PROFILE) ||
+    diff?.scrapling_semantics?.capture_profile === SOURCE_HTML_PROFILE;
+  if (!applicable) return { applicable: false };
+  const fail = message => { throw new DeterministicVisualArtifactError(`Source HTML publication: ${message}`, "source_html_publication_contract_invalid"); };
+  assertCandidateIdentity(candidate, source);
+  if (!/^[a-f0-9]{64}$/.test(candidate.candidate_signature || "") || !source?.url || candidate.source_url !== source.url ||
+      source.id !== candidate.shared_award_source_id || source.shared_award_id !== candidate.shared_award_id ||
+      ["previous_image_hash", "new_image_hash", "previous_file_hash", "new_file_hash"].some(key =>
+        candidate[key] != null || candidate.prompt_payload?.hashes?.[key] != null) ||
+      stableManifestJson(candidate?.deterministic_diff) !== stableManifestJson(candidate?.prompt_payload?.deterministic_diff) ||
+      !sourceHtmlReviewPairingVerified(candidate, diff)) fail("exact candidate/source and paired review contract required");
+  const archiveRealRoot = realpathSync(resolve(archiveRoot));
+  const semanticManifest = visualChangeSemanticManifest(changeDetails);
+  const checked = {};
+  for (const [index, side] of ["previous", "current"].entries()) {
+    const ref = refs[index], key = side === "previous" ? "previous_snapshot_ref" : "new_snapshot_ref";
+    if (!ref || stableManifestJson(candidate[key]) !== stableManifestJson(candidate.prompt_payload[key]) ||
+        ref.capture_profile !== SOURCE_HTML_PROFILE || ref.metadata?.capture_profile !== SOURCE_HTML_PROFILE ||
+        ref.kind !== "webpage" || Object.keys(ref.local_paths || {}).sort().join() !== "html,meta,text" ||
+        ref.image_hash != null || ref.file_hash != null || ref.layout_hash != null ||
+        !Array.isArray(ref.visual_states) || ref.visual_states.length ||
+        ["dimensions", "text_geometry", "html_capture", "page_readiness", "page_settle", "browser", "localization"].some(field => ref.metadata?.[field] != null)) {
+      fail(`${side} requires only exact source-only metadata/text/HTML references`);
+    }
+    const artifactManifest = visualSnapshotArtifactManifest(ref);
+    validateCandidateArtifactManifest({ candidate, side, resolved: { ref, artifact_manifest: artifactManifest }, historical: false });
+    const definitions = { html: ["page.html.txt", "text/plain; charset=utf-8"], meta: ["meta.json", "application/json; charset=utf-8"], text: ["text.txt", "text/plain; charset=utf-8"] };
+    const artifacts = [], artifactBindings = {};
+    for (const [slot, [fileName, contentType]] of Object.entries(definitions)) {
+      const rawRef = ref.local_paths[slot], pathRef = resolveArtifactPathRef(rawRef, archiveRoot);
+      if (rawRef?.exists !== true || !rawRef?.archive_relative || rawRef.bytes !== rawRef.byte_length ||
+          !Number.isSafeInteger(rawRef.byte_length) || rawRef.byte_length <= 0 || rawRef.byte_length > 24 * 1024 * 1024) fail(`${side} ${slot} raw binding missing`);
+      const realRelative = relative(archiveRealRoot, realpathSync(pathRef.path));
+      if (!lstatSync(pathRef.path).isFile() || !realRelative || realRelative.startsWith("..") || isAbsolute(realRelative)) fail(`${side} ${slot} path escapes the real archive`);
+      const body = readVerifiedPathArtifact({ path: pathRef.path, expectedSha256: pathRef.sha256,
+        expectedByteLength: pathRef.byte_length, requireExpectedManifest: true, required: true });
+      const binding = { hash_mode: "raw_sha256", sha256: sha256Buffer(body), byte_length: body.length, content_type: contentType };
+      artifactBindings[slot] = binding;
+      artifacts.push({ name: slot, fileName, contentType, body, binding, path: pathRef.path });
+    }
+    const bodies = Object.fromEntries(artifacts.map(artifact => [artifact.name, artifact.body]));
+    let meta;
+    try { meta = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bodies.meta)); }
+    catch { fail(`${side} metadata is not valid UTF-8 JSON`); }
+    const record = assertSourceHtmlArtifactIdentity(meta, { artifacts, artifactBindings }, { sourceId: candidate.shared_award_source_id, verifyLocalPath: false });
+    const sidePrefix = side === "previous" ? "previous" : "current";
+    const textKey = side === "previous" ? "previous_text_hash" : "new_text_hash";
+    if (meta.source.shared_award_id !== candidate.shared_award_id || meta.source.url !== source.url ||
+        ref.captured_at !== record.captured_at || ref.final_url !== record.final_url || ref.text_hash !== meta.text_hash ||
+        candidate[textKey] !== meta.text_hash || candidate.prompt_payload.hashes?.[textKey] !== meta.text_hash ||
+        Object.keys(definitions).some(slot => ref.local_paths[slot].archive_relative !== meta.files[slot]) ||
+        diff.scrapling_semantics.evidence[`${sidePrefix}_html_sha256`] !== record.integrity.html_sha256 ||
+        diff.scrapling_semantics.evidence[`${sidePrefix}_source_main_sha256`] !== record.integrity.source_main_document_sha256 ||
+        ref.metadata.source_html?.html_sha256 !== record.integrity.html_sha256 ||
+        ref.metadata.source_html?.source_main_sha256 !== record.integrity.source_main_document_sha256 ||
+        ref.metadata.source_html?.document_sha256 !== record.integrity.document_sha256 ||
+        ref.metadata.source_html?.main_document_sha256 !== record.integrity.main_document_sha256) fail(`${side} immutable identity differs from reviewed evidence`);
+    const semanticSide = semanticManifest.sides[side];
+    const changedText = side === "previous" ? diff.removed_text : diff.added_text;
+    if (!semanticSide.candidates.length || semanticSide.candidates.some(value =>
+      !normalizeVisualExactText(record.source_main_document.text).includes(value.normalized_text) ||
+      !Array.isArray(changedText) || !changedText.some(block => normalizeVisualExactText(block).includes(value.normalized_text)))) {
+      fail(`${side} event wording is not bound to the reviewed source change`);
+    }
+    checked[side] = { ref, meta, record, bodies };
+  }
+  if (Date.parse(checked.previous.record.captured_at) >= Date.parse(checked.current.record.captured_at) ||
+      checked.previous.record.final_url !== checked.current.record.final_url) fail("capture order or final URL changed");
+  return { applicable: true, capture_profile: SOURCE_HTML_PROFILE, ...checked, semanticManifest };
+}
+
+async function prepareSourceHtmlEventEvidence({ candidate, checked, store, now }) {
+  const captures = {}, sides = {};
+  for (const side of ["previous", "current"]) {
+    const { meta, record, bodies } = checked[side];
+    const full = await uploadBufferArtifact({ store, candidateId: candidate.id, side, role: "source-html", body: bodies.html,
+      contentType: "text/plain; charset=utf-8", extension: "txt" });
+    const metadata = await uploadBufferArtifact({ store, candidateId: candidate.id, side, role: "metadata", body: bodies.meta,
+      contentType: "application/json; charset=utf-8", extension: "json" });
+    const text = await uploadBufferArtifact({ store, candidateId: candidate.id, side, role: "text", body: bodies.text,
+      contentType: "text/plain; charset=utf-8", extension: "txt" });
+    captures[side] = { kind: "source_html", capture_profile: SOURCE_HTML_PROFILE, acquisition: "ordinary_anonymous_http",
+      source_id: meta.source.id, shared_award_id: meta.source.shared_award_id, source_url: record.url, final_url: record.final_url,
+      captured_at: record.captured_at, visibility_verified: false, screenshot_available: false, state_id: null,
+      full, metadata, text, capture_hashes: { image_hash: null, file_hash: null, layout_hash: null,
+        text_hash: meta.text_hash, html_sha256: record.integrity.html_sha256,
+        source_main_sha256: record.integrity.source_main_document_sha256,
+        document_sha256: record.integrity.document_sha256, main_document_sha256: record.integrity.main_document_sha256 } };
+    sides[side] = { status: "not_applicable_source_html", required: false, exact_overlap: false, semantic_verified: false,
+      reason: "The official HTML response is retained. No screenshot was collected; visible placement is not verified." };
+  }
+  return { change_event_id: null, shared_award_id: candidate.shared_award_id, shared_award_source_id: candidate.shared_award_source_id,
+    visual_review_candidate_id: candidate.id, candidate_signature: candidate.candidate_signature, bucket: store.bucket,
+    evidence_status: "not_applicable_source_html", evidence_schema_version: SOURCE_HTML_EVENT_EVIDENCE_SCHEMA_VERSION,
+    previous_capture: captures.previous, current_capture: captures.current,
+    localization: { direction: "mixed", semantic_contract: checked.semanticManifest.contract,
+      change_semantics_sha256: checked.semanticManifest.change_semantics_sha256, sides },
+    created_at: now, verified_at: null, backfilled_at: null };
 }
 
 /**

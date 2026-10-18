@@ -7,6 +7,8 @@ import { normalizeVisibleText } from "./capture-stability.mjs";
 import { normalizePublicHttpUrl } from "./public-network-safety.mjs";
 import { renderedHtmlCaptureSchema, maxRenderedHtmlBytes } from "./rendered-html-capture.mjs";
 import { expansionStateCaptureCoverage, expansionStateCaptureCoverageLegacyMirrors } from "./expansion-state-descriptor-canonicalization.mjs";
+import { SOURCE_HTML_PROFILE, sourceHtmlEvidence, sourceHtmlArtifactProjection,
+  sourceHtmlReviewText, validateSourceHtmlEvidence } from "./source-html-evidence.mjs";
 
 export const SCRAPLING_WORKER_PROFILE = "scrapling-evidence-v1";
 export const SCRAPLING_SOURCE_MANIFEST_SCHEMA = "awardping.scrapling-source-manifest.v1";
@@ -26,7 +28,8 @@ export function validateScraplingSourceManifest(value) {
   for (const row of value.sources) {
     if (!uuid.test(row?.id) || ids.has(row.id) || !value.award_ids.includes(row.award_id) ||
         typeof row.url !== "string" || normalizePublicHttpUrl(row.url).href !== row.url || new URL(row.url).port ||
-        row.kind !== "html" || !Array.isArray(row.roles) || !row.roles.length ||
+        row.kind !== "html" || (row.capture_profile !== undefined && ![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(row.capture_profile)) ||
+        (row.capture_profile === SOURCE_HTML_PROFILE && !row.url.startsWith("https://")) || !Array.isArray(row.roles) || !row.roles.length ||
         row.roles.some(role => typeof role !== "string" || !/^[a-z_]{1,60}$/.test(role)) ||
         urls.has(`${row.award_id}\n${row.url}`)) fail("invalid or duplicate source manifest entry");
     ids.add(row.id);
@@ -53,10 +56,11 @@ export function selectScraplingSource(source, manifest) {
 }
 
 /** No parser change, URL move or rollback may be mistaken for an award change. */
-export function assertScraplingBaselineCompatibility(baseline, { useScrapling, baselineRefresh = false } = {}) {
+export function assertScraplingBaselineCompatibility(baseline, { useScrapling, captureProfile = SCRAPLING_WORKER_PROFILE, baselineRefresh = false } = {}) {
   if (!baseline) return;
-  const previousIsScrapling = baseline.capture_profile === SCRAPLING_WORKER_PROFILE;
-  if (previousIsScrapling !== Boolean(useScrapling) && !baselineRefresh) {
+  if (useScrapling && ![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(captureProfile)) fail("invalid capture profile");
+  const previousIsScrapling = [SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(baseline.capture_profile);
+  if ((previousIsScrapling !== Boolean(useScrapling) || (useScrapling && baseline.capture_profile !== captureProfile)) && !baselineRefresh) {
     fail("capture profile transition requires an explicit baseline-only maintenance run; old evidence is preserved");
   }
 }
@@ -80,12 +84,15 @@ export function scraplingReviewText(document) {
 /** Retain a validated Scrapling bundle in the existing screenshot/text/HTML contract. */
 export async function captureScraplingWorkerSource(source, {
   archiveRoot, pythonPath, executablePath, timeoutMs = 90000,
-  capture = captureScraplingSource,
+  capture = captureScraplingSource, captureProfile = SCRAPLING_WORKER_PROFILE,
 } = {}) {
   if (!uuid.test(source?.id) || !uuid.test(source?.shared_award_id)) fail("invalid source identity");
+  if (![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(captureProfile)) fail("invalid capture profile");
   const root = realpathSync(archiveRoot);
   const record = validateScraplingCapture(await capture(source, { pythonPath, executablePath, timeoutMs,
-    captureProfile: SCRAPLING_WORKER_PROFILE }), { source });
+    captureProfile }), { source });
+  if (record.capture_profile !== captureProfile) fail("collector profile mismatch");
+  if (captureProfile === SOURCE_HTML_PROFILE) return retainSourceHtmlCapture(source, record, root);
   if (record.capture_profile !== SCRAPLING_WORKER_PROFILE || !record.html_document || !record.screenshot) fail("production evidence unavailable");
   const text = scraplingReviewText(record.html_document);
   const page = Buffer.from(record.screenshot.base64, "base64");
@@ -160,4 +167,38 @@ export async function captureScraplingWorkerSource(source, {
       title: link.title, ariaLabel: link.aria_label, download: link.download, contextText: link.context,
       contextTruncated: link.context_truncated })),
   };
+}
+
+function retainSourceHtmlCapture(source, record, root) {
+  const text = sourceHtmlReviewText(record);
+  let dir = root;
+  for (const segment of ["sources", source.id, "captures", new Date(record.captured_at).toISOString().replace(/[:.]/g, "-")]) {
+    dir = join(dir, segment);
+    if (existsSync(dir)) {
+      const stat = lstatSync(dir);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) fail("capture directory escaped archive");
+    } else mkdirSync(dir);
+    const relDir = relative(root, realpathSync(dir));
+    if (!relDir || relDir.startsWith("..") || isAbsolute(relDir)) fail("capture directory escaped archive");
+  }
+  const path = name => join(dir, name);
+  const ref = name => relative(root, path(name)).replaceAll("\\", "/");
+  const metadata = {
+    version: 1, kind: "webpage", capture_behavior_version: 1, capture_behavior_name: SOURCE_HTML_PROFILE,
+    capture_profile: SOURCE_HTML_PROFILE, source: { id: source.id, shared_award_id: source.shared_award_id,
+      url: source.url, title: source.title || null, page_type: source.page_type || null,
+      award_name: source.shared_awards?.name || null },
+    captured_at: record.captured_at, final_url: record.final_url, page_title: record.html_document.title,
+    status_code: record.status_code, content_type: record.content_type,
+    text_hash: textHash(text), body_text_hash: textHash(text), main_content_hash: textHash(text),
+    text_length: text.length, body_text_length: text.length, main_content_text_length: text.length,
+    source_html: sourceHtmlEvidence(record), retained_artifact_projection: sourceHtmlArtifactProjection(),
+    files: { text: ref("text.txt"), html: ref("page.html.txt"), meta: ref("meta.json") },
+  };
+  validateSourceHtmlEvidence(metadata, { html: record.html, source });
+  for (const [name, bytes] of [["text.txt", `${text}\n`], ["page.html.txt", record.html], ["meta.json", JSON.stringify(metadata, null, 2)]])
+    writeFileSync(path(name), bytes, { flag: "wx" });
+  return { ...metadata, dir, text, html: record.html, text_path: path("text.txt"), html_path: path("page.html.txt"), meta_path: path("meta.json"),
+    expandable_sections: [], section_extraction: { sections: [], detected: 0, extracted: 0 },
+    section_text_for_baseline_facts: "", section_text_length: 0, scrapling_discovered_links: [] };
 }

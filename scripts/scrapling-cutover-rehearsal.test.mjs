@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { atomicWriteJson } from "./lib/visual-baseline-lock.mjs";
+import { SOURCE_HTML_PROFILE } from "./lib/source-html-evidence.mjs";
 import {
   assertScraplingBaselineCompatibility, SCRAPLING_WORKER_PROFILE,
   selectScraplingSource, validateScraplingSourceManifest,
@@ -85,6 +86,7 @@ function fixture({ initialProfile = "stable-daily", useScrapling = true, refresh
   const events = [];
   let pendingCapture;
   const deps = {
+    SOURCE_HTML_PROFILE, SCRAPLING_WORKER_PROFILE,
     archiveRoot: root, dirname, relative, resolve, mkdirSync, readFileSync, existsSync, rmSync, atomicWriteJson,
     baselinePathForSource: id => join(root, "sources", id, "baseline.json"),
     localBaselineEvidenceCache: new Map(),

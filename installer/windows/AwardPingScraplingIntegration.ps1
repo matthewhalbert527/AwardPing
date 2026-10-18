@@ -7,6 +7,8 @@ function Get-AwardPingScraplingRuntimeRelativePaths {
   return @(
     'scripts\lib\scrapling-worker.mjs', 'scripts\lib\scrapling-capture.mjs',
     'scripts\lib\scrapling-review-diff.mjs', 'scripts\lib\scrapling-runtime-binding.mjs',
+    'scripts\lib\source-html-evidence.mjs', 'scripts\lib\source-html-review-contract.mjs',
+    'scripts\lib\source-html-worker-state.mjs', 'scripts\lib\source-intake-request-scope.mjs',
     'scripts\lib\pdf-text-coverage.mjs',
     'scripts\lib\rendered-html-capture.mjs', 'scripts\lib\rendered-html-comparison.mjs',
     'scripts\lib\structured-html-content.mjs', 'scripts\lib\capture-stability.mjs',

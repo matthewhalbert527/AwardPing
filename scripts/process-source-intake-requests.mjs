@@ -28,6 +28,7 @@ import {
   geminiBatchExactMappingComplete,
   geminiBatchUsageAccounting,
   geminiBatchInlineResponseMap,
+  geminiBatchInlineResponseKey,
   geminiInlineError,
   geminiInlineResponsePayload,
 } from "./lib/gemini-batch-support.mjs";
@@ -82,6 +83,13 @@ import {
   SOURCE_BACKFILL_MANUAL_STATUS_REASON,
 } from "./lib/source-backfill-intake.mjs";
 import { guardAdminReviewMutation } from "./lib/admin-review-state-guard.mjs";
+import {
+  SOURCE_INTAKE_SCOPE_LIMIT,
+  scopedSourceIntakeClient,
+  sourceIntakeMembershipDecision,
+  sourceIntakeRequestScope,
+  sourceIntakeScopeBindings,
+} from "./lib/source-intake-request-scope.mjs";
 import { sourceMonitoringRestoreMarker } from "./lib/source-quality.mjs";
 import {
   closeSupabaseServiceTransport,
@@ -91,6 +99,7 @@ import {
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
+const requestIds = sourceIntakeRequestScope(process.argv.slice(2));
 if (boolArg(args.help, false)) {
   printHelp();
   process.exit(0);
@@ -106,7 +115,7 @@ const supabaseUrl = env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
 const geminiApiKey = env.GEMINI_API_KEY;
 const limit = positiveInt(args.limit, 100);
-const requestId = cleanNullable(args["request-id"]);
+const requestId = requestIds.length === 1 ? requestIds[0] : null;
 const statuses = csvList(args.status).length
   ? csvList(args.status)
   : ["pending", "queued"];
@@ -171,7 +180,8 @@ if (geminiApiMode !== "none" && (submit || poll) && !geminiApiKey) {
 }
 
 mkdirSync(reportDir, { recursive: true });
-const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
+const unscopedSupabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
+const supabase = scopedSourceIntakeClient(unscopedSupabase, requestIds);
 const report = {
   started_at: new Date().toISOString(),
   finished_at: null,
@@ -182,6 +192,8 @@ const report = {
   options: {
     limit,
     request_id: requestId,
+    request_ids: requestIds,
+    request_scope: requestIds.length ? "exact_requests_all_phases" : "global",
     statuses,
     dry_run: dryRun,
     apply,
@@ -270,6 +282,7 @@ const report = {
   warnings: [],
   errors: [],
   requests: [],
+  scope_deferred_work: 0,
 };
 
 let workerRun = null;
@@ -332,6 +345,55 @@ async function capturePendingRequests() {
   }
 }
 
+function deferSourceIntakeScope(stage, reason, batchName = null) {
+  report.scope_deferred_work += 1;
+  report.warnings.push({
+    stage,
+    reason,
+    batch_name: batchName,
+    message: "Exact-request run deferred shared or unproven work. The normal global worker can recover it; no request or spend reservation was changed by this check.",
+    creates_api_charge: false,
+  });
+  return false;
+}
+
+async function sourceIntakeScopeAllowsWork(rows, { batchName = null, stage = "scope_preflight" } = {}) {
+  if (!requestIds.length) return true;
+  const initial = sourceIntakeMembershipDecision(requestIds, { rows, count: rows.length });
+  if (!initial.allowed) return deferSourceIntakeScope(stage, initial.reason, batchName);
+  const bindings = sourceIntakeScopeBindings(rows, batchName);
+  // Deliberately unscoped, read-only membership queries include completed and
+  // held siblings. Filtering by selected IDs or active status would hide a
+  // shared Batch and allow a narrow run to settle someone else's reservation.
+  try {
+    for (const binding of bindings.requests) {
+      const { data, count, error } = await unscopedSupabase
+        .from("source_page_requests")
+        .select("id", { count: "exact" })
+        .filter(`ai_review->>${binding.field}`, "eq", binding.value)
+        .limit(SOURCE_INTAKE_SCOPE_LIMIT + 1);
+      if (error) return deferSourceIntakeScope(stage, "scope_membership_read_failed", batchName);
+      const decision = sourceIntakeMembershipDecision(requestIds, { rows: data, count });
+      if (!decision.allowed) return deferSourceIntakeScope(stage, decision.reason, batchName);
+    }
+    for (const binding of bindings.reservations) {
+      const { data, count, error } = await unscopedSupabase
+        .from("gemini_spend_reservations")
+        .select("id,request_count,metadata", { count: "exact" })
+        .eq(binding.field, binding.value)
+        .limit(SOURCE_INTAKE_SCOPE_LIMIT + 1);
+      if (error || (binding.required && count === 0)) {
+        return deferSourceIntakeScope(stage, "scope_reservation_membership_unproven", batchName);
+      }
+      const decision = sourceIntakeMembershipDecision(requestIds, { rows: data, count, reservation: true });
+      if (!decision.allowed) return deferSourceIntakeScope(stage, decision.reason, batchName);
+    }
+  } catch {
+    return deferSourceIntakeScope(stage, "scope_membership_read_failed", batchName);
+  }
+  return true;
+}
+
 async function loadStageBacklogCounts() {
   let captureCountQuery = supabase
     .from("source_page_requests")
@@ -383,6 +445,7 @@ async function processRequestedReconciliationRetries() {
 
   for (const requested of requestedRows) {
     if (!hasTimeBudget("reconciliation_only_retry")) break;
+    if (!await sourceIntakeScopeAllowsWork([requested], { stage: "scoped_reconciliation_recovery" })) continue;
     const backfillApproval = requested.status_reason === SOURCE_BACKFILL_APPROVAL_REQUEST_REASON;
     const requestedReason = requested.status_reason;
     const claimReason = backfillApproval
@@ -519,6 +582,7 @@ async function recoverStaleInFlightRequests() {
 
   for (const row of data || []) {
     if (!hasTimeBudget("recover_stale_in_flight")) break;
+    if (!await sourceIntakeScopeAllowsWork([row], { stage: "scoped_stale_in_flight_recovery" })) continue;
     const matching = row.status === "matching";
     const reconcileClaim = row.status === "ai_review_succeeded";
     const freeReconciliationClaim =
@@ -676,6 +740,7 @@ async function recoverStaleInFlightRequests() {
   if (staleClaimError) throw new Error(`Load stale source intake submission claims failed: ${staleClaimError.message}`);
   for (const row of staleClaims || []) {
     if (!hasTimeBudget("recover_stale_submission_claims")) break;
+    if (!await sourceIntakeScopeAllowsWork([row], { stage: "scoped_submission_claim_recovery" })) continue;
     const now = new Date().toISOString();
     const review = objectValue(row.ai_review);
     const claimToken = cleanNullable(review.submission_claim_token);
@@ -1184,6 +1249,7 @@ async function submitPendingAiRequests() {
 
 async function submitAiReviewChunk(rows) {
   if (!rows.length) return 0;
+  if (!await sourceIntakeScopeAllowsWork(rows, { stage: "scoped_new_submission" })) return 0;
   const claimToken = randomUUID();
   const claimedAt = new Date().toISOString();
   const displayName = `awardping-source-intake-${timestampForPath(claimedAt)}-${claimToken.slice(0, 8)}-${model.replace(/[^a-z0-9._-]+/gi, "-")}`;
@@ -1611,6 +1677,12 @@ async function deferSourceIntakeClaimsForActiveWork(rows, claimToken, activeWork
     supabase,
     reservationId: activeWork.reservationId,
   });
+  if (!await sourceIntakeScopeAllowsWork(rows.map((row) => ({
+    ...row,
+    ai_review: { ...objectValue(row.ai_review), active_work_reservation_id: reservation.id },
+  })), { stage: "scoped_active_work_recovery" })) {
+    return { status: reservation.status, manualRecoveryRequired: true, providerBound: false, scope_deferred: true };
+  }
   const providerBound = new Set(["submitted", "settled"]).has(reservation.status)
     && cleanNullable(reservation.provider_batch_name);
   const manualRecovery = reservation.status === "creating" && !providerBound;
@@ -2020,6 +2092,7 @@ async function failMalformedExpiredSubmittedRows(rows) {
 
   let affected = 0;
   for (const row of rows) {
+    if (!await sourceIntakeScopeAllowsWork([row], { stage: "scoped_malformed_batch_recovery" })) continue;
     const now = new Date().toISOString();
     let query = supabase
       .from("source_page_requests")
@@ -2051,6 +2124,7 @@ async function failMalformedExpiredSubmittedRows(rows) {
 }
 
 async function pollSubmittedBatch(batchName, batchRows) {
+  if (!await sourceIntakeScopeAllowsWork(batchRows, { batchName, stage: "scoped_batch_poll" })) return;
   const job = await fetchGeminiJson(`https://generativelanguage.googleapis.com/v1beta/${batchName}`, {
     method: "GET",
     kind: "source_intake_batch_poll",
@@ -2058,6 +2132,19 @@ async function pollSubmittedBatch(batchName, batchRows) {
   const state = geminiBatchState(job);
   const batchReport = { name: batchName, state, reconciled: 0, failed: 0, rejected: 0, mode: "poll" };
   report.batches.push(batchReport);
+  if (!await sourceIntakeScopeAllowsWork(batchRows, { batchName, stage: "scoped_batch_readback" })) return;
+  if (requestIds.length && isGeminiBatchSucceeded(state)) {
+    const responseMembers = extractGeminiBatchInlineResponses(job)
+      .map((item) => ({ id: geminiBatchInlineResponseKey(item) }));
+    const responseScope = sourceIntakeMembershipDecision(requestIds, {
+      rows: responseMembers,
+      count: responseMembers.length,
+    });
+    if (!responseScope.allowed) {
+      deferSourceIntakeScope("scoped_batch_response_membership", responseScope.reason, batchName);
+      return;
+    }
+  }
   if (!isGeminiBatchDone(state)) {
     const failedClosedCount = await failExpiredSubmittedBatch(
       batchName,
@@ -2079,9 +2166,10 @@ async function pollSubmittedBatch(batchName, batchRows) {
       });
       return;
     }
-    await settleSourceIntakeBatchSpend(batchName, batchRows, {
+    const settlement = await settleSourceIntakeBatchSpend(batchName, batchRows, {
       terminalState: state,
     });
+    if (settlement?.scope_deferred) return;
     const failedRows = await markBatchRowsFailed(batchName, batchError);
     batchReport.failed += failedRows;
     report.failed += failedRows;
@@ -2109,10 +2197,11 @@ async function pollSubmittedBatch(batchName, batchRows) {
   // Provider spend becomes final when the Batch is terminal. Settle the
   // account-wide reservation before mutating any request row so a crash while
   // publishing results cannot hide charged work or strand the reservation.
-  await settleSourceIntakeBatchSpend(batchName, batchRows, {
+  const settlement = await settleSourceIntakeBatchSpend(batchName, batchRows, {
     terminalState: state,
     accounting: batchResponses.accounting,
   });
+  if (settlement?.scope_deferred) return;
   const { data: rows, error: rowError } = await supabase
     .from("source_page_requests")
     .select("*")
@@ -2249,6 +2338,9 @@ async function settleSourceIntakeBatchSpend(
   { terminalState, accounting = null } = {},
 ) {
   const rows = Array.isArray(batchRows) ? batchRows : [];
+  if (!await sourceIntakeScopeAllowsWork(rows, { batchName, stage: "scoped_batch_settlement" })) {
+    return { scope_deferred: true };
+  }
   const reservationIds = unique(rows.map((row) => cleanNullable(objectValue(row.ai_review).gemini_spend_reservation_id)));
   if (!reservationIds.length) return null; // Historical Batch created before account-wide reservations.
   if (reservationIds.length !== 1) {
@@ -2410,6 +2502,7 @@ async function failOwnedBackfillActivation(id, message) {
 
 async function touchSubmittedBatchRows(batchName) {
   if (!apply) return;
+  if (!await sourceIntakeScopeAllowsWork([], { batchName, stage: "scoped_batch_rotation" })) return;
   const { error } = await supabase
     .from("source_page_requests")
     .update({ updated_at: new Date().toISOString() })
@@ -2419,6 +2512,7 @@ async function touchSubmittedBatchRows(batchName) {
 }
 
 async function failExpiredSubmittedBatch(batchName, rows, reason) {
+  if (!await sourceIntakeScopeAllowsWork(rows, { batchName, stage: "scoped_batch_expiration" })) return 0;
   const submittedTimes = rows
     .map((row) => Date.parse(cleanNullable(objectValue(row.ai_review).submitted_at) || ""))
     .filter(Number.isFinite);
@@ -3392,6 +3486,7 @@ function liveFirstCaptureSourceDisposition({ source, sourceInserted, sourceQuara
 
 async function markBatchRowsFailed(batchName, message) {
   if (!apply) return 0;
+  if (!await sourceIntakeScopeAllowsWork([], { batchName, stage: "scoped_batch_failure" })) return 0;
   const { data, error } = await supabase
     .from("source_page_requests")
     .update({
@@ -3755,7 +3850,8 @@ function finalReportStatus() {
   if (report.errors.length || report.failed > 0 || report.submission_claims_lost_after_batch_create > 0) {
     return "completed_with_errors";
   }
-  return report.time_budget_exhausted ? "succeeded_with_deferred_work" : "succeeded";
+  return report.time_budget_exhausted || report.scope_deferred_work > 0
+    ? "succeeded_with_deferred_work" : "succeeded";
 }
 
 function reportFailureMessage() {
@@ -3789,7 +3885,8 @@ function printHelp() {
 
 Options:
   --limit=100
-  --request-id=<uuid>
+  --request-id=<uuid>  Repeat for an exact allowlist covering every phase.
+                       Mixed/unproven shared batches defer to the global worker.
   --status=pending,queued
   --apply=true|false
   --dry-run=true|false

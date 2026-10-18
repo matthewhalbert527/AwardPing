@@ -15,6 +15,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 import { atomicWriteJson } from "./visual-baseline-lock.mjs";
+import { SOURCE_HTML_PROFILE, assertSourceHtmlAbsence, assertSourceHtmlArtifactIdentity, assertSourceHtmlArtifactSlots,
+  validateSourceHtmlEvidence } from "./source-html-evidence.mjs";
 import { acquisitionDerivedCaptureMetadataFilename } from "./intake-artifact-retention.mjs";
 import {
   assertRenderedHtmlArtifactIdentity,
@@ -680,6 +682,11 @@ export async function rehydrateLocalBaselineFromR2({
       }
     }
 
+    if (currentBaseline.capture_profile === SOURCE_HTML_PROFILE ||
+        (missingLocalBaseline && snapshotRecord.latest_metadata?.capture_profile === SOURCE_HTML_PROFILE)) {
+      return await rehydrateSourceHtmlBaseline({ archiveRoot: input.archiveRoot, source, baseline: missingLocalBaseline ? null : currentBaseline,
+        snapshotRecord, bucket, client, sendCommand, now, originalBaselineBytes });
+    }
     validateBaselineIdentity({ baseline: currentBaseline, source });
     validateSnapshotIdentity({ snapshotRecord, source, baseline: currentBaseline, bucket });
     const generation = missingLocalBaseline
@@ -999,6 +1006,143 @@ export async function rehydrateLocalBaselineFromR2({
   }
 }
 
+/** Exact source-only recovery; it does not enter or relax the browser v7 path. */
+async function rehydrateSourceHtmlBaseline({ archiveRoot, source, baseline, snapshotRecord, bucket, client, sendCommand, now, originalBaselineBytes }) {
+  const sourceDir = join(archiveRoot, "sources", source.id), baselinePath = join(sourceDir, "baseline.json");
+  let stageDir = null, finalDir = null, createdFinalDir = false, committed = false;
+  try {
+    if (snapshotRecord.kind !== "webpage" || snapshotRecord.shared_award_source_id !== source.id ||
+        snapshotRecord.shared_award_id !== source.shared_award_id || snapshotRecord.source_url !== source.url ||
+        snapshotRecord.bucket !== bucket || !sourceIdPattern.test(String(source.shared_award_id || ""))) {
+      refuse("r2_source_html_identity_mismatch", "Source HTML pointer identity does not match its current source.");
+    }
+    let generation = null;
+    for (const name of baseline ? ["latest", "previous"] : ["latest"]) {
+      const metadata = objectValue(snapshotRecord[`${name}_metadata`]), hashes = objectValue(snapshotRecord[`${name}_hashes`]);
+      const capturedAt = snapshotRecord[`${name}_captured_at`];
+      if (metadata.capture_profile !== SOURCE_HTML_PROFILE || !validTimestamp(capturedAt)) continue;
+      if (baseline && (!sameTimestamp(capturedAt, baseline.captured_at) || !sameHash(hashes.text_hash, baseline.text_hash) ||
+          stableJson(metadata.source_html) !== stableJson(baseline.source_html))) continue;
+      generation = { name, metadata, hashes, capturedAt, objectKeys: objectValue(snapshotRecord[`${name}_object_keys`]) };
+      break;
+    }
+    if (!generation) refuse("exact_r2_generation_unavailable", "No exact source HTML generation is available.");
+    const { metadata, hashes } = generation;
+    assertSourceHtmlAbsence({ ...metadata, kind: "webpage" });
+    if (metadata.artifact_bindings_schema !== "awardping.r2.capture-artifact-bindings.v1" ||
+        !sameTimestamp(metadata.source_html?.capture?.captured_at, generation.capturedAt)) {
+      refuse("r2_source_html_binding_invalid", "Source HTML pointer bindings are incomplete.");
+    }
+    assertSourceHtmlArtifactSlots(metadata.artifact_bindings);
+    const manifest = validateObjectManifest({ sourceId: source.id, kind: "webpage", captureProfile: SOURCE_HTML_PROFILE, objectKeys: generation.objectKeys });
+    const artifacts = [];
+    const send = sendCommand || (createCommand => client.send(createCommand()));
+    // Bound every response by its independently sealed exact byte length.
+    for (const entry of manifest.entries) {
+      const binding = metadata.artifact_bindings[entry.slot];
+      const maxBytes = entry.slot === "html" ? maxRenderedHtmlBytes : 24 * 1024 * 1024;
+      if (!Number.isSafeInteger(binding?.byte_length) || binding.byte_length < 1 || binding.byte_length > maxBytes ||
+          !sha256Pattern.test(String(binding.sha256 || ""))) refuse("r2_source_html_binding_invalid", "Invalid source HTML artifact size/hash.");
+      const head = await send(() => new HeadObjectCommand({ Bucket: bucket, Key: entry.key }), `head ${entry.key}`);
+      if (head?.ContentLength !== binding.byte_length) refuse("r2_object_length_mismatch", "Source HTML HEAD byte count differs from its binding.");
+      const object = await send(() => new GetObjectCommand({ Bucket: bucket, Key: entry.key }), `get ${entry.key}`);
+      if (object?.ContentLength !== binding.byte_length) refuse("r2_object_length_mismatch", "Source HTML GET byte count differs from its binding.");
+      const body = await boundedSourceHtmlBody(object.Body, binding.byte_length);
+      validateObjectResponse({ head, object, body, entry });
+      artifacts.push({ entry, body });
+    }
+    const artifactBySlot = Object.fromEntries(artifacts.map(a => [a.entry.slot, a]));
+    validateAuthoritativeArtifactBindings({ generation, manifest, artifactBySlot });
+    const rawMeta = parseJsonBytes(artifactBySlot.meta.body, "r2_meta_json_invalid", "Source HTML metadata is invalid.");
+    const prepared = { artifactBindings: metadata.artifact_bindings,
+      artifacts: artifacts.map(a => ({ name: a.entry.slot, fileName: a.entry.fileName, body: a.body,
+        contentType: authoritativeBindingContentType(a.entry), binding: metadata.artifact_bindings[a.entry.slot] })) };
+    assertSourceHtmlArtifactIdentity(rawMeta, prepared, { sourceId: source.id, verifyLocalPath: false });
+    validateSourceHtmlEvidence(rawMeta, { html: artifactBySlot.html.body, source });
+    for (const field of ["capture_profile", "source_html", "retained_artifact_projection", "final_url", "content_type", "status_code", "text_length"])
+      if (stableJson(rawMeta[field]) !== stableJson(metadata[field])) refuse("r2_source_html_pointer_mismatch", `Source HTML pointer ${field} differs from retained metadata.`);
+    for (const field of ["text_hash", "body_text_hash", "main_content_hash"])
+      if (!sameHash(hashes[field], rawMeta[field])) refuse("r2_source_html_hash_mismatch", `Source HTML pointer ${field} differs from retained metadata.`);
+    for (const field of ["image_hash", "file_hash", "layout_hash"])
+      if (hashes[field] != null) refuse("r2_source_html_browser_claim", "Source HTML pointer claims browser hashes.");
+    if (!sameTimestamp(rawMeta.captured_at, generation.capturedAt)) refuse("r2_meta_captured_at_mismatch", "Source HTML generation time differs from metadata.");
+    if (baseline) {
+      assertSourceHtmlAbsence(baseline);
+      if (baseline.kind !== "webpage" || baseline.source?.id !== source.id || baseline.source?.shared_award_id !== source.shared_award_id || baseline.source?.url !== source.url)
+        refuse("local_baseline_source_mismatch", "The local source HTML baseline identity differs.");
+      for (const field of ["capture_profile", "source_html", "retained_artifact_projection", "text_hash", "body_text_hash", "main_content_hash"])
+        if (stableJson(baseline[field]) !== stableJson(rawMeta[field])) refuse("local_baseline_core_hash_invalid", `Local source HTML ${field} differs.`);
+      if (baseline.source_html_body_hash !== metadata.artifact_bindings.html.sha256) refuse("local_baseline_core_hash_invalid", "Local source HTML body hash differs.");
+      for (const slot of ["text", "html", "meta"])
+        if (baseline.capture?.[slot] !== rawMeta.files[slot]) refuse("local_baseline_path_unsafe", "Local source HTML artifact identity differs.");
+    }
+    const localPaths = {};
+    for (const entry of manifest.entries) {
+      const validated = validateAuthoritativeArchiveArtifactPath({ archiveRoot, sourceId: source.id, archivePath: rawMeta.files[entry.slot], entry });
+      if (finalDir && finalDir !== validated.captureDir) refuse("r2_authoritative_local_path_invalid", "Source HTML files disagree on capture directory.");
+      finalDir = validated.captureDir;
+      localPaths[entry.slot] = validated.archivePath;
+    }
+    const outputBuffers = new Map(artifacts.map(a => [a.entry.fileName, a.body]));
+    const sourceMissing = !pathEntryExists(sourceDir);
+    const sourcesDir = ensureSafeSourcesDirectory(archiveRoot);
+    if (sourceMissing) mkdirSync(sourceDir);
+    validateSafeDirectoryWithin({ archiveRoot, directory: sourceDir, parent: sourcesDir, reason: "local_source_directory_conflict" });
+    const capturesDir = join(sourceDir, "captures");
+    if (!pathEntryExists(capturesDir)) mkdirSync(capturesDir);
+    validateLocalCapturesDirectory({ archiveRoot, sourceDir, capturesDir });
+    const rehydratedBaseline = baseline || {
+      ...rawMeta, source_html_body_hash: metadata.artifact_bindings.html.sha256,
+      capture: { dir: archiveRelative(archiveRoot, finalDir), ...localPaths },
+      summary_metadata: { reason: "exact_source_html_r2_recovery", updated_at: now },
+    };
+    const unchangedBaseline = () => {
+      if (!baseline) {
+        if (pathEntryExists(baselinePath)) refuse("local_baseline_appeared_during_rehydration", "A baseline appeared during source HTML recovery.");
+      } else {
+        validateLocalBaselinePath({ archiveRoot, sourceDir, baselinePath });
+        if (!readFileSync(baselinePath).equals(originalBaselineBytes)) refuse("local_baseline_changed_during_rehydration", "Local baseline changed during source HTML recovery.");
+      }
+    };
+    unchangedBaseline();
+    if (pathEntryExists(finalDir)) validateExistingTarget(finalDir, outputBuffers);
+    else {
+      stageDir = join(capturesDir, `.r2-source-html-${randomUUID()}`);
+      mkdirSync(stageDir);
+      for (const [name, body] of outputBuffers) writeFileSync(join(stageDir, name), body, { flag: "wx" });
+      validateExistingTarget(stageDir, outputBuffers);
+      if (pathEntryExists(finalDir)) refuse("local_rehydration_target_conflict", "Source HTML target appeared during staging.");
+      renameSync(stageDir, finalDir); stageDir = null; createdFinalDir = true;
+    }
+    unchangedBaseline();
+    atomicWriteJson(baselinePath, rehydratedBaseline); committed = true;
+    return { rehydrated: true, reason: "exact_source_html_generation_rehydrated", generation: generation.name,
+      family: manifest.family, version: manifest.version, artifact_count: 3, recovery_scope: "source_html_evidence_only",
+      localization_recovered: false, expansion_localization_recovered: false, localization_status: "source_html_no_screenshot",
+      restored_missing_baseline: !baseline, restored_missing_source_directory: sourceMissing,
+      baseline: rehydratedBaseline, baseline_path: baselinePath, capture_dir: finalDir };
+  } finally {
+    if (stageDir && pathEntryExists(stageDir)) safeRemoveDirectory(stageDir);
+    if (createdFinalDir && !committed && finalDir && pathEntryExists(finalDir)) safeRemoveDirectory(finalDir);
+  }
+}
+
+async function boundedSourceHtmlBody(body, maxBytes) {
+  if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
+    if (body.length !== maxBytes) refuse("r2_object_length_mismatch", "Source HTML body size differs from its binding.");
+    return Buffer.from(body);
+  }
+  if (!body || typeof body[Symbol.asyncIterator] !== "function") refuse("r2_object_body_missing", "Source HTML recovery requires a bounded readable body.");
+  const chunks = []; let length = 0;
+  for await (const chunk of body) {
+    length += chunk.length;
+    if (length > maxBytes) { body.destroy?.(); refuse("r2_object_length_mismatch", "Source HTML body exceeded its sealed size."); }
+    chunks.push(Buffer.from(chunk));
+  }
+  if (length !== maxBytes) refuse("r2_object_length_mismatch", "Source HTML body is incomplete.");
+  return Buffer.concat(chunks);
+}
+
 function validateInputs({ archiveRoot, source, baseline, snapshotRecord, bucket, client, sendCommand }) {
   const root = resolve(String(archiveRoot || "").trim());
   if (!String(archiveRoot || "").trim()) {
@@ -1125,7 +1269,7 @@ function coreHashesMatch(hashes, baseline) {
   return true;
 }
 
-function validateObjectManifest({ sourceId, kind, objectKeys }) {
+function validateObjectManifest({ sourceId, kind, objectKeys, captureProfile = null }) {
   const entries = [];
   const keySet = new Set();
   let family = null;
@@ -1169,7 +1313,11 @@ function validateObjectManifest({ sourceId, kind, objectKeys }) {
     entries.push({ slot, key, ...definition });
   }
 
-  const required = kind === "pdf" ? ["pdf", "text", "meta"] : ["page", "thumb", "text", "meta"];
+  if (captureProfile === SOURCE_HTML_PROFILE) {
+    if (kind !== "webpage") refuse("r2_generation_kind_ambiguous", "Source HTML profile requires webpage kind.");
+    assertSourceHtmlArtifactSlots(objectKeys);
+  }
+  const required = captureProfile === SOURCE_HTML_PROFILE ? ["html", "text", "meta"] : kind === "pdf" ? ["pdf", "text", "meta"] : ["page", "thumb", "text", "meta"];
   for (const slot of required) {
     if (!entries.some((entry) => entry.slot === slot)) {
       refuse("r2_generation_incomplete", `The R2 generation is missing required slot ${slot}.`);

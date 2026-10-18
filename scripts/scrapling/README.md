@@ -1,5 +1,19 @@
 # AwardPing's small Scrapling collector
 
+## October 18 status and source-only HTML
+
+The live worker currently selects 14 HTML pages across nine awards. This is a partial rollout, not all 25 awards. Check `CURRENT_STATE.md` and the installed manifest for the latest verified scope; the dated pilot notes below describe earlier work.
+
+The follow-up implementation adds an explicit per-source `scrapling-source-html-v1` profile for official pages available through ordinary anonymous HTTPS. It uses Scrapling's normal fetcher with bounded, public-only access. It is not an automatic fallback from a challenged browser, does not solve challenges, and does not use cookies, login, impersonation or redirects.
+
+Source-only captures retain three bound files: raw HTML as inert text, complete parsed review text/context, and metadata. They have no screenshot or visibility claim. Changes must match the same profile, retain complete before/after context and pass the existing AI review and publication gates. The website shows the verified summary and official source link; it does not offer a nonexistent screenshot or serve raw HTML. Structural, ambiguous, incomplete and unsupported changes remain held for review.
+
+Five current NSF pages and their repeat captures passed local acquisition checks, including all 48 FAQ answers. That is not source approval, a paid-model accuracy result or live activation. Normal source intake and atomic registration are still required before selecting their returned UUIDs. Intake's bounded source-relevance review is not full-document factual certification. First baselines do not create award updates. Image-only PDFs remain a separate, explicitly limited document path.
+
+Deploy the matching worker, publication/recovery schema and website support before selecting this new profile. Preserve queued reviews and older evidence during any profile migration.
+
+## Earlier pilot notes
+
 This is an isolated **replacement candidate for page acquisition**, not a new production worker. The website, production schedule, baselines, review queue and publication rules are unchanged. The existing HTML and screenshot work is preserved.
 
 The October 15 daily-worker adapter is also local and default-off. It selects only exact reviewed source IDs/URLs and retains the existing PDF path. See [the cutover status](../../docs/scrapling-worker-cutover-20261015.md) for source review, remaining coverage gaps, runtime staging and activation prerequisites; successful pilot captures do not mean the daily worker has switched.

@@ -6,7 +6,7 @@ import {
   type Stage1PublicationEntry,
 } from "@/lib/stage1-publication";
 import type { Database, Json } from "@/lib/database.types";
-import { verifyVisualEventSemanticBindings } from "../../scripts/lib/visual-event-localization.mjs";
+import { verifyVisualEventSemanticBindings, visualChangeSemanticManifest } from "../../scripts/lib/visual-event-localization.mjs";
 
 export type PublicChangeEventVisualEvidence =
   Database["public"]["Tables"]["shared_award_change_event_visual_evidence"]["Row"];
@@ -101,13 +101,19 @@ export function hasPublishableEventVisualEvidence(
     !evidence ||
     evidence.change_event_id !== event.id ||
     evidence.shared_award_id !== event.shared_award_id ||
-    evidence.shared_award_source_id !== event.shared_award_source_id ||
-    !["visual-event-evidence-v1", "visual-event-evidence-v2"].includes(
-      evidence.evidence_schema_version,
-    )
+    evidence.shared_award_source_id !== event.shared_award_source_id
   ) {
     return false;
   }
+  if (evidence.evidence_schema_version === "source-html-event-evidence-v1" ||
+      evidence.evidence_status === "not_applicable_source_html" ||
+      [evidence.previous_capture, evidence.current_capture].some(value => {
+        const capture = jsonObject(value);
+        return capture.kind === "source_html" || capture.capture_profile === "scrapling-source-html-v1";
+      })) {
+    return hasPublishableSourceHtmlEvidence(event, evidence);
+  }
+  if (!["visual-event-evidence-v1", "visual-event-evidence-v2"].includes(evidence.evidence_schema_version)) return false;
 
   if (evidence.evidence_status === "historical_artifact_unrecoverable") {
     const localization = jsonObject(evidence.localization);
@@ -218,6 +224,74 @@ function captureHasImmutableFullAndMetadata(value: Json) {
     typeof capture.captured_at === "string" && Number.isFinite(Date.parse(capture.captured_at));
 }
 
+function hasPublishableSourceHtmlEvidence(
+  event: PublicChangeEventInput["event"], evidence: PublicChangeEventVisualEvidence,
+) {
+  const details = jsonObject(event.change_details), localization = jsonObject(evidence.localization);
+  const sides = jsonObject(localization.sides);
+  if (evidence.evidence_schema_version !== "source-html-event-evidence-v1" ||
+      evidence.evidence_status !== "not_applicable_source_html" || !event.visual_review_candidate_id ||
+      evidence.visual_review_candidate_id !== event.visual_review_candidate_id ||
+      !/^[a-f0-9]{64}$/.test(evidence.candidate_signature || "") || !evidence.bucket ||
+      evidence.verified_at !== null || evidence.backfilled_at !== null ||
+      details.candidate_signature !== evidence.candidate_signature || details.evidence_kind !== "source_html" ||
+      details.capture_profile !== "scrapling-source-html-v1" || localization.direction !== "mixed" ||
+      !exactObjectKeys(localization, ["direction", "semantic_contract", "change_semantics_sha256", "sides"]) ||
+      !exactObjectKeys(sides, ["previous", "current"])) return false;
+  const manifest = visualChangeSemanticManifest(event.change_details);
+  if (localization.semantic_contract !== manifest.contract ||
+      localization.change_semantics_sha256 !== manifest.change_semantics_sha256 ||
+      !manifest.sides.previous.candidates.length || !manifest.sides.current.candidates.length) return false;
+  const previous = jsonObject(evidence.previous_capture), current = jsonObject(evidence.current_capture);
+  for (const sideName of ["previous", "current"] as const) {
+    const capture = sideName === "previous" ? previous : current, side = jsonObject(sides[sideName]);
+    if (!exactObjectKeys(capture, ["kind", "capture_profile", "acquisition", "source_id", "shared_award_id",
+      "source_url", "final_url", "captured_at", "visibility_verified", "screenshot_available", "state_id",
+      "full", "metadata", "text", "capture_hashes"]) ||
+        capture.kind !== "source_html" || capture.capture_profile !== "scrapling-source-html-v1" ||
+        capture.acquisition !== "ordinary_anonymous_http" || capture.source_id !== event.shared_award_source_id ||
+        capture.shared_award_id !== event.shared_award_id || capture.source_url !== event.source_url ||
+        capture.final_url !== event.source_url || !safeSourceHtmlUrl(capture.final_url) ||
+        typeof capture.captured_at !== "string" || !Number.isFinite(Date.parse(capture.captured_at)) ||
+        capture.visibility_verified !== false || capture.screenshot_available !== false || capture.state_id !== null ||
+        !exactObjectKeys(side, ["status", "required", "exact_overlap", "semantic_verified", "reason"]) ||
+        side.status !== "not_applicable_source_html" || side.required !== false || side.exact_overlap !== false ||
+        side.semantic_verified !== false || typeof side.reason !== "string" || !side.reason.trim()) return false;
+    const hashes = jsonObject(capture.capture_hashes);
+    if (!exactObjectKeys(hashes, ["image_hash", "file_hash", "layout_hash", "text_hash", "html_sha256",
+      "source_main_sha256", "document_sha256", "main_document_sha256"]) ||
+        ["image_hash", "file_hash", "layout_hash"].some(key => hashes[key] !== null) ||
+        ["text_hash", "html_sha256", "source_main_sha256", "document_sha256", "main_document_sha256"]
+          .some(key => typeof hashes[key] !== "string" || !/^[a-f0-9]{64}$/.test(hashes[key] as string))) return false;
+    for (const [slot, role, extension, contentType, maxBytes] of [
+      ["full", "source-html", "txt", "text/plain; charset=utf-8", 5 * 1024 * 1024],
+      ["metadata", "metadata", "json", "application/json; charset=utf-8", 24 * 1024 * 1024],
+      ["text", "text", "txt", "text/plain; charset=utf-8", 6 * 1024 * 1024 + 1],
+    ] as const) {
+      const artifact = jsonObject(capture[slot]);
+      if (!exactObjectKeys(artifact, ["object_key", "sha256", "byte_length", "content_type"]) ||
+          typeof artifact.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
+          !Number.isSafeInteger(artifact.byte_length) || (artifact.byte_length as number) < 1 ||
+          (artifact.byte_length as number) > maxBytes || artifact.content_type !== contentType ||
+          artifact.object_key !== `visual-snapshots/published/${event.visual_review_candidate_id}/${sideName}/${role}/${artifact.sha256}.${extension}` ||
+          (slot === "full" && artifact.sha256 !== hashes.html_sha256)) return false;
+    }
+  }
+  return Date.parse(previous.captured_at as string) < Date.parse(current.captured_at as string);
+}
+
+function exactObjectKeys(value: Record<string, unknown>, expected: string[]) {
+  return Object.keys(value).sort().join("\n") === [...expected].sort().join("\n");
+}
+
+function safeSourceHtmlUrl(value: unknown) {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.hash && !url.port && url.href === value;
+  } catch { return false; }
+}
+
 function captureHasFirstObservationAttestation(value: Json) {
   const capture = jsonObject(value);
   const metadata = jsonObject(capture.metadata);
@@ -286,6 +360,10 @@ export function eventVisualEvidencePresentation(
   event: PublicChangeEventInput["event"],
   evidence: PublicChangeEventVisualEvidence,
 ) {
+  if (evidence.evidence_status === "not_applicable_source_html" ||
+      evidence.evidence_schema_version === "source-html-event-evidence-v1") {
+    return { evidenceStatus: "not_applicable_source_html", exactCropAllowed: false, fallbackReason: null } as const;
+  }
   if (evidence.evidence_status === "not_applicable_new_document") {
     return {
       evidenceStatus: "not_applicable_new_document",

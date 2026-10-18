@@ -1,0 +1,301 @@
+{
+  "schema": "awardping.retained-excerpt-regressions.v1",
+  "provenance_report_sha256": "827f68367c02c31a8580611feb2ee572bbd7937f4f579471c6734537e0a0b09e",
+  "limitations": [
+    "Literal short excerpts, not complete pages or native Scrapling captures.",
+    "Structured HTML/visible observations in tests are explicitly reconstructed contracts at synthetic URLs, not historical browser evidence.",
+    "Checks deterministic comparison, packet preservation and response guards; no provider calls, model-accuracy measurement, publication or baseline authorization.",
+    "Source capture hashes and exact UTF-16 excerpt offsets record provenance; normal CI does not access private retained archives."
+  ],
+  "cases": [
+    {
+      "id": "smart-faq-countdown",
+      "expected_human_interpretation": "countdown_only",
+      "provenance": {
+        "kind": "literal_excerpts_from_retained_legacy_captures",
+        "source_id": "203baaf3-2905-4fdf-b4af-af84998195a8",
+        "award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "award_name": "SMART Scholarship-for-Service Program",
+        "source_url": "https://www.smartscholarship.org/smart/en?id=kb_article&sys_id=84f05b02db5ac3006bb8f4b40f9619cc",
+        "before": {
+          "captured_at": "2026-10-18T00:42:40.635Z",
+          "meta_ref": "sources/203baaf3-2905-4fdf-b4af-af84998195a8/captures/2026-10-18T00-42-40-635Z/meta.json",
+          "meta_sha256": "f84ee3c177a6cc586f3b8a3530034785f3498f951fb0e3e0ffcd25c9b0b858d1",
+          "text_ref": "sources/203baaf3-2905-4fdf-b4af-af84998195a8/captures/2026-10-18T00-42-40-635Z/text.txt",
+          "text_file_sha256": "434f1bc89f5bd47d29c04c92c236c3812e1f96a88d73563ecfe81ee3b6fca06e",
+          "normalized_text_sha256": "f6818d50ef89a3f11aacd5a97cd81057391bca54b219c33fd2d0e2bfe58f0800"
+        },
+        "after": {
+          "captured_at": "2026-10-18T15:49:02.941Z",
+          "meta_ref": "sources/203baaf3-2905-4fdf-b4af-af84998195a8/captures/2026-10-18T15-49-02-941Z/meta.json",
+          "meta_sha256": "bcd23f7ef21c6b8f61906f837e01c35c79c22ce1ef694ff19b87263835d0c370",
+          "text_ref": "sources/203baaf3-2905-4fdf-b4af-af84998195a8/captures/2026-10-18T15-49-02-941Z/text.txt",
+          "text_file_sha256": "92cf7959bdd441d23a9a09858782b5bd991b6b4cff99d4e18d2f6265005cdce7",
+          "normalized_text_sha256": "faaabe99a1c8d8176c018d05a4ab9d03dd25380f24ad49119268c1314fdf466f"
+        }
+      },
+      "blocks": [
+        {
+          "before": {
+            "text": "APPLICATION CLOSES IN: DAYS47 HOURS21 MINUTES17",
+            "first_utf16_offset_in_normalized_text": 99,
+            "sha256": "df2a88711c097593dfab1c36ec8e2140392342ac6b9ad0503784f4336ee78d8a"
+          },
+          "after": {
+            "text": "APPLICATION CLOSES IN: DAYS47 HOURS06 MINUTES10",
+            "first_utf16_offset_in_normalized_text": 99,
+            "sha256": "2594096433e461e99e69a66e4316f94bb00a0bdd14a0ba5e819a31defc8c97c3"
+          }
+        },
+        {
+          "before": {
+            "text": "The application cycle opens annually on August 1 and closes on the first Friday in December.",
+            "first_utf16_offset_in_normalized_text": 711,
+            "sha256": "20a51eb0e2ff31dc910cd14da88754a6c8e2c76ff1638966c23f89b3a0933cfb"
+          },
+          "after": {
+            "text": "The application cycle opens annually on August 1 and closes on the first Friday in December.",
+            "first_utf16_offset_in_normalized_text": 711,
+            "sha256": "20a51eb0e2ff31dc910cd14da88754a6c8e2c76ff1638966c23f89b3a0933cfb"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smart-home-countdown",
+      "expected_human_interpretation": "countdown_only",
+      "provenance": {
+        "kind": "literal_excerpts_from_retained_legacy_captures",
+        "source_id": "58aefec0-0d42-4b7b-9887-60d25940b3d0",
+        "award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "award_name": "SMART Scholarship-for-Service Program",
+        "source_url": "https://www.smartscholarship.org/smart",
+        "before": {
+          "captured_at": "2026-10-18T00:43:01.297Z",
+          "meta_ref": "sources/58aefec0-0d42-4b7b-9887-60d25940b3d0/captures/2026-10-18T00-43-01-297Z/meta.json",
+          "meta_sha256": "ff0550e94ad053320abfd165ca848704ae3502ab4c67c8b540368fe1ee09e9f5",
+          "text_ref": "sources/58aefec0-0d42-4b7b-9887-60d25940b3d0/captures/2026-10-18T00-43-01-297Z/text.txt",
+          "text_file_sha256": "ddb0ef4107bbba235e7b56e6d00187ba0ffbb9d7df713b31c88a1779c23af41b",
+          "normalized_text_sha256": "ec3a9cf79c4c38a9b9a4b3df82ccbe3f0ba15e99f8b1887e48a42580bc0710c4"
+        },
+        "after": {
+          "captured_at": "2026-10-18T15:49:22.769Z",
+          "meta_ref": "sources/58aefec0-0d42-4b7b-9887-60d25940b3d0/captures/2026-10-18T15-49-22-769Z/meta.json",
+          "meta_sha256": "69b08785f224c9b2848c2866648f2d57056b4584ba4210584b9c6a8af2d5ae21",
+          "text_ref": "sources/58aefec0-0d42-4b7b-9887-60d25940b3d0/captures/2026-10-18T15-49-22-769Z/text.txt",
+          "text_file_sha256": "f5a28e75661c1bf2d9f9f6edc8d62ba2b96d9f6f60bb64cd77742801440f75e6",
+          "normalized_text_sha256": "e9c40357e2296a9acd99fe30a2e089b868cc15b939c7383bca71899234e2f204"
+        }
+      },
+      "blocks": [
+        {
+          "before": {
+            "text": "APPLICATION CLOSES IN: DAYS47 HOURS21 MINUTES16",
+            "first_utf16_offset_in_normalized_text": 99,
+            "sha256": "460ec20dc6f28e56e943e8b3932c95207316f4db231ad3006a69111de5e424ec"
+          },
+          "after": {
+            "text": "APPLICATION CLOSES IN: DAYS47 HOURS06 MINUTES10",
+            "first_utf16_offset_in_normalized_text": 99,
+            "sha256": "2594096433e461e99e69a66e4316f94bb00a0bdd14a0ba5e819a31defc8c97c3"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smart-expanded-enrollment-date",
+      "expected_human_interpretation": "substantive_change_with_countdown",
+      "provenance": {
+        "kind": "literal_excerpts_from_retained_legacy_captures",
+        "source_id": "c33cc2f4-2cbd-458c-b630-537eb3d50f72",
+        "award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "award_name": "SMART Scholarship-for-Service Program",
+        "source_url": "https://www.smartscholarship.org/smart/en?id=smart_eligibility",
+        "before": {
+          "captured_at": "2026-08-31T01:39:38.142Z",
+          "meta_ref": "sources/c33cc2f4-2cbd-458c-b630-537eb3d50f72/captures/2026-08-31T01-39-38-142Z/meta.json",
+          "meta_sha256": "4070d4d61500bb144e7f455a723f020a884a7fa3dfe16227567f8c8254690ce4",
+          "text_ref": "sources/c33cc2f4-2cbd-458c-b630-537eb3d50f72/captures/2026-08-31T01-39-38-142Z/text.txt",
+          "text_file_sha256": "4d6e521e5ee25803a56d445521050310550cfc7d49646442d75ac3304ef7217b",
+          "normalized_text_sha256": "a497c6a4a0ddbc10d15f5e9fd937d78ce8e46cc24024d5bfc68be69311f71293"
+        },
+        "after": {
+          "captured_at": "2026-10-18T15:55:23.839Z",
+          "meta_ref": "sources/c33cc2f4-2cbd-458c-b630-537eb3d50f72/captures/2026-10-18T15-55-23-839Z/meta.json",
+          "meta_sha256": "7f74809bbd5624324492e4b865734b53bf6eb948744d662d04bc3fd166645dcb",
+          "text_ref": "sources/c33cc2f4-2cbd-458c-b630-537eb3d50f72/captures/2026-10-18T15-55-23-839Z/text.txt",
+          "text_file_sha256": "e355e36dc8a3d21e72e7c2c42216116cf1a0a687ef1115708300dd520f4e5f23",
+          "normalized_text_sha256": "ad362ff4251221e7b9b34bf7e81820db003378ed537da7905de7276280ab0671"
+        }
+      },
+      "blocks": [
+        {
+          "before": {
+            "text": "APPLICATION CLOSES IN: DAYS95 HOURS20 MINUTES19",
+            "first_utf16_offset_in_normalized_text": 99,
+            "sha256": "78af376855a62a28cba899a1ab30deccd06d4cf3497384a7292098b06fec5fc0"
+          },
+          "after": {
+            "text": "APPLICATION CLOSES IN: DAYS47 HOURS06 MINUTES03",
+            "first_utf16_offset_in_normalized_text": 99,
+            "sha256": "5e33d5ea47807fedec63379c24916d8ebb0a91d3b21a7a53f1d38e7e16f5cc44"
+          }
+        },
+        {
+          "before": {
+            "text": "SMART Scholarship applicants must be enrolled in a regionally accredited U.S. college or university by the program's start date, 2027. This means graduate students and incoming college freshmen who are not currently enrolled in a college or university are still eligible to apply.",
+            "first_utf16_offset_in_normalized_text": 3971,
+            "sha256": "d8ac38450399e282b326bb5d47ceb060dbdc9312f1e1447e05b77a117b5f5510"
+          },
+          "after": {
+            "text": "SMART Scholarship applicants must be enrolled in a regionally accredited U.S. college or university by the program's start date, August 1, 2027. This means graduate students and incoming college freshmen who are not currently enrolled in a college or university are still eligible to apply.",
+            "first_utf16_offset_in_normalized_text": 3971,
+            "sha256": "1067523e542f5a30e624ff97a50a5c53d7b8d05c74c5dd90424b8582b507eae2"
+          },
+          "details_context": {
+            "before": {
+              "text": "Are there additional educational requirements?",
+              "first_utf16_offset_in_normalized_text": 3923,
+              "sha256": "fbdd701715f3bfd0af23f31856cddcd16de2d2ec888a6e7c333b8a6e36af447c"
+            },
+            "after": {
+              "text": "Are there additional educational requirements?",
+              "first_utf16_offset_in_normalized_text": 3923,
+              "sha256": "fbdd701715f3bfd0af23f31856cddcd16de2d2ec888a6e7c333b8a6e36af447c"
+            }
+          }
+        },
+        {
+          "before": {
+            "text": "Active-duty military members who wish to apply must be separated or on terminal leave on or before August 1, 2027. Reserve and National Guard members are eligible to apply. Current Reserve Officers’ Training Corps (ROTC) participants with a future service commitment are not eligible to apply.",
+            "first_utf16_offset_in_normalized_text": 4541,
+            "sha256": "8df01f231298f368ad4b950fe0a42ec920bd03056963c02615c6ee93c0b41061"
+          },
+          "after": {
+            "text": "Active-duty military members who wish to apply must be separated or on terminal leave on or before August 1, 2027. Reserve and National Guard members are eligible to apply. Current Reserve Officers’ Training Corps (ROTC) participants with a future service commitment are not eligible to apply.",
+            "first_utf16_offset_in_normalized_text": 4551,
+            "sha256": "8df01f231298f368ad4b950fe0a42ec920bd03056963c02615c6ee93c0b41061"
+          },
+          "details_context": {
+            "before": {
+              "text": "Are military members eligible?",
+              "first_utf16_offset_in_normalized_text": 4509,
+              "sha256": "d215e2f662d2337c95a7c04aa0264ea00d0ad1f805a898d14349a0444747c6a7"
+            },
+            "after": {
+              "text": "Are military members eligible?",
+              "first_utf16_offset_in_normalized_text": 4519,
+              "sha256": "d215e2f662d2337c95a7c04aa0264ea00d0ad1f805a898d14349a0444747c6a7"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "yenching-interview-and-degree-precision",
+      "expected_human_interpretation": "substantive_change_with_date_precision_uncertainty",
+      "provenance": {
+        "kind": "literal_excerpts_from_retained_legacy_captures",
+        "source_id": "c28878c0-6a8b-5fa8-b99b-ec826b86d8f2",
+        "award_id": "2da1b35d-fe8b-46cd-bc4b-b099e0fd1363",
+        "award_name": "Yenching Academy",
+        "source_url": "https://yenchingacademy.pku.edu.cn/ADMISSIONS/Frequently_Asked_Questions.htm",
+        "before": {
+          "captured_at": "2026-08-21T16:14:16.105Z",
+          "meta_ref": "sources/c28878c0-6a8b-5fa8-b99b-ec826b86d8f2/captures/2026-08-21T16-14-16-105Z/meta.json",
+          "meta_sha256": "4340cbeb8b626461febdb43631dced3e72193981add3810cba1e52448b302c42",
+          "text_ref": "sources/c28878c0-6a8b-5fa8-b99b-ec826b86d8f2/captures/2026-08-21T16-14-16-105Z/text.txt",
+          "text_file_sha256": "6b0ea121f9ec5853cba5893b7dc9b84e2830b6831a2a37893ff7236befaa7f3d",
+          "normalized_text_sha256": "1b79847e5fb1e68af95d91563f84157c6d3cba325e97cde1d870fdd3878d3d63"
+        },
+        "after": {
+          "captured_at": "2026-10-18T15:54:48.294Z",
+          "meta_ref": "sources/c28878c0-6a8b-5fa8-b99b-ec826b86d8f2/captures/2026-10-18T15-54-48-294Z/meta.json",
+          "meta_sha256": "77a03ffea19ba99a2700cf6068491b56c430b9bfacb00f636702ecccfce093b4",
+          "text_ref": "sources/c28878c0-6a8b-5fa8-b99b-ec826b86d8f2/captures/2026-10-18T15-54-48-294Z/text.txt",
+          "text_file_sha256": "1af285a9718c123bec3660d625d75cbfbd39e5c16da769b235c37beb1df1d009",
+          "normalized_text_sha256": "355ede30c87e3a1ffea010ebefd6b2c28ccc58995254389dc530720a29b9a515"
+        }
+      },
+      "blocks": [
+        {
+          "before": {
+            "text": "Peking University does not allow students to be enrolled in other degree programs whilst studying at the university. Therefore, applicants must ensure that your degree is awarded no later than August 31 of the year in which you wish to enroll.",
+            "first_utf16_offset_in_normalized_text": 234,
+            "sha256": "2ff493b2047d949751b87807f111a68730691de437fccdc61cd69f5dceeadec0"
+          },
+          "after": {
+            "text": "Peking University does not permit students to be concurrently enrolled in any other degree program. Therefore, applicants must ensure that their degree is awarded no later than August of the intended enrollment year.",
+            "first_utf16_offset_in_normalized_text": 234,
+            "sha256": "9e117193dbbbac41a8650d3985165f1ae5d1632562a5736128f94f675951266c"
+          }
+        },
+        {
+          "before": {
+            "text": "All Chinese candidates, including those from China’s Hong Kong, Macao and Taiwan Regions (HMT), must attend interviews in person at Peking University. International candidates can attend interviews online or in person. Finalists will be contacted approximately one week in advance of the interview date.",
+            "first_utf16_offset_in_normalized_text": 1822,
+            "sha256": "54490e36601b01307f8bab213100a493f4c44b9af54e8eed4d1f0be6f3d454f4"
+          },
+          "after": {
+            "text": "All Chinese candidates, including those from the HMT regions, are required to attend their interview in person at Peking University. International candidates will be interviewed online. Finalists will be contacted approximately one week before their interview date.",
+            "first_utf16_offset_in_normalized_text": 1769,
+            "sha256": "3a28c2a946f95265606d0dc374b2316a74f5958bc9303ce9bdc9940de4bc76e2"
+          }
+        }
+      ]
+    },
+    {
+      "id": "goldwater-transcripts-editorial",
+      "expected_human_interpretation": "editorial_clarification_not_new_acceptance",
+      "provenance": {
+        "kind": "literal_excerpts_from_retained_legacy_captures",
+        "source_id": "de16f688-8516-408b-83e2-3b7809f2c032",
+        "award_id": "4a2c1160-d5bc-41db-b645-d51030585275",
+        "award_name": "Barry Goldwater Scholarship",
+        "source_url": "https://goldwaterscholarship.gov/students/nomination/",
+        "before": {
+          "captured_at": "2026-08-31T00:58:00.363Z",
+          "meta_ref": "sources/de16f688-8516-408b-83e2-3b7809f2c032/captures/2026-08-31T00-58-00-363Z/meta.json",
+          "meta_sha256": "a7213357be09b26f047717eb47ee5c01022a6e8955c3af62e7cc66945e2c570d",
+          "text_ref": "sources/de16f688-8516-408b-83e2-3b7809f2c032/captures/2026-08-31T00-58-00-363Z/text.txt",
+          "text_file_sha256": "3f0cf10f1ead65bb32651258c911a296c51c7b8806039b6c18be2ed28cc4912a",
+          "normalized_text_sha256": "f4a9b6f810406beed833aac6e0c968485e1d530d7d0fb9b136088e34b179c280"
+        },
+        "after": {
+          "captured_at": "2026-10-18T15:54:43.466Z",
+          "meta_ref": "sources/de16f688-8516-408b-83e2-3b7809f2c032/captures/2026-10-18T15-54-43-466Z/meta.json",
+          "meta_sha256": "e180c7e02ca583084d760f38e526f22eb4364fac0c1d077714d5162c7de71648",
+          "text_ref": "sources/de16f688-8516-408b-83e2-3b7809f2c032/captures/2026-10-18T15-54-43-466Z/text.txt",
+          "text_file_sha256": "18086783987b576e11b01ade11b6e11f12009430b91a0b154dc9ccc6bfad2c10",
+          "normalized_text_sha256": "d592ef8dd8a3e56b7fb65cb275f077287f76ef3c84eed987b010307b470240ac"
+        }
+      },
+      "blocks": [
+        {
+          "before": {
+            "text": "Official or unofficial transcripts are acceptable.",
+            "first_utf16_offset_in_normalized_text": 9111,
+            "sha256": "b5ac514172c4c8ec7a415a6b4bfbf170e9bcdf7e7bf9800dbfe84d9a52d7493a"
+          },
+          "after": {
+            "text": "Official and unofficial transcripts are both accepted.",
+            "first_utf16_offset_in_normalized_text": 7001,
+            "sha256": "366c02664967897784e65adbe9ae74e31dddd4fa2cff35a287df38257749e45c"
+          }
+        },
+        {
+          "before": {
+            "text": "Transcripts must not be password protected: password-protected files cannot be opened by the Foundation and will make your nomination incomplete. Every transcript must show your name and the institution’s name, be easily readable, and include the transcript key.",
+            "first_utf16_offset_in_normalized_text": 9162,
+            "sha256": "1471246f32689a8fdc79ff8e33dec772662fb53741f212ea0897533a922a00ee"
+          },
+          "after": {
+            "text": "Transcripts must not be password protected: password-protected files cannot be opened by the Foundation and will make your nomination incomplete. Every transcript must show your name and the institution’s name, be easily readable, and include the transcript key.",
+            "first_utf16_offset_in_normalized_text": 9237,
+            "sha256": "1471246f32689a8fdc79ff8e33dec772662fb53741f212ea0897533a922a00ee"
+          }
+        }
+      ]
+    }
+  ]
+}

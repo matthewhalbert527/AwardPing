@@ -6,6 +6,7 @@ import { finalizeCaptureNetworkBoundary } from "./capture-resource-limits.mjs";
 
 export const scraplingCaptureProfile = "scrapling-visible-v1";
 export const scraplingEvidenceProfile = "scrapling-evidence-v1";
+export const scraplingSourceHtmlProfile = "scrapling-source-html-v1";
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const fail = (reason) => { throw Object.assign(new Error(reason), { pilotReason: reason }); };
 const isText = (value, max = 250000) => typeof value === "string" && value.length <= max;
@@ -38,9 +39,8 @@ function jpegDimensions(bytes) {
   fail("invalid_screenshot");
 }
 
-function validateEvidence(record) {
-  const doc = record.html_document;
-  if (doc?.schema !== "awardping.scrapling-html-document.v1" || doc.scope !== "html-source-main-document" ||
+function validateHtmlDocument(doc, record, scope = "html-source-main-document") {
+  if (doc?.schema !== "awardping.scrapling-html-document.v1" || doc.scope !== scope ||
       doc.source_url !== record.final_url || doc.publishable !== false || doc.visibility_verified !== false ||
       !isText(doc.title, 10000) || !isText(doc.text) || !doc.text.trim() || !textList(doc.limitations) ||
       !textList(doc.base_hrefs) || doc.base_hrefs.length > 100 ||
@@ -60,6 +60,11 @@ function validateEvidence(record) {
         !headingPath(link.heading_path) || !textList(link.list_path)) fail("invalid_html_link");
     if (Object.hasOwn(link, "details_path") && (!textList(link.details_path) || !link.details_path.length || link.details_path.length > 100)) fail("invalid_html_link");
   }
+}
+
+function validateEvidence(record) {
+  const doc = record.html_document;
+  validateHtmlDocument(doc, record);
   if (!Array.isArray(record.html_links) || record.html_links.length > 10000 ||
       Buffer.byteLength(JSON.stringify(record.html_links), "utf8") > 5 * 1024 * 1024) fail("invalid_html_discovery_links");
   for (const link of record.html_links) {
@@ -107,15 +112,53 @@ function validateEvidence(record) {
     screenshot_metadata_sha256: digest(JSON.stringify(metadata)) };
 }
 
+function validateSourceHtmlCapture(record) {
+  const allowed = new Set(["schema", "capture_profile", "source_id", "url", "final_url", "captured_at", "status_code",
+    "content_type", "html", "html_document", "source_main_document", "source_http", "warnings", "engine", "integrity", "publishable"]);
+  if (Object.keys(record).some(key => !allowed.has(key)) || record.status_code !== 200 ||
+      !record.url.startsWith("https://") || record.final_url !== record.url ||
+      (Object.hasOwn(record, "publishable") && record.publishable !== false)) fail("invalid_source_html_contract");
+  if (!isText(record.html, 5 * 1024 * 1024) || Buffer.byteLength(record.html, "utf8") > 5 * 1024 * 1024 ||
+      record.html.length < 20 || record.html.includes("\0") || Buffer.from(record.html, "utf8").toString("utf8") !== record.html) fail("invalid_capture_content");
+  const charset = /charset\s*=\s*["']?([^\s;"']+)/i.exec(record.content_type);
+  if (charset && !["utf-8", "utf8"].includes(charset[1].toLowerCase())) fail("source_html_unsupported_encoding");
+  validateHtmlDocument(record.html_document, record);
+  validateHtmlDocument(record.source_main_document, record, "html-source-main-element");
+  if (record.source_main_document.text.trim().length < 200) fail("source_html_insufficient_main_text");
+  const http = record.source_http;
+  const httpKeys = ["schema", "method", "response_complete", "redirect_count", "body_encoding", "content_encoding",
+    "body_byte_length", "body_sha256", "acquisition", "visibility_verified", "screenshot_available"];
+  if (!http || Object.keys(http).length !== httpKeys.length || httpKeys.some(key => !Object.hasOwn(http, key)) ||
+      http.schema !== "awardping.scrapling-source-http.v1" || http.method !== "GET" || http.response_complete !== true ||
+      http.redirect_count !== 0 || http.body_encoding !== "utf-8" || http.content_encoding !== "identity" ||
+      http.acquisition !== "ordinary_anonymous_http" || http.visibility_verified !== false || http.screenshot_available !== false ||
+      http.body_byte_length !== Buffer.byteLength(record.html, "utf8") || http.body_sha256 !== digest(record.html)) fail("invalid_source_http_binding");
+  const engine = record.engine;
+  if (!engine || Object.keys(engine).length !== 5 || engine.scrapling !== "0.4.15" || engine.client !== "Fetcher" ||
+      engine.adaptive !== false || engine.stealth !== false || engine.impersonation !== false || !textList(record.warnings) ||
+      !record.warnings.includes("source_html_only_not_browser_visible_or_screenshot_evidence") ||
+      !record.warnings.includes("linked_documents_forms_and_client_loaded_content_not_fetched")) fail("invalid_source_html_engine");
+  const semantic = doc => Object.fromEntries(["title", "text", "blocks", "links", "base_hrefs"].map(key => [key, doc[key]]));
+  const integrity = { html_sha256: digest(record.html), html_document_sha256: digest(JSON.stringify(record.html_document)),
+    source_main_document_sha256: digest(JSON.stringify(record.source_main_document)), source_http_sha256: digest(JSON.stringify(http)),
+    document_sha256: digest(JSON.stringify(semantic(record.html_document))),
+    main_document_sha256: digest(JSON.stringify(semantic(record.source_main_document))) };
+  if (record.integrity && (Object.keys(record.integrity).length !== Object.keys(integrity).length ||
+      Object.entries(integrity).some(([key, value]) => record.integrity[key] !== value))) fail("capture_integrity_mismatch");
+  if (Buffer.byteLength(JSON.stringify(record), "utf8") >= 24 * 1024 * 1024) fail("collector_output_limit");
+  return { ...record, integrity, publishable: false };
+}
+
 /** Validate a collector record before retaining it. Does not authorize publishing. */
 export function validateScraplingCapture(record, { source }) {
-  if (!record || record.schema !== "awardping.scrapling-capture.v1" || ![scraplingCaptureProfile, scraplingEvidenceProfile].includes(record.capture_profile) ||
+  if (!record || record.schema !== "awardping.scrapling-capture.v1" || ![scraplingCaptureProfile, scraplingEvidenceProfile, scraplingSourceHtmlProfile].includes(record.capture_profile) ||
       !/^[A-Za-z0-9._-]{1,160}$/.test(record.source_id || "") ||
       record.source_id !== source?.id || record.url !== source?.url || publicUrl(record.url) !== source.url ||
       !Number.isInteger(record.status_code) || record.status_code < 200 || record.status_code >= 300 ||
       !/^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i.test(record.content_type || "") ||
       !/^\d{4}-\d\d-\d\dT/.test(record.captured_at || "") || !Number.isFinite(Date.parse(record.captured_at))) fail("invalid_capture_identity");
   publicUrl(record.final_url);
+  if (record.capture_profile === scraplingSourceHtmlProfile) return validateSourceHtmlCapture(record);
   if (!isText(record.html, 5 * 1024 * 1024) || Buffer.byteLength(record.html, "utf8") > 5 * 1024 * 1024 ||
       record.html.length < 20 || !isText(record.text) || record.text.trim().length < 40) fail("invalid_capture_content");
   if (!isText(record.visible_html, 5 * 1024 * 1024) || Buffer.byteLength(record.visible_html, "utf8") > 5 * 1024 * 1024 ||
@@ -150,7 +193,8 @@ export function validateScraplingCapture(record, { source }) {
 
 /** Differences are review candidates, never an automatic assertion of award change. */
 export function compareScraplingCaptures(previous, current) {
-  const base = { publishable: false, scope: "observed_visible_main_document", accuracy_benchmark: false };
+  const sourceOnly = current?.capture_profile === scraplingSourceHtmlProfile;
+  const base = { publishable: false, scope: sourceOnly ? "observed_source_html_document" : "observed_visible_main_document", accuracy_benchmark: false };
   try {
     if (!previous?.integrity || !current?.integrity) fail("missing_capture_integrity");
     const a = validateScraplingCapture(previous, { source: { id: previous.source_id, url: previous.url } });
@@ -158,6 +202,15 @@ export function compareScraplingCaptures(previous, current) {
     if (a.source_id !== b.source_id || a.url !== b.url || a.final_url !== b.final_url) fail("source_mismatch");
     if (a.capture_profile !== b.capture_profile) fail("capture_profile_mismatch");
     if (Date.parse(a.captured_at) >= Date.parse(b.captured_at)) fail("capture_order_invalid");
+    if (sourceOnly) {
+      const limitations = [...new Set([...a.html_document.limitations, ...b.html_document.limitations,
+        ...a.source_main_document.limitations, ...b.source_main_document.limitations, ...a.warnings, ...b.warnings])];
+      const equal = a.integrity.document_sha256 === b.integrity.document_sha256 && a.integrity.main_document_sha256 === b.integrity.main_document_sha256;
+      return { ...base, status: equal ? "unchanged" : "changed_needs_review", reason: equal ? "source_html_semantics_equal" : "source_html_semantics_differ",
+        visibility_verified: false, screenshot_available: false, limitations,
+        fields: equal ? [] : ["html_document", "source_main_document"].filter(key =>
+          ["title", "text", "blocks", "links", "base_hrefs"].some(field => JSON.stringify(a[key][field]) !== JSON.stringify(b[key][field]))) };
+    }
     const limitations = [...new Set([...a.document.limitations, ...b.document.limitations, ...a.warnings, ...b.warnings])];
     if (a.integrity.document_sha256 === b.integrity.document_sha256) return { ...base, status: "unchanged", reason: "observed_content_equal", limitations };
     const fields = ["title", "text", "blocks", "links"].filter((key) => JSON.stringify(a.document[key]) !== JSON.stringify(b.document[key]));
@@ -171,9 +224,11 @@ export function compareScraplingCaptures(previous, current) {
 /** Scrapling owns fetching/extraction; this small bridge retains the existing egress boundary. */
 export async function captureScraplingSource(source, { pythonPath, executablePath, timeoutMs = 90000, captureProfile = scraplingCaptureProfile } = {}) {
   publicUrl(source.url);
-  if (!pythonPath || !executablePath || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000 ||
-      ![scraplingCaptureProfile, scraplingEvidenceProfile].includes(captureProfile)) fail("invalid_runtime_options");
-  const maxBytes = 60 * 1024 * 1024;
+  const sourceOnly = captureProfile === scraplingSourceHtmlProfile;
+  if (!pythonPath || (!sourceOnly && !executablePath) || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000 ||
+      ![scraplingCaptureProfile, scraplingEvidenceProfile, scraplingSourceHtmlProfile].includes(captureProfile)) fail("invalid_runtime_options");
+  if (sourceOnly && !source.url.startsWith("https://")) fail("source_html_https_identity_required");
+  const maxBytes = (sourceOnly ? 6 : 60) * 1024 * 1024;
   const proxy = await startPublicNetworkProxy({ timeoutMs: 15000, maxResponseBytes: maxBytes });
   const checkpoint = proxy.policyCheckpoint();
   let result;
@@ -196,7 +251,8 @@ function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, tim
     const env = Object.fromEntries(["SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PATH", "COMSPEC", "PATHEXT"]
       .filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
     env.PYTHONUTF8 = "1";
-    const child = spawn(pythonPath, [fileURLToPath(new URL("../scrapling/collector.py", import.meta.url))], {
+    env.PYTHONDONTWRITEBYTECODE = "1";
+    const child = spawn(pythonPath, ["-B", fileURLToPath(new URL("../scrapling/collector.py", import.meta.url))], {
       windowsHide: true, shell: false, env, stdio: ["pipe", "pipe", "pipe"],
     });
     let output = [];
@@ -234,7 +290,7 @@ function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, tim
         resolve(value);
       } catch (error) { reject(error?.pilotReason ? error : Object.assign(new Error("invalid_collector_output"), { pilotReason: "invalid_collector_output" })); }
     });
-    child.stdin.end(JSON.stringify({ url: source.url, source_id: source.id, proxy_url: proxyUrl, executable_path: executablePath,
-      ...(captureProfile === scraplingEvidenceProfile ? { capture_profile: captureProfile } : {}) }));
+    child.stdin.end(JSON.stringify({ url: source.url, source_id: source.id, proxy_url: proxyUrl, executable_path: executablePath || "",
+      ...(captureProfile !== scraplingCaptureProfile ? { capture_profile: captureProfile } : {}) }));
   });
 }

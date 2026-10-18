@@ -16,6 +16,8 @@ import {
 import { sourceBaselineFacts, sourceQualityDecision } from "./source-quality.mjs";
 import { assertRenderedHtmlArtifactIdentity } from "./r2-capture-artifact-bindings.mjs";
 import { temporalContextAmbiguityDecision } from "./visual-review-temporal-context.mjs";
+import { SOURCE_HTML_PROFILE, validateSourceHtmlEvidence, sourceHtmlReviewText } from "./source-html-evidence.mjs";
+import { sourceHtmlReviewPairingVerified } from "./source-html-review-contract.mjs";
 
 export const visualReviewResponseSchema = {
   type: "object",
@@ -874,6 +876,10 @@ export function buildVisualReviewPromptText(payload) {
     stableJsonStringify(payload.deterministic_classification || {}),
     "",
     "Deterministic diff summary:",
+    ...(payload.deterministic_diff?.scrapling_semantics?.capture_profile === SOURCE_HTML_PROFILE ? [
+      "HTML-only evidence: these captures are complete ordinary HTTP responses, not browser-visible pages. No screenshot was collected. Never claim a visual change, highlight location, form interaction or client-loaded content.",
+      "Changed blocks are paired within the full source and its main element. Read all retained audience, cycle, exception and conflicting-date context. Reject hidden/stale/ambiguous source claims rather than treating source markup as proof of current eligibility.",
+    ] : []),
     ...(payload.text_context_representation === "lossless_shared_context" ? [
       "Lossless shared context: current_source_prose and current_context contain the COMPLETE current source text and structured context, not selected excerpts.",
       "Unchanged context is shared by both snapshots. All previous values are retained in removed_text, aligned with added_text and changed_block_indices; previous_prose_replacements also reconstruct the previous prose exactly. The complete previous page is not quoted separately.",
@@ -1162,6 +1168,8 @@ export function changeDetailsFromVisualBatchResult({ candidate, source, result, 
   const publicClaims = evidenceDerivedPublicClaims({ candidate, result, structuredDiff });
   const sectionContext = candidate?.prompt_payload?.section_context || null;
   return {
+    ...(sourceHtmlReviewPairingVerified(candidate, deterministicDiff)
+      ? { evidence_kind: "source_html", capture_profile: SOURCE_HTML_PROFILE } : {}),
     reader_summary: publicClaims.reader_summary,
     before: publicClaims.before,
     after: publicClaims.after,
@@ -1267,6 +1275,7 @@ export function stableJsonStringify(value) {
 }
 
 function snapshotRef(captureLike, hashLike, archiveRelative) {
+  const sourceOnly = (captureLike?.capture_profile || captureLike?.meta?.capture_profile || hashLike?.capture_profile) === SOURCE_HTML_PROFILE;
   const visualStates = snapshotVisualStateRefs(captureLike, hashLike, archiveRelative);
   const mainState = visualStates.find((state) => state.kind === "main") || null;
   const ref = {
@@ -1299,6 +1308,8 @@ function snapshotRef(captureLike, hashLike, archiveRelative) {
       page_count: captureLike?.page_count || null,
       dimensions: captureLike?.dimensions || null,
       hidden_noise_counts: captureLike?.hidden_noise_counts || null,
+      ...((captureLike?.capture_profile || captureLike?.meta?.capture_profile || hashLike?.capture_profile) === SOURCE_HTML_PROFILE
+        ? { capture_profile: SOURCE_HTML_PROFILE } : {}),
       ...((captureLike?.html_capture || captureLike?.meta?.html_capture) ? {
         html_capture: captureLike.html_capture || captureLike.meta.html_capture,
       } : {}),
@@ -1309,6 +1320,17 @@ function snapshotRef(captureLike, hashLike, archiveRelative) {
       localization: captureLike?.localization || captureLike?.location_metadata || null,
     },
   };
+  if (sourceOnly) {
+    if (["page", "thumb", "pdf", "layout"].some(key => ref.local_paths[key])) {
+      throw new Error("Source HTML review cannot discard claimed browser/PDF artifacts.");
+    }
+    ref.capture_profile = SOURCE_HTML_PROFILE;
+    ref.local_paths = {
+      html: pathRef(captureLike?.htmlPath || captureLike?.html_path, archiveRelative),
+      meta: ref.local_paths.meta,
+      text: ref.local_paths.text,
+    };
+  }
   validateSnapshotArtifactSemantics(ref);
   validateCapturedHtmlForReview(captureLike, ref, archiveRelative);
   const artifactManifest = visualSnapshotArtifactManifest(ref);
@@ -1475,6 +1497,26 @@ function validateCapturedHtmlForReview(captureLike, ref, archiveRelative) {
   const paths = objectValue(ref.local_paths);
   const declaration = ref.metadata?.html_capture;
   const htmlPath = captureLike?.htmlPath || captureLike?.html_path;
+  if (ref.metadata?.capture_profile === SOURCE_HTML_PROFILE) {
+    if (!paths.meta?.path || !paths.text?.path || !htmlPath || paths.page || paths.thumb || paths.pdf || paths.layout ||
+        ref.image_hash || ref.file_hash || ref.layout_hash || ref.visual_states.length || declaration) {
+      throw new Error("Source HTML review requires only complete metadata, text and raw HTML evidence.");
+    }
+    const metadata = JSON.parse(readFileSync(paths.meta.path, "utf8"));
+    const record = validateSourceHtmlEvidence(metadata, { html: readFileSync(htmlPath) });
+    if (record.captured_at !== ref.captured_at || record.final_url !== ref.final_url || metadata.text_hash !== ref.text_hash ||
+        ["html", "meta", "text"].some(key => paths[key]?.archive_relative !== metadata.files?.[key]) ||
+        !readFileSync(paths.text.path).equals(Buffer.from(`${sourceHtmlReviewText(record)}\n`))) {
+      throw new Error("Source HTML review artifact identity mismatch.");
+    }
+    ref.metadata.source_html = { schema: "awardping.source-html-review-proof.v1",
+      html_sha256: record.integrity.html_sha256,
+      source_main_sha256: record.integrity.source_main_document_sha256,
+      document_sha256: record.integrity.document_sha256, main_document_sha256: record.integrity.main_document_sha256 };
+    // The sealed metadata capsule binds the supplemental raw HTML. Keep the
+    // database's closed artifact-manifest role set unchanged.
+    return;
+  }
   if (!declaration && !htmlPath) return;
   const metadata = JSON.parse(readFileSync(paths.meta?.path, "utf8"));
   // The database-enforced v1 review manifest has a fixed role set. Bind this
@@ -2009,10 +2051,11 @@ function changedFactEvidenceDecision({ fact, candidate }) {
   const rawAdded = stringArray(diff.added_text), rawRemoved = stringArray(diff.removed_text);
   const semantics = diff.scrapling_semantics;
   const indices = semantics?.changed_block_indices;
+  const sourceOnlyPairing = sourceHtmlReviewPairingVerified(candidate, diff);
   const alignedScrapling = diff.candidate_scope === "scrapling_html_source" &&
     [2, 3, 4].includes(semantics?.version) && semantics?.complete === true &&
     (semantics.version !== 4 || semantics.context_table_reconstruction_verified === true) &&
-    semantics?.visible_prose_corroborated === true && Array.isArray(indices) &&
+    ((semantics?.visible_prose_corroborated === true && semantics?.capture_profile !== SOURCE_HTML_PROFILE) || sourceOnlyPairing) && Array.isArray(indices) &&
     indices.length === rawAdded.length && rawAdded.length === rawRemoved.length &&
     indices.length > 0 && new Set(indices).size === indices.length &&
     indices.every((index) => Number.isSafeInteger(index) && index >= 0);

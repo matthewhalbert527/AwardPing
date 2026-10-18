@@ -1,5 +1,13 @@
 # Scrapling worker cutover: October 15, 2026
 
+## Current checkpoint — October 18
+
+Production is partially switched: 14 verified HTML pages across nine awards, with the original daily schedule and downstream review lanes enabled. Only Gaither's complete finite HTML set is selected so far. Read `CURRENT_STATE.md` for exact deployed/installed identities and remaining source-level holds; development HEAD and the historical notes below are not deployment evidence.
+
+The next isolated release adds an explicit ordinary-HTTPS source-only profile for NSF, exact artifact retention/review/publication/recovery, and honest summary-plus-source presentation without screenshot claims. It also retries unstable expanded-state screenshots using a fresh observation, without accepting mismatched geometry. These follow-up changes are locally tested but not yet installed or activated. The five new NSF URLs must pass normal intake/registration; do not reuse or bypass the historical Stage1 activation protocol. PDFs remain separate.
+
+## Historical October 15 checkpoint
+
 Status: local integration and staged runtime tested; **cutover incomplete and not activated**. The installed worker and its daily 18:00 America/Chicago schedule are unchanged. This document is not deployment evidence.
 
 ## Simple operating model

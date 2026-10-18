@@ -9,6 +9,7 @@ from importlib.metadata import version
 import ipaddress
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import sys
@@ -16,13 +17,15 @@ import time
 from urllib.parse import urlsplit
 
 from scrapling import Selector
-from scrapling.fetchers import DynamicFetcher
+from scrapling.fetchers import DynamicFetcher, Fetcher
+from curl_cffi.curl import CURL_WRITEFUNC_ERROR
 from html_document import HtmlDocumentError, extract_html_document
 
 
 SCHEMA = "awardping.scrapling-capture.v1"
 PROFILE = "scrapling-visible-v1"
 EVIDENCE_PROFILE = "scrapling-evidence-v1"
+SOURCE_HTML_PROFILE = "scrapling-source-html-v1"
 SCRIPT = Path(__file__).with_name("visible-document.js").read_text(encoding="utf-8")
 MAX_BYTES = 5 * 1024 * 1024
 MAX_OUTPUT_BYTES = 24 * 1024 * 1024
@@ -86,6 +89,108 @@ def validate_url(value):
     except (TypeError, ValueError):
         raise CaptureFailure("invalid_public_url") from None
     return value
+
+
+def capture_source_html(request):
+    """One bounded ordinary GET through Node's pinned public-network boundary.
+
+    Never a browser fallback: the caller must explicitly select this profile.
+    Retained source content is not proof of visibility, current facts or pixels.
+    """
+    url = validate_url(request["url"])
+    if urlsplit(url).scheme != "https" or urlsplit(url).fragment:
+        raise CaptureFailure("source_html_https_identity_required")
+    proxy = urlsplit(request["proxy_url"])
+    if (proxy.scheme != "http" or proxy.hostname != "127.0.0.1" or not proxy.port or
+            proxy.username or proxy.password or proxy.path not in ("", "/") or proxy.query or proxy.fragment):
+        raise CaptureFailure("invalid_proxy")
+    # The bridge supplies a sanitized process environment. In particular,
+    # libcurl must never use NO_PROXY to bypass the mandatory local boundary.
+    if any(os.environ.get(key) for key in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")):
+        raise CaptureFailure("source_html_proxy_environment_not_clean")
+    chunks, size, exceeded = [], 0, False
+
+    def receive(chunk):
+        nonlocal size, exceeded
+        size += len(chunk)
+        if size > MAX_BYTES:
+            exceeded = True
+            # curl_cffi treats short writes as successful; use its explicit
+            # abort sentinel, not 0, so the oversized body stops immediately.
+            return CURL_WRITEFUNC_ERROR
+        chunks.append(chunk)
+        return len(chunk)
+
+    try:
+        response = Fetcher.get(url, impersonate=None, stealthy_headers=False,
+            follow_redirects=False, retries=1, timeout=20, verify=True,
+            proxy=request["proxy_url"], cookies={}, discard_cookies=True,
+            default_headers=False, accept_encoding="identity",
+            headers={"User-Agent": "AwardPing/1.0 (+https://awardping.com)", "Accept": "text/html, application/xhtml+xml"},
+            content_callback=receive,
+            selector_config={"adaptive": False, "huge_tree": False, "keep_comments": False, "keep_cdata": False})
+    except Exception:
+        raise CaptureFailure("source_html_body_limit" if exceeded else "source_html_request_failed") from None
+    if exceeded:
+        raise CaptureFailure("source_html_body_limit")
+    if response.status != 200:
+        raise CaptureFailure("source_html_http_status")
+    if response.url != url or response.history:
+        raise CaptureFailure("source_html_redirect_not_allowed")
+    headers = {str(key).lower(): str(value) for key, value in response.headers.items()}
+    content_type = headers.get("content-type", "")
+    if not re.match(r"^(text/html|application/xhtml\+xml)(;|$)", content_type, re.I):
+        raise CaptureFailure("non_html_response")
+    charset = re.search(r"charset\s*=\s*[\"']?([^\s;\"']+)", content_type, re.I)
+    if charset and charset.group(1).lower() not in ("utf-8", "utf8"):
+        raise CaptureFailure("source_html_unsupported_encoding")
+    content_encoding = headers.get("content-encoding", "identity").strip().lower() or "identity"
+    if content_encoding != "identity":
+        raise CaptureFailure("source_html_unsupported_content_encoding")
+    if headers.get("x-amzn-waf-action") or headers.get("cf-mitigated"):
+        raise CaptureFailure("upstream_challenge_response")
+    raw = b"".join(chunks)
+    if not raw or len(raw) != size:
+        raise CaptureFailure("source_html_empty_response")
+    declared_length = headers.get("content-length")
+    if declared_length and (not declared_length.isdigit() or int(declared_length) != len(raw)):
+        raise CaptureFailure("source_html_content_length_mismatch")
+    try:
+        html = raw.decode("utf-8", errors="strict")
+    except UnicodeError:
+        raise CaptureFailure("source_html_unsupported_encoding") from None
+    if CHALLENGE.search(html) or re.search(r"awswaf\.integration|AwsWafIntegration", html, re.I):
+        raise CaptureFailure("upstream_challenge_response")
+    try:
+        document = extract_html_document(html, url)
+        parsed = Selector(html, url=url, adaptive=False, huge_tree=False, keep_comments=False, keep_cdata=False)
+        mains = parsed.css("main")
+        if len(mains) != 1:
+            raise CaptureFailure("source_html_exact_main_required")
+        main_document = extract_html_document("<html><body>" + str(mains[0].html_content) + "</body></html>", url)
+        main_document["scope"] = "html-source-main-element"
+        main_document["limitations"].append("Selected from exactly one source main element; the complete body is retained separately.")
+        if len(main_document["text"].strip()) < 200:
+            raise CaptureFailure("source_html_insufficient_main_text")
+    except HtmlDocumentError as error:
+        raise CaptureFailure(str(error)) from None
+    result = {"schema": SCHEMA, "capture_profile": SOURCE_HTML_PROFILE,
+        "source_id": request["source_id"], "url": url, "final_url": response.url,
+        "captured_at": datetime.now(timezone.utc).isoformat(), "status_code": response.status,
+        "content_type": content_type, "html": html, "html_document": document,
+        "source_main_document": main_document,
+        "source_http": {"schema": "awardping.scrapling-source-http.v1", "method": "GET",
+            "response_complete": True, "redirect_count": 0, "body_encoding": "utf-8",
+            "content_encoding": "identity", "body_byte_length": len(raw),
+            "body_sha256": hashlib.sha256(raw).hexdigest(), "acquisition": "ordinary_anonymous_http",
+            "visibility_verified": False, "screenshot_available": False},
+        "warnings": ["source_html_only_not_browser_visible_or_screenshot_evidence",
+                     "linked_documents_forms_and_client_loaded_content_not_fetched"],
+        "engine": {"scrapling": version("scrapling"), "client": "Fetcher", "adaptive": False,
+                   "stealth": False, "impersonation": False}}
+    if len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) >= MAX_OUTPUT_BYTES:
+        raise CaptureFailure("collector_output_limit")
+    return result
 
 
 def require_document_response_url(observed_url, response):
@@ -551,7 +656,7 @@ def capture(request, fixture=None):
     """fixture is an in-process test seam, never accepted from CLI JSON."""
     url = validate_url(request["url"])
     profile = request.get("capture_profile", PROFILE)
-    if profile not in (PROFILE, EVIDENCE_PROFILE):
+    if profile not in (PROFILE, EVIDENCE_PROFILE, SOURCE_HTML_PROFILE):
         raise CaptureFailure("invalid_capture_profile")
     source_id = request.get("source_id")
     if not isinstance(source_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", source_id):
@@ -559,6 +664,10 @@ def capture(request, fixture=None):
     proxy = urlsplit(request["proxy_url"])
     if proxy.scheme != "http" or proxy.hostname != "127.0.0.1" or not proxy.port or proxy.username or proxy.password:
         raise CaptureFailure("invalid_proxy")
+    if profile == SOURCE_HTML_PROFILE:
+        if fixture is not None:
+            raise CaptureFailure("source_html_browser_fixture_not_allowed")
+        return capture_source_html(request)
     executable = Path(request["executable_path"])
     if not executable.is_absolute() or not executable.is_file():
         raise CaptureFailure("invalid_browser_path")

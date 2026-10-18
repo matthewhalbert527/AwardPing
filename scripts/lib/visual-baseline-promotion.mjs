@@ -27,6 +27,13 @@ import { atomicWriteJson } from "./visual-baseline-lock.mjs";
 import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
 import { advanceVisualSnapshotPointer } from "./visual-snapshot-pointer.mjs";
 import {
+  SOURCE_HTML_PROFILE,
+  assertSourceHtmlAbsence,
+  assertSourceHtmlArtifactSlots,
+  sourceHtmlArtifactProjection,
+  validateSourceHtmlEvidence,
+} from "./source-html-evidence.mjs";
+import {
   rotatedVisualSnapshotHistory,
   visualSnapshotKeysToDeleteAfterCas,
   visualSnapshotUploadedKeysToDeleteAfterLostCas,
@@ -126,6 +133,11 @@ export function promoteApprovedVisualBaselineLocal({
   let capture = canonicalizeApprovedCaptureAuthority(
     captureFromVisualReviewCandidate(candidate, archiveRoot),
   );
+  assertApprovedSourceHtmlSource(capture, source);
+  if (capture.capture_profile === SOURCE_HTML_PROFILE && Object.keys(existingBaseline).length &&
+      existingBaseline.capture_profile !== SOURCE_HTML_PROFILE) {
+    return { promoted: false, reason: "capture_profile_migration_required", baseline_path: baselinePath };
+  }
   const requiredPaths = requiredCapturePaths(capture);
   const missingPaths = requiredPaths.filter((path) => !path || !existsSync(path));
   if (missingPaths.length) {
@@ -197,6 +209,7 @@ export async function promoteApprovedVisualBaselineR2({
 } = {}) {
   if (!capture) return { promoted: false, reason: "missing_local_capture_for_r2" };
   capture = canonicalizeApprovedCaptureAuthority(capture);
+  assertApprovedSourceHtmlSource(capture, source);
   const decision = visualBaselinePromotionDecision({ candidate, approved, snapshot: capture });
   if (!decision.promote) return { promoted: false, ...decision };
   if (!config?.enabled) return { promoted: false, reason: "r2_snapshot_sync_disabled" };
@@ -221,6 +234,10 @@ export async function promoteApprovedVisualBaselineR2({
       .eq("shared_award_source_id", source.id)
       .maybeSingle();
     if (loadError) throw new Error(`Load R2 visual baseline failed: ${loadError.message}`);
+    if (capture.capture_profile === SOURCE_HTML_PROFILE && existing &&
+        existing.latest_metadata?.capture_profile !== SOURCE_HTML_PROFILE) {
+      return { promoted: false, reason: "capture_profile_migration_required" };
+    }
 
     const candidateHashes = captureHashes(capture);
     const requiredSlots = requiredR2Slots(capture);
@@ -426,6 +443,30 @@ export function captureFromVisualReviewCandidate(candidate, archiveRoot) {
   const metaPath = resolvePathRef(paths.meta, safeArchiveRoot);
   const meta = readJsonIfExists(metaPath) || {};
   const metaFiles = objectValue(meta.files);
+  if (meta.capture_profile === SOURCE_HTML_PROFILE || ref.metadata?.capture_profile === SOURCE_HTML_PROFILE) {
+    if (meta.capture_profile !== SOURCE_HTML_PROFILE || ref.metadata?.capture_profile !== SOURCE_HTML_PROFILE ||
+        (ref.capture_profile != null && ref.capture_profile !== SOURCE_HTML_PROFILE) ||
+        ref.kind !== "webpage" || !sameStringSet(Object.keys(paths), ["html", "meta", "text"]) ||
+        (ref.visual_states != null && (!Array.isArray(ref.visual_states) || ref.visual_states.length)) ||
+        ref.image_hash != null || ref.file_hash != null || ref.layout_hash != null ||
+        candidate?.new_image_hash != null || candidate?.new_file_hash != null ||
+        ["html_capture", "text_geometry", "localization", "dimensions", "browser"].some(field => ref.metadata?.[field] != null) ||
+        (candidate?.deterministic_diff?.candidate_scope === "expandable_section") ||
+        (candidate?.shared_award_source_id && candidate.shared_award_source_id !== meta.source?.id) ||
+        ref.captured_at !== meta.captured_at || ref.final_url !== meta.final_url ||
+        ref.text_hash !== meta.text_hash || (candidate?.new_text_hash && candidate.new_text_hash !== meta.text_hash)) {
+      throw new Error("Approved source HTML candidate reference does not match its sealed metadata.");
+    }
+    const capture = {
+      ...meta, archive_root: safeArchiveRoot,
+      dir: resolvePathRef(ref.capture_dir, safeArchiveRoot, { kind: "directory" }),
+      html_path: resolvePathRef(paths.html, safeArchiveRoot),
+      text_path: resolvePathRef(paths.text, safeArchiveRoot), meta_path: metaPath,
+      artifact_bindings: Object.fromEntries(["html", "meta", "text"].map(slot => [slot, artifactBinding(paths[slot])])),
+    };
+    assertSourceHtmlAbsence(capture);
+    return capture;
+  }
   const sectionsJsonPath = resolveArchiveFile(metaFiles.sections_json, safeArchiveRoot);
   const sectionsDocument = readJsonValueIfExists(sectionsJsonPath);
   const expandableSections = Array.isArray(meta.expandable_sections)
@@ -514,6 +555,10 @@ export function captureFromVisualReviewCandidate(candidate, archiveRoot) {
 }
 
 function canonicalizeApprovedCaptureAuthority(capture) {
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) {
+    assertSourceHtmlAbsence(capture);
+    return capture;
+  }
   if (capture.kind === "pdf") return capture;
   const expansionTextLength = requiredApprovedWebpageExpansionTextLength(
     capture.expansion_text_length,
@@ -617,7 +662,7 @@ function approvedMainLayoutExplicitlyUnavailable(capture) {
 }
 
 function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseline, now }) {
-  const expansionTextLength = capture.kind === "pdf"
+  const expansionTextLength = capture.kind === "pdf" || capture.capture_profile === SOURCE_HTML_PROFILE
     ? null
     : requiredApprovedWebpageExpansionTextLength(capture.expansion_text_length, "capture");
   const existingSummary = objectValue(existingBaseline?.summary_metadata);
@@ -636,6 +681,11 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
     capture_behavior_version: capture.capture_behavior_version || null,
     capture_behavior_name: capture.capture_behavior_name || null,
     capture_profile: capture.capture_profile || null,
+    ...(capture.capture_profile === SOURCE_HTML_PROFILE ? {
+      source_html: capture.source_html,
+      source_html_body_hash: capture.source_html.capture.source_http.body_sha256,
+      retained_artifact_projection: capture.retained_artifact_projection,
+    } : {}),
     section_extraction_profile: capture.section_extraction_profile || null,
     source: sourceMetadata,
     captured_at: capture.captured_at,
@@ -948,6 +998,7 @@ function approvedExpansionStatesHash(capture) {
 }
 
 function requiredCapturePaths(capture) {
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) return [capture.html_path, capture.text_path, capture.meta_path];
   if (capture.kind === "pdf") {
     return [capture.pdf_path, capture.text_path, capture.meta_path];
   }
@@ -963,6 +1014,7 @@ function requiredCapturePaths(capture) {
 }
 
 function requiredR2Slots(capture) {
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) return ["html", "text", "meta"];
   if (capture.kind === "pdf") return ["pdf", "text", "meta"];
   return [
     "page",
@@ -986,6 +1038,10 @@ function approvedHtmlClaimed(capture) {
 }
 
 function missingApprovedGeometryMetadata(capture) {
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) {
+    assertSourceHtmlAbsence(capture);
+    return ["text_hash", "source_html"].filter(field => !capture[field]);
+  }
   const projectionMissing = !canonicalApprovedRetainedArtifactProjection(
     capture?.retained_artifact_projection,
   );
@@ -1073,6 +1129,7 @@ function verifyApprovedCaptureArtifacts(capture, { requireR2GeometryReady = fals
   }
 
   const bindings = objectValue(capture.artifact_bindings);
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) assertSourceHtmlArtifactSlots(bindings);
   const verified = new Map();
   for (const file of files) {
     const binding = objectValue(bindings[file.name]);
@@ -1102,6 +1159,13 @@ function verifyApprovedCaptureArtifacts(capture, { requireR2GeometryReady = fals
       sha256: actualSha256,
       byte_length: body.length,
     });
+  }
+
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) {
+    // These raw candidate bindings are checked before revalidating the sealed
+    // response capsule. Source-only evidence never borrows browser geometry.
+    validateSourceHtmlEvidence(capture, { html: verified.get("html")?.body });
+    return verified;
   }
 
   if (capture.kind !== "pdf") {
@@ -1190,6 +1254,15 @@ function verifyApprovedCaptureArtifacts(capture, { requireR2GeometryReady = fals
  * rewrite immutable reviewed evidence to manufacture a missing contract.
  */
 function materializeApprovedRetainedArtifactProjection(capture, verifiedArtifacts) {
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) {
+    const raw = parseApprovedMetadataArtifact(verifiedArtifacts.get("meta")?.body);
+    validateSourceHtmlEvidence(raw, { html: verifiedArtifacts.get("html")?.body, source: capture.source });
+    if (!sameJsonValue(raw.source_html, capture.source_html) ||
+        !sameJsonValue(raw.retained_artifact_projection, sourceHtmlArtifactProjection())) {
+      throw new Error("Approved source HTML raw metadata and capture authority differ.");
+    }
+    return capture;
+  }
   const verifiedGeometry = verifiedApprovedCaptureGeometry.get(capture) || {};
   const projectionCapture = {
     ...capture,
@@ -1305,6 +1378,7 @@ function prepareVerifiedApprovedPublicationArtifacts(capture, verifiedArtifacts,
   });
   const kind = capture.kind === "pdf" ? "pdf" : "webpage";
   assertR2CaptureArtifactSlots(kind, prepared.artifactBindings, {
+    captureProfile: capture.capture_profile,
     layoutClaimed: Boolean(prepared.artifactBindings.layout),
     expansionStateCount: kind === "webpage"
       ? approvedExpansionStateValues(capture).length
@@ -1443,6 +1517,10 @@ function sha256(value) {
 
 function captureHashes(capture) {
   return {
+    ...(capture.capture_profile === SOURCE_HTML_PROFILE ? {
+      capture_profile: SOURCE_HTML_PROFILE,
+      source_html_body_hash: capture.source_html?.capture?.source_http?.body_sha256 || null,
+    } : {}),
     image_hash: capture.image_hash || null,
     text_hash: capture.text_hash || null,
     body_text_hash: capture.body_text_hash || null,
@@ -1458,6 +1536,18 @@ function captureHashes(capture) {
 }
 
 function captureMetadata(capture, artifactBindings) {
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) {
+    return {
+      artifact_bindings_schema: r2CaptureArtifactBindingsSchema, artifact_bindings: artifactBindings,
+      capture_profile: SOURCE_HTML_PROFILE, source_html: capture.source_html,
+      retained_artifact_projection: capture.retained_artifact_projection,
+      final_url: capture.final_url, page_title: capture.page_title || null,
+      status_code: capture.status_code, content_type: capture.content_type,
+      text_length: capture.text_length, text_object_bytes: artifactBindings.text.byte_length,
+      body_text_length: capture.body_text_length, main_content_text_length: capture.main_content_text_length,
+      promoted_by: "process-visual-review-batch",
+    };
+  }
   const kind = capture.kind === "pdf" ? "pdf" : "webpage";
   const expansionTextLength = kind === "webpage"
     ? requiredApprovedWebpageExpansionTextLength(capture.expansion_text_length, "capture")
@@ -1587,6 +1677,10 @@ function approvedR2LocalizationMetadata(capture, layoutHash) {
 }
 
 function assertApprovedR2MetadataContract(capture) {
+  if (capture.capture_profile === SOURCE_HTML_PROFILE) {
+    assertSourceHtmlAbsence(capture);
+    return;
+  }
   if (capture.kind === "pdf") return;
   const layoutHash = normalizedSha256(
     capture.layout_hash || capture.text_geometry?.geometry_hash,
@@ -1655,8 +1749,17 @@ function exactApprovedR2PointerMatches({
   // legacy core with its closed slot contract; exact supplemental HTML identity
   // is checked against the ORIGINAL pointer and byte-verified prepared artifacts
   // below. No Stage-1 caller gains permission to ignore an unknown artifact.
-  const legacyCore = legacyCorePointerForApprovedHtmlIdempotence(existing, prepared);
-  if (!inspectStage1ImmutableR2CaptureBinding(legacyCore).valid) return false;
+  const sourceOnly = expected?.metadata?.capture_profile === SOURCE_HTML_PROFILE;
+  if (sourceOnly) {
+    // The Stage-1 browser contract remains closed. All three source-only
+    // artifacts were independently revalidated above; require their exact typed
+    // metadata rather than manufacturing a screenshot for legacy validation.
+    if (!sameJsonValue(existing?.latest_metadata, expected.metadata) ||
+        !sameJsonValue(existing?.latest_hashes, expected.hashes)) return false;
+  } else {
+    const legacyCore = legacyCorePointerForApprovedHtmlIdempotence(existing, prepared);
+    if (!inspectStage1ImmutableR2CaptureBinding(legacyCore).valid) return false;
+  }
   if (
     cleanText(existing?.shared_award_source_id).toLowerCase()
       !== cleanText(expected?.sourceId).toLowerCase()
@@ -1740,6 +1843,7 @@ function approvedR2ReadinessHashes(value) {
 function approvedR2ReadinessMetadata(kindValue, value) {
   const kind = kindValue === "pdf" ? "pdf" : "webpage";
   const metadata = objectValue(value);
+  if (metadata.capture_profile === SOURCE_HTML_PROFILE) return metadata;
   const identity = {
     ...(metadata.html_capture ? { html_capture: metadata.html_capture } : {}),
     text_length: metadata.text_length,
@@ -1826,6 +1930,10 @@ function sameStringSet(left, right) {
 
 function sameSnapshotHashes(value, expected) {
   const actual = objectValue(value);
+  if (expected?.capture_profile === SOURCE_HTML_PROFILE && (
+    actual.capture_profile !== SOURCE_HTML_PROFILE ||
+    (actual.source_html_body_hash || actual.source_html?.capture?.source_http?.body_sha256) !== expected.source_html_body_hash
+  )) return false;
   const compared = [
     "text_hash",
     "image_hash",
@@ -1862,6 +1970,14 @@ function changesGeometryAuthority(value, expected) {
 function timestampValue(value) {
   const parsed = Date.parse(String(value || ""));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function assertApprovedSourceHtmlSource(capture, source) {
+  if (capture.capture_profile !== SOURCE_HTML_PROFILE) return;
+  if (source?.id !== capture.source?.id || source?.url !== capture.source?.url ||
+      source?.shared_award_id !== capture.source?.shared_award_id) {
+    throw new Error("Approved source HTML promotion source identity mismatch.");
+  }
 }
 
 function readJsonIfExists(path) {

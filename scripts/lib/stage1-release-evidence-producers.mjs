@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { canonicalStage1DiagnosticContentType } from "./stage1-release-diagnostics.mjs";
+import { SOURCE_HTML_PROFILE, sourceHtmlArtifactProjection } from "./source-html-evidence.mjs";
 
 export const stage1ReleaseEvidenceProducerContract =
   "awardping.stage1.release-evidence-producer.v2";
@@ -704,6 +705,8 @@ function validateR2Manifest(value, target) {
       semanticLength,
       contentType,
       generationId: sourceGenerationMatch?.[1] || null,
+      captureProfile: object.capture_profile ?? null,
+      retainedArtifactProjection: object.retained_artifact_projection ?? null,
       referenceCount,
       references,
     };
@@ -849,6 +852,9 @@ function publishedEventPhysicalBindingValid({
   if (storageRole === "document") {
     return contentType === "application/pdf" && extension === "pdf";
   }
+  if (storageRole === "source-html") {
+    return contentType === "text/plain; charset=utf-8" && extension === "txt";
+  }
   if (
     storageRole === "main-full"
     || storageRole === "changed-section-crop"
@@ -970,7 +976,7 @@ function publishedEventReferenceBindingValid({
       && reference.state_kind === "main"
       && storageRole === "main-full";
   }
-  if (reference.role === "full" && storageRole === "document") {
+  if (reference.role === "full" && ["document", "source-html"].includes(storageRole)) {
     return reference.state_id === null && reference.state_kind === null;
   }
   return publishedEventStateStorageRoleValid(reference, storageRole);
@@ -1024,6 +1030,16 @@ function publishedEventReferenceGraphIsValid(objects) {
     for (const reference of object.references) {
       const key = `${reference.change_event_id}\n${reference.candidate_id}\n${reference.side}`;
       groups.set(key, [...(groups.get(key) || []), { object, reference }]);
+    }
+  }
+  // Source-only updates require the exact complete pair. A missing side or a
+  // mixed browser/PDF side cannot inherit source-only recovery semantics.
+  const sourceHtmlPairs = new Set(eventObjects.filter(object => object.storageRole === "source-html")
+    .flatMap(object => object.references.map(ref => `${ref.change_event_id}\n${ref.candidate_id}`)));
+  for (const pair of sourceHtmlPairs) {
+    for (const side of ["previous", "current"]) {
+      const entries = groups.get(`${pair}\n${side}`);
+      if (!entries || !entries.some(entry => entry.reference.logical_path === "$.full.object_key" && entry.object.storageRole === "source-html")) return false;
     }
   }
   return [...groups.values()].every(publishedEventReferenceGroupIsValid);
@@ -1094,6 +1110,14 @@ function publishedEventReferenceGroupIsValid(entries) {
   if (metadata?.object.storageRole === "first-observation-attestation") {
     return entries.length === 1;
   }
+  if (full?.object.storageRole === "source-html") {
+    // The DB-owned graph producer separately validates the source-html event
+    // schema/status/source identity; this manifest proves exact physical refs.
+    return entries.length === 3 && states.size === 0
+      && metadata?.object.storageRole === "metadata"
+      && byPath.get("$.text.object_key")?.object.storageRole === "text"
+      && entries.every(entry => entry.reference.state_id === null && entry.reference.state_kind === null);
+  }
   if (full?.object.storageRole === "document") {
     return entries.length === 3
       && Boolean(metadata && byPath.get("$.text.object_key"));
@@ -1111,6 +1135,7 @@ function publishedEventReferenceGroupIsValid(entries) {
 
 function manifestSourceArtifactContract(artifact) {
   const fixed = {
+    html: { fileName: "page.html.txt", contentType: "text/plain; charset=utf-8" },
     page: { fileName: "page.jpg", contentType: "image/jpeg" },
     thumb: { fileName: "thumb.jpg", contentType: "image/jpeg" },
     pdf: { fileName: "document.pdf", contentType: "application/pdf" },
@@ -1142,6 +1167,12 @@ function manifestSourceObjectSetValid(entries) {
   const artifacts = new Set(entries.map((entry) => entry.storageRole));
   if (generations.size !== 1 || generations.has(null) || artifacts.size !== entries.length) {
     return false;
+  }
+
+  if (artifacts.has("html") || entries.some(entry => entry.captureProfile === SOURCE_HTML_PROFILE)) {
+    return entries.length === 3 && ["html", "meta", "text"].every(role => artifacts.has(role))
+      && entries.every(entry => entry.captureProfile === SOURCE_HTML_PROFILE
+        && stableJson(entry.retainedArtifactProjection) === stableJson(sourceHtmlArtifactProjection()));
   }
 
   const pdf = artifacts.has("pdf");

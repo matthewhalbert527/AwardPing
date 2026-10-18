@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { SOURCE_HTML_PROFILE, assertSourceHtmlAbsence, assertSourceHtmlArtifactSlots,
+  assertSourceHtmlArtifactIdentity, sourceHtmlArtifactProjection } from "./source-html-evidence.mjs";
 import {
   verifyVisualTextGeometryBinding,
   visualTextGeometryLayoutFingerprint,
@@ -51,6 +53,15 @@ export function isR2CaptureGeometryReady(capture) {
 }
 
 export function collectR2CaptureArtifactFiles(capture, { exists = () => true } = {}) {
+  if (capture?.capture_profile === SOURCE_HTML_PROFILE) {
+    assertSourceHtmlAbsence(capture);
+    return [["text", "text.txt", "text/plain; charset=utf-8"], ["html", "page.html.txt", "text/plain; charset=utf-8"],
+      ["meta", "meta.json", "application/json; charset=utf-8"]].map(([name, fileName, contentType]) => {
+      const path = capture[`${name}_path`];
+      if (!path || !exists(path)) throw new Error(`R2 source HTML missing ${name} artifact.`);
+      return { name, fileName, path, contentType };
+    });
+  }
   const files = [];
   const projection = projectRetainedCaptureArtifacts(capture, { exists });
   const addIfPresent = (name, fileName, path, contentType) => {
@@ -101,6 +112,12 @@ export function projectRetainedCaptureArtifacts(capture, {
   exists = () => true,
   artifactBindings = null,
 } = {}) {
+  if (capture?.capture_profile === SOURCE_HTML_PROFILE) {
+    assertSourceHtmlAbsence(capture);
+    if (artifactBindings) assertSourceHtmlArtifactSlots(artifactBindings);
+    return { schema: sourceHtmlArtifactProjection().schema, kind: "webpage", layoutRetained: false,
+      retainedExpansionStates: [], localizationStatus: "source_html_no_screenshot", manifest: sourceHtmlArtifactProjection() };
+  }
   const kind = capture?.kind === "pdf" ? "pdf" : "webpage";
   const bindings = artifactBindings && typeof artifactBindings === "object"
     ? artifactBindings
@@ -330,7 +347,13 @@ export function prepareR2CaptureArtifacts(files, { readFile } = {}) {
 export function assertR2CaptureArtifactSlots(kind, artifactBindings, {
   layoutClaimed = false,
   expansionStateCount = 0,
+  captureProfile = null,
 } = {}) {
+  if (captureProfile === SOURCE_HTML_PROFILE) {
+    if (kind !== "webpage" || layoutClaimed !== false || expansionStateCount !== 0) throw new Error("R2 source HTML cannot claim browser evidence.");
+    assertSourceHtmlArtifactSlots(artifactBindings);
+    return;
+  }
   const slots = Object.keys(artifactBindings || {}).sort();
   const required = kind === "pdf"
     ? ["meta", "pdf", "text"]
@@ -381,6 +404,7 @@ export function assertR2CaptureArtifactSlots(kind, artifactBindings, {
 }
 
 export function assertR2CaptureArtifactIdentity(capture, prepared, { sourceId } = {}) {
+  if (capture?.capture_profile === SOURCE_HTML_PROFILE) return assertSourceHtmlArtifactIdentity(capture, prepared, { sourceId });
   const artifacts = new Map(
     (prepared?.artifacts || []).map((artifact) => [artifact.name, artifact]),
   );

@@ -1,0 +1,94 @@
+{
+  "schema": "awardping.nsf-source-excerpts.v1",
+  "purpose": "Compact retained public HTML excerpt parser contracts, not browser, model, source approval or production readiness proof.",
+  "receipt_sha256": "5e8c0216e9e43d02093e80411681c437e0f17248d6f1c14e90c7f48ac8e294be",
+  "wrapper_note": "Tests wrap these exact source fragments in synthetic html/body/main containers; source origin remains explicit and visibility is not asserted.",
+  "fixtures": [
+    {
+      "id": "faq_transcripts_full_exception",
+      "source_url": "https://www.nsf.gov/funding/initiatives/grfp/applicants/faq",
+      "captured_at": "2026-10-18T18:28:45.696503+00:00",
+      "raw_file": "tmp/scrapling-completion-20261018/nsf-static-fetcher-20261018T182841Z/04.raw.html",
+      "raw_sha256": "ab3066fe1f96081a3468aa22ec58c1cf36edc5875abb36119fb3b70ef5849cb8",
+      "raw_utf16_start": 72479,
+      "raw_utf16_end": 72899,
+      "excerpt_sha256": "a79fa48d2b1d810d62191fe81e751ec4b60da875d810fca9d6f8a251264f7ed7",
+      "html": "<li class=\"qa-item\" id=\"question-15\">\n\n  <h3 class=\"qa-item__question\">Do my transcripts need to be official?</h3>\n\n  <div class=\"qa-item__answer\">\n    <div class=\"qa-item__answer-content\">\n      <p>Official undergraduate transcripts are required. Graduate transcripts may be unofficial if your institution does not provide official transcripts for first-year, first-term graduate students.</p>\n    </div>\n  </div>\n</li>",
+      "expected": {
+        "heading": "Do my transcripts need to be official?",
+        "text": "Official undergraduate transcripts are required. Graduate transcripts may be unofficial if your institution does not provide official transcripts for first-year, first-term graduate students."
+      }
+    },
+    {
+      "id": "reference_not_application_deadline",
+      "source_url": "https://www.nsf.gov/funding/initiatives/grfp",
+      "captured_at": "2026-10-18T18:28:41.376352+00:00",
+      "raw_file": "tmp/scrapling-completion-20261018/nsf-static-fetcher-20261018T182841Z/01.raw.html",
+      "raw_sha256": "07985ff5eab84fc482665f556703cdaaf5a27cc5fa1951dca96caaf32cfc91f5",
+      "raw_utf16_start": 49360,
+      "raw_utf16_end": 49910,
+      "excerpt_sha256": "d633dff245c01fae33c317d4278f68728483c4d0957d05a06d06e84ac3dac037",
+      "html": "<li class=\"link-list__item\">\n                                              <div class=\"paragraph paragraph--type--attachment paragraph--view-mode--ief-table\">\n    \n            <div class=\"grid-col-fill\">\n      \n      \n\n\n                    <div class=\"field field-para-attachment-link\"><span>October 16, 2026 by 8:00 p.m. Eastern time</span></div>\n            \n\n\n                    <div class=\"field field-para-attachment-desc\">All reference letters due.</div>\n            \n\n            </div>\n      \n      </div>\n\n          \n                  </li>",
+      "expected": {
+        "text": "October 16, 2026 by 8:00 p.m. Eastern time All reference letters due."
+      }
+    },
+    {
+      "id": "life_sciences_application_deadline",
+      "source_url": "https://www.nsf.gov/funding/initiatives/grfp",
+      "captured_at": "2026-10-18T18:28:41.376352+00:00",
+      "raw_file": "tmp/scrapling-completion-20261018/nsf-static-fetcher-20261018T182841Z/01.raw.html",
+      "raw_sha256": "07985ff5eab84fc482665f556703cdaaf5a27cc5fa1951dca96caaf32cfc91f5",
+      "raw_utf16_start": 49918,
+      "raw_utf16_end": 50455,
+      "excerpt_sha256": "c3554e3390efbdb9472174445144b4191bcaaa5f5cb280f99d626718cdb0ec54",
+      "html": "<li class=\"link-list__item\">\n                                              <div class=\"paragraph paragraph--type--attachment paragraph--view-mode--ief-table\">\n    \n            <div class=\"grid-col-fill\">\n      \n      \n\n\n                    <div class=\"field field-para-attachment-link\"><span>October 19, 2026 by 8:00 p.m. Eastern time</span></div>\n            \n\n\n                    <div class=\"field field-para-attachment-desc\">Life Sciences</div>\n            \n\n            </div>\n      \n      </div>\n\n          \n                  </li>",
+      "expected": {
+        "text": "October 19, 2026 by 8:00 p.m. Eastern time Life Sciences"
+      }
+    },
+    {
+      "id": "questionnaire_not_eligibility_determination",
+      "source_url": "https://www.nsf.gov/funding/initiatives/grfp/eligibility",
+      "captured_at": "2026-10-18T18:28:42.661331+00:00",
+      "raw_file": "tmp/scrapling-completion-20261018/nsf-static-fetcher-20261018T182841Z/02.raw.html",
+      "raw_sha256": "7226d5fb06f8e5b50ab3603194b774cb7d7317ef59dc3a5e1c643528f86ad4f4",
+      "raw_utf16_start": 52607,
+      "raw_utf16_end": 52944,
+      "excerpt_sha256": "4769e5fee389d0981b4c0d819527749bd08949342be6eea4dd220773d9b1598e",
+      "html": "<p><sub>Note: This eligibility questionnaire is provided as a tool to assist potential applicants for the NSF GRFP. The information contained in this questionnaire is based on the official eligibility information in the NSF GRFP Notice of Funding Opportunity but is not an official determination of an individual's eligibility.</sub></p>",
+      "expected": {
+        "text": "Note: This eligibility questionnaire is provided as a tool to assist potential applicants for the NSF GRFP. The information contained in this questionnaire is based on the official eligibility information in the NSF GRFP Notice of Funding Opportunity but is not an official determination of an individual's eligibility."
+      }
+    },
+    {
+      "id": "solicitation_pdf_is_local_print_not_linked_document",
+      "source_url": "https://www.nsf.gov/funding/opportunities/grfp-nsf-graduate-research-fellowship-program/nsf26-526/solicitation",
+      "captured_at": "2026-10-18T18:28:47.529376+00:00",
+      "raw_file": "tmp/scrapling-completion-20261018/nsf-static-fetcher-20261018T182841Z/05.raw.html",
+      "raw_sha256": "b9c55a6313f719ffce92304c994680d41fb3232762489564ddaff0caa19c3dde",
+      "raw_utf16_start": 41952,
+      "raw_utf16_end": 42226,
+      "excerpt_sha256": "0bbdd1cd3a8adbeafccc379133190dce9d3cdbb3810f5162a85b1c27012e8070",
+      "html": "<h4 class=\"document-info__no-pdf-header print-hide\">Create a PDF</h4>\n    <p class=\"document-info__no-pdf-text print-hide\">  To save a PDF of this solicitation, select <a href=\"javascript:if(window.print)window.print()\">Print to PDF</a> in your browser's print options.\n</p>",
+      "expected": {
+        "raw_href": "javascript:if(window.print)window.print()",
+        "text": "To save a PDF of this solicitation, select Print to PDF in your browser's print options."
+      }
+    },
+    {
+      "id": "solicitation_current_fiscal_cycle",
+      "source_url": "https://www.nsf.gov/funding/opportunities/grfp-nsf-graduate-research-fellowship-program/nsf26-526/solicitation",
+      "captured_at": "2026-10-18T18:28:47.529376+00:00",
+      "raw_file": "tmp/scrapling-completion-20261018/nsf-static-fetcher-20261018T182841Z/05.raw.html",
+      "raw_sha256": "b9c55a6313f719ffce92304c994680d41fb3232762489564ddaff0caa19c3dde",
+      "raw_utf16_start": 45777,
+      "raw_utf16_end": 45849,
+      "excerpt_sha256": "1ae89f5a3e7b88d77bdd3bd368ce0c75a5a3fdb89f64045b87296ea037c7aa96",
+      "html": "<li>This solicitation covers the Fiscal Year (FY) 2027 competition.</li>",
+      "expected": {
+        "text": "This solicitation covers the Fiscal Year (FY) 2027 competition."
+      }
+    }
+  ]
+}

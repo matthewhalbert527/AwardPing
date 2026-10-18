@@ -5,6 +5,7 @@ import {
   legacyExpansionStateCaptureCoverageFromMetadata,
 } from "./lib/expansion-state-descriptor-canonicalization.mjs";
 import { isR2CaptureGeometryReady } from "./lib/r2-capture-artifact-bindings.mjs";
+import { SOURCE_HTML_PROFILE } from "./lib/source-html-evidence.mjs";
 import {
   bindVisualTextGeometry,
   visualTextGeometryLayoutFingerprint,
@@ -184,10 +185,12 @@ describe("visual event capture wiring", () => {
     const materialize = Function(
       "legacyExpansionStateCaptureCoverageFromMetadata",
       "hasExpansionStateCaptureCoverageClaim",
+      "SOURCE_HTML_PROFILE",
       `${body}\nreturn materializeRetainedCaptureAuthority;`,
     )(
       legacyExpansionStateCaptureCoverageFromMetadata,
       hasExpansionStateCaptureCoverageClaim,
+      SOURCE_HTML_PROFILE,
     );
     const malformedCoverage = {
       complete: true,
@@ -599,6 +602,7 @@ function executableBaselineEvidenceStatus({ existingPaths, metadataByPath }) {
     "readJsonIfExists",
     "jsonObjectOrEmpty",
     "retainedCaptureArtifactProjectionSchema",
+    "SOURCE_HTML_PROFILE",
     `${body}\nreturn baselineEvidenceStatus;`,
   )(
     (value) => value || null,
@@ -606,6 +610,7 @@ function executableBaselineEvidenceStatus({ existingPaths, metadataByPath }) {
     (path) => metadataByPath.get(path) || null,
     (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
     "awardping.capture-retained-artifact-projection.v1",
+    SOURCE_HTML_PROFILE,
   );
 }
 

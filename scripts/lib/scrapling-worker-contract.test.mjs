@@ -13,6 +13,7 @@ import { buildVisualSnapshotRef } from "./visual-review-queue.mjs";
 import { captureFromVisualReviewCandidate, promoteApprovedVisualBaselineLocal,
   promoteApprovedVisualBaselineR2 } from "./visual-baseline-promotion.mjs";
 import { rehydrateLocalBaselineFromR2 } from "./r2-baseline-rehydration.mjs";
+import { SOURCE_HTML_PROFILE } from "./source-html-evidence.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const roots = [];
@@ -149,9 +150,9 @@ function workerBaselineReaders(archiveRoot, baseline) {
     textPath: fromArchiveRelative(baseline.capture.text), htmlPath: fromArchiveRelative(baseline.capture.html),
     pagePath: fromArchiveRelative(baseline.capture.page), thumbPath: fromArchiveRelative(baseline.capture.thumb),
     layoutPath: null, expansionStateScreenshots: [] };
-  const readBaseline = new Function("baselineEvidenceStatus", "readFileSync", "readJsonIfExists",
+  const readBaseline = new Function("baselineEvidenceStatus", "readFileSync", "readJsonIfExists", "SOURCE_HTML_PROFILE",
     `return (${extract("readBaselineEvidence", "baselineEvidenceStatus")});`)(
-    () => evidence, readFileSync, path => JSON.parse(readFileSync(path, "utf8")),
+    () => evidence, readFileSync, path => JSON.parse(readFileSync(path, "utf8")), SOURCE_HTML_PROFILE,
   );
   const captureFromBaseline = new Function("readBaselineEvidence", "hydrateRetainedBaselineGeometry", "fromArchiveRelative", "dirname",
     `return (${extract("captureFromBaseline", "buildDiffSummary")});`)(

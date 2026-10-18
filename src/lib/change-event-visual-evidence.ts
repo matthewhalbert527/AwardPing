@@ -17,7 +17,7 @@ export type EventVisualEvidenceObject = {
 export type EventVisualEvidenceSide = {
   captured_at: string | null;
   exact_overlap: boolean;
-  kind: "image" | "pdf";
+  kind: "image" | "pdf" | "source_html";
   localization_reason: string;
   localization_status: string;
   objects: Record<string, EventVisualEvidenceObject>;
@@ -26,6 +26,8 @@ export type EventVisualEvidenceSide = {
 };
 
 export type EventVisualCaptureManifest = {
+  kind?: unknown;
+  capture_profile?: unknown;
   captured_at?: unknown;
   crop?: unknown;
   full?: unknown;
@@ -55,6 +57,17 @@ export async function buildEventVisualEvidenceSide({
 }): Promise<EventVisualEvidenceSide> {
   const capture = jsonObject(captureValue) as EventVisualCaptureManifest;
   const localization = jsonObject(localizationValue) as EventVisualLocalizationSide;
+  // Deny signing even contradictory source-only manifests. The public event
+  // gate validates publishability; this independent API boundary prevents raw
+  // HTML, metadata, or fabricated image claims becoming public signed objects.
+  const fullContentType = cleanText(jsonObject(capture.full).content_type).toLowerCase().split(";")[0].trim();
+  if (capture.kind === "source_html" || capture.capture_profile === "scrapling-source-html-v1" ||
+      localization.status === "not_applicable_source_html" ||
+      ["text/html", "text/plain", "application/json"].includes(fullContentType)) {
+    return { captured_at: cleanText(capture.captured_at) || null, kind: "source_html", exact_overlap: false,
+      localization_status: "not_applicable_source_html", localization_reason: "Read the update summary and official source.",
+      objects: {}, state_id: null, highlights: null };
+  }
   const full = evidenceObject(capture.full);
   const crop = evidenceObject(capture.crop);
   const localizationStatus = cleanText(localization.status) || "unavailable_geometry_missing";
