@@ -58,7 +58,8 @@ type PublicAwardChange = PublicAwardPageData["changes"][number];
 type FactValue = string | string[];
 // Canonical labels still control section membership; display wording must not
 // move a scoped deadline out of the Deadline slot.
-type FactRow = { label: string; displayLabel?: string; value: FactValue; icon?: "calendar" | "checklist"; conflictHref?: string };
+type FactConflict = { href: string; changeId: string };
+type FactRow = { label: string; displayLabel?: string; value: FactValue; icon?: "calendar" | "checklist"; conflict?: FactConflict };
 type MaybeFactRow = { label: string; displayLabel?: string; value: FactValue | null; icon?: "calendar" | "checklist" };
 
 export function PublicAwardWorkspace({
@@ -323,7 +324,7 @@ export function PublicAwardWorkspace({
         )}
         {selected.kind === "overview" && (
           <OverviewPanel
-            deadlineConflictHref={factConflicts.get("Application deadlines")}
+            deadlineConflict={factConflicts.get("Application deadlines")}
             data={data}
             factRows={factRows}
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
@@ -334,6 +335,7 @@ export function PublicAwardWorkspace({
         )}
         {(selected.kind === "eligibility" || selected.kind === "dates" || selected.kind === "application") && (
           <AwardFactsPanel
+            onReviewChange={(changeId) => activatePanel({ kind: "changes" }, "panel", { changeId })}
             factConflicts={factConflicts}
             facts={data.facts}
             awardName={data.award.name}
@@ -521,13 +523,14 @@ const FACT_SECTIONS = {
   },
 } as const;
 
-export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSources, factConflicts }: {
+export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSources, factConflicts, onReviewChange }: {
   facts: PublicAwardPageData["facts"];
   awardName?: string;
   section: keyof typeof FACT_SECTIONS;
   headingId?: string;
   onViewSources: () => void;
-  factConflicts?: ReadonlyMap<string, string>;
+  factConflicts?: ReadonlyMap<string, FactConflict>;
+  onReviewChange?: (changeId: string) => void;
 }) {
   const definition = FACT_SECTIONS[section];
   const rows = awardFactRows(facts, awardName, factConflicts);
@@ -539,9 +542,9 @@ export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSo
         <p className="public-award-section-description">{definition.description}</p>
       </div>
       {sectionRows.length > 0 ? (
-        section === "application" ? <ApplicationSections rows={sectionRows} /> : (
+        section === "application" ? <ApplicationSections rows={sectionRows} onReviewChange={onReviewChange} /> : (
           <dl className="public-award-fact-table public-award-fact-table-compact">
-            {sectionRows.map((fact) => <FactLine fact={fact} key={fact.label} />)}
+            {sectionRows.map((fact) => <FactLine fact={fact} key={fact.label} onReviewChange={onReviewChange} />)}
           </dl>
         )
       ) : (
@@ -562,7 +565,7 @@ const APPLICATION_GROUPS = [
   { id: "contact", title: "Contact", labels: ["Contact"] },
 ];
 
-function ApplicationSections({ rows }: { rows: FactRow[] }) {
+function ApplicationSections({ rows, onReviewChange }: { rows: FactRow[]; onReviewChange?: (changeId: string) => void }) {
   const groups = APPLICATION_GROUPS.map((group) => ({ ...group, rows: rows.filter((row) => group.labels.includes(row.label)) })).filter((group) => group.rows.length);
   return <>
     <nav className="public-award-facts-jumps" aria-label="Application details">
@@ -571,7 +574,7 @@ function ApplicationSections({ rows }: { rows: FactRow[] }) {
     {groups.map((group) => <section key={group.id} id={`award-${group.id}`} className="public-award-facts-section" aria-labelledby={`award-${group.id}-heading`} tabIndex={-1}>
       <h3 id={`award-${group.id}-heading`}>{group.title}</h3>
       <dl className="public-award-fact-table public-award-fact-table-compact">
-        {group.rows.map((fact) => <FactLine fact={fact} key={fact.label} />)}
+        {group.rows.map((fact) => <FactLine fact={fact} key={fact.label} onReviewChange={onReviewChange} />)}
       </dl>
     </section>)}
   </>;
@@ -653,7 +656,7 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
 }
 
 function OverviewPanel({
-  deadlineConflictHref,
+  deadlineConflict,
   data,
   factRows,
   headingId,
@@ -661,7 +664,7 @@ function OverviewPanel({
   onViewDetails,
   onViewUpdates,
 }: {
-  deadlineConflictHref?: string;
+  deadlineConflict?: FactConflict;
   data: PublicAwardPageData;
   factRows: FactRow[];
   headingId?: string;
@@ -684,7 +687,7 @@ function OverviewPanel({
         <div>
           <dt>{deadlines.label}</dt>
           <dd>
-            <FactConflictNotice href={deadlineConflictHref} />
+            <FactConflictNotice conflict={deadlineConflict} onReviewChange={onViewUpdates} />
             {deadlines.entries.length > 0 && <ul className="public-award-deadline-list">
               {deadlines.entries.map((entry) => <li key={`${entry.label}:${entry.value}`}>
                 {deadlines.entries.length > 1 && entry.label !== "Application deadline" && entry.label !== "Deadline" && <span>{entry.label}: </span>}
@@ -702,7 +705,7 @@ function OverviewPanel({
             <div className="public-award-key-fact" key={fact.label}>
               <dt>{fact.displayLabel ?? fact.label}</dt>
               <dd>
-                <FactConflictNotice href={fact.conflictHref} />
+                <FactConflictNotice conflict={fact.conflict} onReviewChange={onViewUpdates} />
                 {factTextLength(fact.value) <= 220 ? <FactValueDisplay className="public-award-fact-list" value={fact.value} />
                   : <button type="button" className="public-award-context-link" onClick={() => onViewDetails(fact.label === "Award amount" ? "funding" : "eligibility")}>View {fact.label === "Award amount" ? "funding details" : "full criteria"} <ArrowRight size={15} aria-hidden="true" /></button>}
               </dd>
@@ -875,8 +878,10 @@ function ChangeTimestamp({ value }: { value: string }) {
 
 function FactLine({
   fact,
+  onReviewChange,
 }: {
   fact: FactRow;
+  onReviewChange?: (changeId: string) => void;
 }) {
   return (
     <div className="public-award-fact-line">
@@ -886,18 +891,26 @@ function FactLine({
         {fact.displayLabel ?? fact.label}
       </dt>
       <dd>
-        <FactConflictNotice href={fact.conflictHref} />
+        <FactConflictNotice conflict={fact.conflict} onReviewChange={onReviewChange} />
         <FactValueDisplay className="public-award-fact-list" value={fact.value} isDate={DATE_FACT_LABELS.has(fact.label)} />
       </dd>
     </div>
   );
 }
 
-function FactConflictNotice({ href }: { href?: string }) {
-  if (!href) return null;
+function FactConflictNotice({ conflict, onReviewChange }: { conflict?: FactConflict; onReviewChange?: (changeId: string) => void }) {
+  if (!conflict) return null;
   return <p className="public-award-review-date" role="note">
     <strong>These details need review.</strong>{" "}
-    <Link href={href} prefetch={false}>Review the change before using this information.</Link>
+    <Link href={conflict.href} prefetch={false} onNavigate={(event) => {
+      // Local panel state also changes through pushState buttons. Reusing the
+      // initial Next route alone need not remount it; use the same activation.
+      // Modified/new-tab clicks still follow the real href normally.
+      if (onReviewChange) {
+        event.preventDefault();
+        onReviewChange(conflict.changeId);
+      }
+    }}>Review the change before using this information.</Link>
   </p>;
 }
 
@@ -909,14 +922,15 @@ const FACT_FIELD_LABELS: Record<string, string> = {
 };
 
 function factConflictLinks(notices: AwardFactCurrentnessNotice[], canonicalPath: string) {
-  const links = new Map<string, string>();
+  const links = new Map<string, FactConflict>();
   for (const notice of notices) {
+    const conflict = { href: publicAwardHref(canonicalPath, { changeId: notice.changeId }), changeId: notice.changeId };
     if (notice.affectsApplicationDeadline && !links.has("Application deadlines")) {
-      links.set("Application deadlines", publicAwardHref(canonicalPath, { changeId: notice.changeId }));
+      links.set("Application deadlines", conflict);
     }
     for (const field of notice.fields) {
       const label = FACT_FIELD_LABELS[field];
-      if (label && !links.has(label)) links.set(label, publicAwardHref(canonicalPath, { changeId: notice.changeId }));
+      if (label && !links.has(label)) links.set(label, conflict);
     }
   }
   return links;
@@ -959,7 +973,7 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
-function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, conflicts?: ReadonlyMap<string, string>): FactRow[] {
+function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, conflicts?: ReadonlyMap<string, FactConflict>): FactRow[] {
   const deadline = presentAwardDateField(facts.deadline, awardName);
   const opening = presentAwardDateField(facts.openingDate, awardName, "Opening date");
   const rows: MaybeFactRow[] = [
@@ -982,7 +996,7 @@ function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, 
     { label: "Contact", value: compactList(facts.contacts) },
   ];
 
-  return rows.filter(isFactRow).map((row) => ({ ...row, conflictHref: conflicts?.get(row.label) }));
+  return rows.filter(isFactRow).map((row) => ({ ...row, conflict: conflicts?.get(row.label) }));
 }
 
 function compactList(values: string[]) {

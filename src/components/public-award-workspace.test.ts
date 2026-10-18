@@ -846,6 +846,9 @@ describe("PublicAwardWorkspace", () => {
     expect(activation).toContain("const href = navigation.href;");
     expect(source).toContain('activatePanel({ kind: "changes" }, "panel", { changeId: currentness.changeId })');
     expect(source).toContain("onClick={() => onViewUpdates(latestChange.id)}");
+    expect(source).toContain('(changeId) => activatePanel({ kind: "changes" }, "panel", { changeId })');
+    expect(source).toContain('onNavigate={(event) => {');
+    expect(source).toContain('event.preventDefault();\n        onReviewChange(conflict.changeId);');
     expect(source).not.toContain("window.history.replaceState");
     expect(source).not.toContain("setSelected");
     expect(source.match(/revealSelectedPanel\(/g)).toHaveLength(1);
