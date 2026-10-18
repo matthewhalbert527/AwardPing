@@ -66,6 +66,10 @@ export type PublicAwardPageData = {
   facts: ReturnType<typeof publicAwardFactsFromAward>;
   metaDescription: string;
   officialHomepage: string | null;
+  /** Pinned published-facts review, not newest source check or AI generation. */
+  factsReviewedAt?: string | null;
+  /** One server clock value shared by SSR and hydration for date status. */
+  presentationAsOf?: string;
   lastCheckedAt: string | null;
   sources: Array<{
     id: string;
@@ -319,6 +323,8 @@ async function loadPublicAwardPageData(
     facts,
     metaDescription: publicAwardMetaDescription(award.name, facts),
     officialHomepage: publication.registry.official_homepage,
+    factsReviewedAt: publication.registry.last_verified_at,
+    presentationAsOf: new Date().toISOString(),
     lastCheckedAt: latestCheckedAt(officialSources),
     sources: publicSources,
     changes: limitedChanges.map((change) => ({

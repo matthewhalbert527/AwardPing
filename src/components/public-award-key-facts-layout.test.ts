@@ -150,10 +150,10 @@ describe("award key-facts scoped responsive layout", () => {
 });
 
 const factValues = [
-  { key: "deadline", label: "Deadline", raw: "2026-03-27T17:00:00-05:00", text: "March 27, 2026 at 5:00 p.m. (UTC-05:00)" },
-  { key: "openingDate", label: "Opening date", raw: "2026-01-05", text: "January 5, 2026" },
-  { key: "awardAmount", label: "Award amount", raw: "$1,000; Travel stipend", text: "$1,000Travel stipend" },
-] as const;
+  { key: "awardAmount", label: "Award amount", raw: ["$1,000", "Travel stipend"], text: "$1,000Travel stipend" },
+  { key: "academicLevels", label: "Academic level", raw: ["Graduate students"], text: "Graduate students" },
+  { key: "citizenship", label: "Citizenship", raw: ["US citizens; an exception applies only with prior approval."], text: "US citizens; an exception applies only with prior approval." },
+] satisfies Array<{ key: "awardAmount" | "academicLevels" | "citizenship"; label: string; raw: string[]; text: string }>;
 
 function pageData(mask: number): PublicAwardPageData {
   const facts: PublicAwardPageData["facts"] = {
@@ -188,12 +188,76 @@ describe("award key-facts actual rendered content", () => {
       .toEqual(expected.map((fact) => fact.label));
     expect(children.map((_index, child) => $(child).children("dd").text()).get())
       .toEqual(expected.map((fact) => fact.text));
-    if (mask & 4) {
+    if (mask & 1) {
       expect(dl.find("dd > ul.public-award-fact-list > li").map((_index, item) => $(item).text()).get())
         .toEqual(["$1,000", "Travel stipend"]);
     } else expect(dl.find("li").length).toBe(0);
     expect(dl.find("a, button, input, select, textarea, summary, iframe, object, embed, [tabindex], [contenteditable], [role=button], [role=link]").length)
       .toBe(0);
     expect(data).toEqual(before);
+  });
+
+  it.each([
+    ["awardAmount", "Award amount", "View funding details"],
+    ["academicLevels", "Academic level", "View full criteria"],
+    ["citizenship", "Citizenship", "View full criteria"],
+  ] as const)("moves a long %s value to full details without showing a clipped prefix", (key, label, action) => {
+    const qualification = "Applicants must meet every condition listed by the official award source. ".repeat(4) + "An exception is allowed only after written approval; no automatic waiver applies.";
+    const data = pageData(0);
+    data.facts[key] = [qualification];
+    const before = structuredClone(data);
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    const row = $(".public-award-key-fact").filter((_index, element) => $(element).children("dt").text() === label);
+    expect(row).toHaveLength(1);
+    expect(row.find("button").text()).toBe(action + " ");
+    expect(row.find("button").attr("type")).toBe("button");
+    expect(row.text()).not.toContain("Applicants must meet");
+    const full = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "applying" })));
+    const detail = full(".public-award-fact-line").filter((_index, element) => full(element).children("dt").text() === label);
+    expect(detail.children("dd").text()).toBe(qualification);
+    expect(data).toEqual(before);
+  });
+
+  it("separates the deadline from compact key facts and honestly labels an elapsed listed date", () => {
+    const data = pageData(7);
+    data.facts.deadline = "2026-03-27T17:00:00-05:00";
+    data.facts.openingDate = "2026-01-05";
+    data.presentationAsOf = "2026-10-17T12:00:00Z";
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect($(".public-award-key-facts dt").map((_index, item) => $(item).text()).get())
+      .toEqual(["Award amount", "Academic level", "Citizenship"]);
+    expect($(".public-award-deadlines .public-award-deadline-list li")).toHaveLength(1);
+    expect($(".public-award-deadlines").text()).toContain("March 27, 2026 at 5:00 p.m. (UTC-05:00)");
+    expect($(".public-award-deadlines .public-award-past-date").text()).toBe("Date passed");
+    expect($(".public-award-deadlines").text()).toContain("A later deadline is not confirmed here.");
+    expect($(".public-award-deadlines").text()).not.toContain("Applications closed");
+    expect($(".public-award-deadlines").text()).not.toContain("January 5");
+  });
+
+  it("shows applicant-specific application dates from the full schedule without dropping course conditions", () => {
+    const data = pageData(0);
+    data.facts.importantDates = [
+      "October 14, 2026 (US citizens living in the US): Application deadline",
+      "December 8, 2026 or January 6, 2027 (course-dependent; check the Course Directory): Application deadline",
+      "April 1, 2027: Interviews",
+    ];
+    const before = structuredClone(data);
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    const deadline = $(".public-award-deadlines");
+    expect(deadline.find("li")).toHaveLength(2);
+    expect(deadline.text()).toContain("US citizens living in the US");
+    expect(deadline.text()).toContain("December 8, 2026 or January 6, 2027");
+    expect(deadline.text()).toContain("course-dependent; check the Course Directory");
+    expect(deadline.text()).not.toContain("Interviews");
+    expect(deadline.text()).not.toContain("No application deadline");
+    expect(data).toEqual(before);
+  });
+
+  it("does not mistake an interview date for an application deadline", () => {
+    const data = pageData(0);
+    data.facts.importantDates = ["April 1, 2027: Interviews"];
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect($(".public-award-deadlines li")).toHaveLength(0);
+    expect($(".public-award-deadlines").text()).toContain("No application deadline is recorded here. Check the official award site.");
   });
 });

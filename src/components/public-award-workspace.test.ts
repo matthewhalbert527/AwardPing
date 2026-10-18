@@ -7,13 +7,13 @@ import { formatCentralDateTime } from "@/lib/time-zone";
 import type { Json } from "@/lib/database.types";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
-import { PublicAwardWorkspace, AwardSourcesPanel, AwardFactsPanel, filterAwardSources, changeIdsToMarkRead } from "@/components/public-award-workspace";
+import { PublicAwardWorkspace, AwardSourcesPanel, AwardFactsPanel, filterAwardSources, changeIdsToMarkRead, awardPanelNavigation } from "@/components/public-award-workspace";
 import { PUBLIC_AWARD_PANEL_HEADING_ID } from "@/lib/public-award-panel-focus";
 import * as SnapshotViewer from "@/components/source-snapshot-viewer";
 import * as ChangeEvidence from "@/components/change-evidence-panel";
 
 describe("PublicAwardWorkspace", () => {
-  it("renders concise award sections with the unread count and full facts", () => {
+  it("renders four distinct sections and a concise overview without full application details", () => {
     const html = renderToStaticMarkup(
       createElement(PublicAwardWorkspace, {
         data: {
@@ -160,7 +160,7 @@ describe("PublicAwardWorkspace", () => {
 
     const sidebarHtml = asideMarkup(html);
 
-    for (const label of ["Overview", "Eligibility", "Dates &amp; deadlines", "How to apply", "Updates", "Official sources"]) {
+    for (const label of ["Overview", "Updates", "Eligibility &amp; applying", "Sources"]) {
       expect(sidebarHtml).toContain(`<strong>${label}</strong>`);
     }
     expect(sidebarHtml).toContain('href="/award-directory"');
@@ -172,7 +172,7 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).not.toContain("Application portal");
     expect(sidebarHtml).not.toContain("Program guide");
     expect(sidebarHtml).not.toContain("more tracked pages");
-    expect(outlineButtons(html)).toHaveLength(6);
+    expect(outlineButtons(html)).toHaveLength(4);
 
     const mainHtml = mainMarkup(html);
     const headerHtml = mainHtml.slice(
@@ -189,7 +189,7 @@ describe("PublicAwardWorkspace", () => {
     expect(headerHtml).not.toContain("award-detail");
     expect(headerHtml).not.toContain("1 recent updates");
     expect(headerHtml).not.toContain("high confidence");
-    expect(headerHtml).toContain("Official homepage");
+    expect(headerHtml).toContain("Official award site");
     expect(headerHtml).not.toContain('href="/updates"');
     expect(html).not.toContain("Get in touch");
     expect(mainHtml).not.toContain("public-award-overview-strip");
@@ -197,14 +197,14 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).toContain("Overview");
     expect(mainHtml).toContain("Deadline");
     expect(mainHtml).toContain("Eligibility");
-    expect(mainHtml).toContain("Requirements");
+    expect(mainHtml).not.toContain("<dt>Requirements</dt>");
     expect(mainHtml).not.toContain("Award conditions");
     expect(mainHtml).toContain("Academic level");
     expect(mainHtml).toContain('<ul class="public-award-fact-list">');
     expect(mainHtml).toContain("<li>$1,000</li>");
     expect(mainHtml).toContain("<li>Travel stipend</li>");
-    expect(mainHtml).toContain("<li>Recipients must submit a final report</li>");
-    expect(mainHtml).toContain("<li>Awardees may not hold another fellowship</li>");
+    expect(mainHtml).not.toContain("Recipients must submit a final report");
+    expect(mainHtml).not.toContain("Awardees may not hold another fellowship");
     expect(mainHtml).not.toContain("$1,000; Travel stipend");
     expect(mainHtml).not.toContain("Recipients must submit a final report; Awardees may not hold another fellowship");
     expect(mainHtml).not.toContain("Official source pages");
@@ -212,7 +212,7 @@ describe("PublicAwardWorkspace", () => {
   });
 
   it.each([[0, "0 source pages"], [1, "1 source page"], [4, "4 source pages"]] as const)(
-    "shows the source count only in Official sources for %i recorded sources",
+    "shows the source count only in Sources for %i recorded sources",
     (count, expected) => {
       const sources = Array.from({ length: count }, (_, index) => makeSource({
         id: `source-count-${index}`,
@@ -223,12 +223,12 @@ describe("PublicAwardWorkspace", () => {
         data: makePageData({ sources, changes: [] }),
       })));
       const headerCount = $("header.public-award-console-header .public-award-meta-line > span");
-      const sourcesButton = $('aside button[title="Official sources"]');
+      const sourcesButton = $('aside button[title="Sources"]');
       const sidebarCount = sourcesButton.find(".public-award-nav-text > small");
       expect(headerCount).toHaveLength(0);
       expect(sourcesButton).toHaveLength(1);
       expect(sidebarCount).toHaveLength(0);
-      expect(sourcesButton.attr("aria-label")).toBe("Official sources");
+      expect(sourcesButton.attr("aria-label")).toBe("Sources");
       const sourcePanel = load(renderToStaticMarkup(createElement(AwardSourcesPanel, {
         data: makePageData({ sources, changes: [] }), onSelectSource: () => {},
       })));
@@ -312,7 +312,7 @@ describe("PublicAwardWorkspace", () => {
     const sidebarHtml = html;
     const mainHtml = html;
 
-    expect(sidebarHtml).toContain("Official sources");
+    expect(sidebarHtml).toContain("Sources");
     expect(sidebarHtml).toContain("Find a source page");
     expect(sidebarHtml).toContain("Homepage");
     expect(sidebarHtml).not.toContain("Application / 0 updates");
@@ -482,7 +482,7 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).not.toContain('<h2 id="public-award-panel-heading">Overview</h2>');
   });
 
-  it("opens the exact change's source and marks that change when only the change id is known", () => {
+  it("opens Updates and highlights exactly the requested change when only its id is known", () => {
     const html = renderToStaticMarkup(
       createElement(PublicAwardWorkspace, {
         data: makeDeepLinkPageData(),
@@ -491,15 +491,15 @@ describe("PublicAwardWorkspace", () => {
     );
     const mainHtml = mainMarkup(html);
 
-    expect(mainHtml).toContain('class="public-award-source-detail-heading"');
-    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
+    expect(mainHtml).not.toContain('class="public-award-source-detail-heading"');
+    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Updates</h2>');
     expect(mainHtml).toContain("The application instructions changed.");
-    expect(mainHtml).not.toContain("The homepage changed.");
+    expect(mainHtml).toContain("The homepage changed.");
     expect(mainHtml).not.toContain('<h2 id="public-award-panel-heading">Overview</h2>');
     expectSingleHighlightedChange(mainHtml, "The application instructions changed.");
   });
 
-  it("opens the feed's source and change context on first load and keeps the outline labels", () => {
+  it("opens a feed change in Updates even when its source query is also supplied", () => {
     const html = renderToStaticMarkup(
       createElement(PublicAwardWorkspace, {
         data: makeDeepLinkPageData(),
@@ -509,22 +509,23 @@ describe("PublicAwardWorkspace", () => {
     );
     const mainHtml = mainMarkup(html);
 
-    expect(mainHtml).toContain('class="public-award-source-detail-heading"');
-    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
+    expect(mainHtml).not.toContain('class="public-award-source-detail-heading"');
+    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Updates</h2>');
     expectSingleHighlightedChange(mainHtml, "The application instructions changed.");
     expect(html).toContain('aria-label="Example Fellowship page outline"');
     expect(html).toContain('aria-label="Award sections"');
-    expect(html).toContain('aria-label="Official sources"');
+    expect(html).toContain('aria-label="Sources"');
     expect(html).toContain('aria-label="Collapse page outline"');
     expect(html).toContain("<h1>Example Fellowship</h1>");
   });
 
-  it("keeps the requested source when the change belongs to another source and marks nothing", () => {
+  it("keeps an explicitly requested Sources context without marking another source's change", () => {
     const html = renderToStaticMarkup(
       createElement(PublicAwardWorkspace, {
         data: makeDeepLinkPageData(),
         initialChangeId: "change-home",
         initialSourceId: "source-apply",
+        initialSection: "sources",
       }),
     );
     const mainHtml = mainMarkup(html);
@@ -533,6 +534,55 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).not.toContain("The homepage changed.");
     expect(mainHtml).not.toContain('data-highlighted="true"');
     expect(mainHtml).not.toContain("Selected update");
+  });
+
+  it("preserves an explicit matching Sources context with one evidence action and one source link", () => {
+    const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data: makeDeepLinkPageData(), initialSection: "sources",
+      initialSourceId: "source-apply", initialChangeId: "change-apply",
+    }));
+    const panel = panelMarkup(html);
+    const $ = load(panel);
+    expect($("h2").text()).toBe("Application Instructions");
+    expectSingleHighlightedChange(panel, "The application instructions changed.");
+    expect($(".source-snapshot-trigger")).toHaveLength(1);
+    expect($(".source-snapshot-trigger").text().trim()).toBe("View evidence");
+    expect($("a").filter((_index, link) => $(link).text().trim() === "Official source")).toHaveLength(1);
+    expect($(".source-snapshot-inline")).toHaveLength(0);
+    expect($(".change-evidence-source-link")).toHaveLength(0);
+    expect($("[role='dialog']")).toHaveLength(0);
+  });
+
+  it("offers one optional evidence action and source link per update without fetching inline previews", () => {
+    const data = makeDeepLinkPageData();
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data, initialSection: "updates",
+    })));
+    const rows = $(".public-award-change-line");
+    expect(rows).toHaveLength(data.changes.length);
+    rows.each((index, row) => {
+      expect($(row).find(".source-snapshot-trigger")).toHaveLength(1);
+      expect($(row).find(".source-snapshot-trigger").text().trim()).toBe("View evidence");
+      expect($(row).find(".change-evidence-source-link")).toHaveLength(1);
+      expect($(row).find(".change-evidence-source-link").attr("href")).toBe(data.changes[index].sourceUrl);
+      expect($(row).find(".source-snapshot-inline, [role='dialog']")).toHaveLength(0);
+    });
+  });
+
+  it("provides the same four destinations in a labelled compact mobile selector", () => {
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data: makeDeepLinkPageData(), initialChangeId: "change-apply", initialSourceId: "source-apply",
+    })));
+    const select = $("#award-section-select");
+    expect(select).toHaveLength(1);
+    expect($("label[for='award-section-select']").text()).toBe("On this award");
+    expect(select.attr("aria-controls")).toBe("public-award-panel");
+    expect(select.find("option").map((_index, option) => $(option).attr("value")).get())
+      .toEqual(["overview", "changes", "application", "sources"]);
+    expect(select.find("option[selected]").attr("value")).toBe("changes");
+    const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.public-award-sidebar > \.public-award-task-nav\s*\{\s*display:\s*none;/);
+    expect(css).toMatch(/\.public-award-mobile-navigation\s*\{\s*display:\s*grid;/);
   });
 
   it("shows an eligible change in recent changes when its source is no longer listed", () => {
@@ -550,6 +600,26 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).toContain("The retired page changed.");
     expectSingleHighlightedChange(mainHtml, "The retired page changed.");
     expect(html).toContain("<h1>Example Fellowship</h1>");
+  });
+
+  it("retains eight recent updates ahead of the selected ninth while exposing exactly one reveal target", () => {
+    const data = makeDeepLinkPageData();
+    const base = data.changes[0];
+    data.changes = Array.from({ length: 9 }, (_, index) => ({ ...base,
+      id: `change-${index + 1}`,
+      summary: `Recorded change ${index + 1}`,
+      detectedAt: `2026-07-${String(20 - index).padStart(2, "0")}T12:00:00.000Z`,
+    }));
+    const before = structuredClone(data);
+    const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialChangeId: "change-9" }));
+    const $ = load(html);
+    const cards = $("#public-award-panel article.public-award-change-line");
+    expect(cards).toHaveLength(9);
+    expect(cards.map((_index, card) => $(card).find(".change-summary p").text()).get()).toEqual(data.changes.map((change) => change.summary));
+    expect(cards.last().attr("data-highlighted")).toBe("true");
+    expect(cards.filter('[data-highlighted="true"]')).toHaveLength(1);
+    expect(cards.filter('[aria-current="true"]')).toHaveLength(1);
+    expect(data).toEqual(before);
   });
 
   it("falls back to the award overview for unknown or stale ids without marking anything", () => {
@@ -627,7 +697,9 @@ describe("PublicAwardWorkspace", () => {
     const cases: Array<{ props: Record<string, string>; pressedLabel: string }> = [
       { props: {}, pressedLabel: "Overview" },
       { props: { initialChangeId: "change-orphan" }, pressedLabel: "Updates" },
-      { props: { initialSourceId: "source-apply", initialChangeId: "change-apply" }, pressedLabel: "Official sources" },
+      { props: { initialSourceId: "source-apply", initialChangeId: "change-apply" }, pressedLabel: "Updates" },
+      { props: { initialSourceId: "source-apply", initialSection: "sources" }, pressedLabel: "Sources" },
+      { props: { initialSection: "applying" }, pressedLabel: "Eligibility &amp; applying" },
     ];
     for (const { props, pressedLabel } of cases) {
       const html = renderToStaticMarkup(
@@ -635,10 +707,10 @@ describe("PublicAwardWorkspace", () => {
       );
       const buttons = outlineButtons(html);
 
-      expect(buttons.length, JSON.stringify(props)).toBe(6);
+      expect(buttons.length, JSON.stringify(props)).toBe(4);
       expect(buttons.filter((button) => button.includes('aria-pressed="true"')), JSON.stringify(props)).toHaveLength(1);
-      expect(buttons.filter((button) => button.includes('aria-pressed="false"')), JSON.stringify(props)).toHaveLength(5);
-      expect(buttons.filter((button) => button.includes('aria-controls="public-award-panel"')), JSON.stringify(props)).toHaveLength(6);
+      expect(buttons.filter((button) => button.includes('aria-pressed="false"')), JSON.stringify(props)).toHaveLength(3);
+      expect(buttons.filter((button) => button.includes('aria-controls="public-award-panel"')), JSON.stringify(props)).toHaveLength(4);
       const pressed = buttons.find((button) => button.includes('aria-pressed="true"')) || "";
       expect(pressed, JSON.stringify(props)).toContain(`<strong>${pressedLabel}</strong>`);
       expect(pressed, JSON.stringify(props)).toContain("public-award-nav-button-active");
@@ -705,15 +777,33 @@ describe("PublicAwardWorkspace", () => {
 
     expect(source).toContain("const [activation, setActivation] = useState<PanelActivationState<SelectedPanel>>(() => ({");
     expect(source).toContain("    selected: initialContext.panel,\n    revealSequence: 0,\n  }));");
-    expect(source).toContain(
-      "  useEffect(() => {\n    if (!shouldRevealPanel(activation.revealSequence)) return;\n    revealSelectedPanel(panelRef.current, readPanelRevealEnvironment(), activationOrigin.current);\n  }, [activation.revealSequence]);",
-    );
+    expect(source).toContain("if (shouldRevealPanel(activation.revealSequence) && !fromHistory) {");
+    expect(source).toContain('revealSelectedPanel(target ?? panelRef.current, readPanelRevealEnvironment(), target ? "panel" : activationOrigin.current);');
+    expect(source).toContain('querySelector<HTMLElement>(\'article[data-highlighted="true"]\')');
+    expect(source).toContain("const scrollTarget = fromHistory ? target ?? highlighted ?? panelRef.current : highlighted;");
+    expect(source).toContain("if (!scrollTarget) return;");
+    expect(source).toContain("revealAwardTargetWithoutFocus(scrollTarget, {");
+    expect(source).toContain("reducedMotion: fromHistory || readPanelRevealEnvironment().reducedMotion,");
+    expect(source).toContain("return () => window.cancelAnimationFrame(frame);");
+    expect(source).toContain("}, [activation.revealSequence, highlightedChangeId, selected.kind]);");
     const activation = source.slice(source.indexOf("const activatePanel = "), source.indexOf("useEffect(() => {"));
     expect(activation).toContain("markChangesRead(changeIdsToMarkRead(data, readChangeIds, next));");
     expect(activation).toContain(
       "setActivation((state) => activatePanelSelection(state, next, (panel) => isKnownPanel(data, panel)));",
     );
-    expect(source.match(/setActivation\(/g)).toHaveLength(1);
+    expect(source.match(/setActivation\(/g)).toHaveLength(2);
+    expect(source).toContain('window.addEventListener("popstate", restore)');
+    expect(source).toContain('window.removeEventListener("popstate", restore)');
+    expect(source).toContain('window.history.pushState(null, "", href)');
+    expect(source).toContain('if (lastSelectionSearch.current === window.location.search && !knownAnchor) return;');
+    expect(source).toContain('activationAnchor.current = knownAnchor;');
+    expect(source).toContain('historyNavigation.current = true;');
+    expect(activation).toContain("const navigation = awardPanelNavigation(data, next, context);");
+    expect(activation).toContain("setHighlightedChangeId(navigation.highlightedChangeId);");
+    expect(activation).toContain("const href = navigation.href;");
+    expect(source).toContain('activatePanel({ kind: "changes" }, "panel", { changeId: currentness.changeId })');
+    expect(source).toContain("onClick={() => onViewUpdates(latestChange.id)}");
+    expect(source).not.toContain("window.history.replaceState");
     expect(source).not.toContain("setSelected");
     expect(source.match(/revealSelectedPanel\(/g)).toHaveLength(1);
   });
@@ -794,7 +884,7 @@ describe("PublicAwardWorkspace", () => {
 
     expect(full).toMatch(/^Jul 3, 2026, 7:00.AM CDT$/);
     expect(panelMarkup(html)).toContain(
-      `<time dateTime="2026-07-03T12:00:00.000Z" title="${full}">Jul 3, 2026<span class="sr-only"> (${full})</span></time>`,
+      `<time dateTime="2026-07-03T12:00:00.000Z" title="${full}">Recorded Jul 3, 2026<span class="sr-only"> (${full})</span></time>`,
     );
     expect(html).not.toContain("<time>");
   });
@@ -808,9 +898,9 @@ describe("PublicAwardWorkspace", () => {
     );
     const panel = panelMarkup(html);
 
-    expect(panel).toContain(
-      '<article class="public-award-change-line"><span>Date unavailable</span><div><h3>Application Instructions</h3>',
-    );
+    const $ = load(panel);
+    expect($("article.public-award-change-line > span").text()).toBe("Date unavailable");
+    expect($("article .public-award-update-source").text()).toBe("Application Instructions");
     expect(panel.split("Date unavailable")).toHaveLength(2);
     expect(panel).not.toContain("<time");
     // A valid change in another render still gets its time element.
@@ -855,13 +945,13 @@ describe("public award source identity", () => {
       .toEqual(["change-apply"]);
   });
 
-  it("opens the exact source ID for a change-only link even when another source has the same URL", () => {
+  it("preserves the exact source attribution on a change-only Updates link despite duplicate URLs", () => {
     const data = identityData(documentA, documentA);
     const panel = panelMarkup(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
       data, initialChangeId: "change-apply",
     })));
-    expect(panel).toContain('<h2 id="public-award-panel-heading">Second document</h2>');
-    expect(panel).not.toContain("The homepage changed.");
+    expect(panel).toContain('<h2 id="public-award-panel-heading">Updates</h2>');
+    expect(load(panel)('article[data-highlighted="true"] .public-award-update-source').text()).toBe("Second document");
     expectSingleHighlightedChange(panel, "The application instructions changed.");
     expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-apply" }))
       .toEqual(["change-apply"]);
@@ -870,7 +960,7 @@ describe("public award source identity", () => {
   it("does not highlight another source's change when the requested source shares its URL", () => {
     const data = identityData(documentA, documentA);
     const panel = panelMarkup(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
-      data, initialSourceId: "source-home", initialChangeId: "change-apply",
+      data, initialSourceId: "source-home", initialChangeId: "change-apply", initialSection: "sources",
     })));
     expect(panel).toContain("The homepage changed.");
     expect(panel).not.toContain("The application instructions changed.");
@@ -903,8 +993,8 @@ describe("public award source identity", () => {
     const panel = panelMarkup(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
       data, initialChangeId: "change-apply",
     })));
-    expect(panel).toContain('<h2 id="public-award-panel-heading">Second document</h2>');
-    expect(panel).not.toContain("The homepage changed.");
+    expect(panel).toContain('<h2 id="public-award-panel-heading">Updates</h2>');
+    expect(load(panel)('article[data-highlighted="true"] .public-award-update-source').text()).toBe("Second document");
     expectSingleHighlightedChange(panel, "The application instructions changed.");
     expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-apply" }))
       .toEqual(["change-apply"]);
@@ -1002,7 +1092,11 @@ describe("public award update source display titles", () => {
 
   function expectTargetHeading(html: string, title: string) {
     const row = targetRow(html);
-    expect(row.match(/<h3>([\s\S]*?)<\/h3>/)?.[1]).toBe(title);
+    // Source attribution remains exact, but is separate from the meaningful
+    // update headline rather than being repeated as the headline itself.
+    const $ = load(row);
+    expect($(".public-award-update-source").text()).toBe(title);
+    expect($("h3").text()).not.toBe("");
   }
 
   it.each([
@@ -1084,7 +1178,7 @@ describe("public award update source display titles", () => {
     expect(updatePanel(data, "source-target")).not.toContain(`<p>${targetSummary}</p>`);
   });
 
-  it("changes only the heading, preserving recorded data and evidence/preview props", () => {
+  it("keeps source attribution and recorded evidence props without eager or duplicated evidence", () => {
     const data = namingData([listedSources()[1]]);
     data.changes[0].changeDetails = {
       before: "Applications close April 1.", after: "Applications close April 15.",
@@ -1103,15 +1197,15 @@ describe("public award update source display titles", () => {
         sourceTitle: recordedTitle, sourceUrl: sharedUrl,
         changeDetails: data.changes[0].changeDetails,
       };
-      const previewProps = preview.mock.calls.find(([props]) => props.changeEventId === "change-target")?.[0];
       const evidenceProps = evidence.mock.calls.find(([props]) => props.changeEventId === "change-target")?.[0];
-      expect(previewProps).toMatchObject({ ...expectedProps, changeSummary: targetSummary });
-      expect(evidenceProps).toMatchObject({ ...expectedProps, summary: targetSummary });
-      expect(previewProps?.changeDetails).toBe(data.changes[0].changeDetails);
+      expect(preview).not.toHaveBeenCalled();
+      expect(evidenceProps).toMatchObject({ ...expectedProps, summary: targetSummary, hideSourceLink: true });
       expect(evidenceProps?.changeDetails).toBe(data.changes[0].changeDetails);
-      expect(targetRow(panel)).toContain("Loading screenshot preview...");
-      expect(targetRow(panel)).toContain(">Snapshot</button>");
-      expect(targetRow(panel)).toContain("Open source");
+      expect(targetRow(panel)).not.toContain("Loading screenshot preview...");
+      expect(targetRow(panel)).toContain(">View evidence</button>");
+      expect(load(panel)("a").filter((_index, link) => load(link).text().trim() === "Official source")).toHaveLength(1);
+      expect(load(targetRow(panel))(".change-evidence-actions button")).toHaveLength(1);
+      expect(load(targetRow(panel))(".change-evidence-source-link")).toHaveLength(0);
       expect(targetRow(panel)).not.toContain("View change explanation");
       expect(load(targetRow(panel))(".change-summary p").text()).toBe(targetSummary);
       expect(data).toEqual(original);
@@ -1123,6 +1217,64 @@ describe("public award update source display titles", () => {
 });
 
 describe("focused award sections", () => {
+  it("targets each requested update explicitly instead of retaining an older highlight", () => {
+    const data = makeDeepLinkPageData();
+    const older = awardPanelNavigation(data, { kind: "changes" }, { changeId: "change-apply" });
+    const latest = awardPanelNavigation(data, { kind: "changes" }, { changeId: data.changes[0].id });
+    expect(older?.highlightedChangeId).toBe("change-apply");
+    expect(latest?.highlightedChangeId).toBe("change-home");
+    expect(latest?.href).toContain("change=change-home");
+    expect(latest?.href).not.toContain("change-apply");
+    expect(awardPanelNavigation(data, { kind: "changes" })).toMatchObject({
+      highlightedChangeId: null, anchor: null,
+    });
+    expect(awardPanelNavigation(data, { kind: "changes" })?.href).not.toContain("change=");
+  });
+
+  it("keeps unavailable event IDs out of navigation and preserves only valid subsection targets", () => {
+    const data = makeDeepLinkPageData();
+    const before = structuredClone(data);
+    expect(awardPanelNavigation(data, { kind: "changes" }, { changeId: "private-event" })?.highlightedChangeId).toBeNull();
+    expect(awardPanelNavigation(data, { kind: "changes" }, { changeId: "private-event" })?.href).not.toContain("private-event");
+    expect(awardPanelNavigation(data, { kind: "application" }, { detail: "funding", changeId: "change-apply" })).toMatchObject({
+      anchor: "award-funding", highlightedChangeId: null,
+    });
+    expect(awardPanelNavigation(data, { kind: "application" }, { detail: "funding" })?.href).toContain("section=applying#award-funding");
+    expect(awardPanelNavigation(data, { kind: "overview" }, { detail: "funding", changeId: "change-apply" })).toMatchObject({ anchor: null, highlightedChangeId: null });
+    expect(awardPanelNavigation(data, { kind: "application" }, { detail: "unknown" })?.anchor).toBeNull();
+    expect(awardPanelNavigation(data, { kind: "source", sourceId: "unlisted-source" })).toBeNull();
+    expect(data).toEqual(before);
+  });
+
+  it("preserves complete reviewed facts in grouped applying details while Overview stays concise", () => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    const funding = "$35,000. " + "Funding conditions remain part of the official terms. ".repeat(6);
+    data.facts = {
+      ...data.facts,
+      awardAmount: funding,
+      requirements: ["Recipients must submit a final report", "Awardees may not hold another fellowship"],
+      applicationMaterials: ["Two reference letters and an official transcript."],
+      howToApply: ["An institutional nomination is required; apply through your campus adviser."],
+      importantDates: ["Final report: December 1, 2027"],
+      contacts: ["fellowships@example.edu"],
+    };
+    const before = structuredClone(data);
+    const overview = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    const applying = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "applying" })));
+    expect(overview("#public-award-panel").text()).toContain("View funding details");
+    for (const item of [funding, ...data.facts.requirements, ...data.facts.applicationMaterials,
+      ...data.facts.howToApply, ...data.facts.importantDates, ...data.facts.contacts]) {
+      expect(overview("#public-award-panel").text()).not.toContain(item);
+      expect(applying("#public-award-panel").text()).toContain(item.trim());
+    }
+    expect(applying("#public-award-panel h2").text()).toBe("Eligibility & applying");
+    expect(applying(".public-award-facts-section h3").map((_index, heading) => applying(heading).text()).get())
+      .toEqual(["Who can apply", "Application checklist", "Funding", "Dates & deadlines", "Contact"]);
+    expect(applying("#award-eligibility").text()).toContain("Graduate students");
+    expect(applying("#award-schedule").text()).toContain("January 29, 2026");
+    expect(data).toEqual(before);
+  });
+
   it("separates program scope from the date without losing either Boren program", () => {
     const data: PublicAwardPageData = makeDeepLinkPageData();
     data.award.name = "Boren Scholarships and Fellowships";
@@ -1133,9 +1285,11 @@ describe("focused award sections", () => {
     const dates = renderToStaticMarkup(createElement(AwardFactsPanel, {
       facts: data.facts, awardName: data.award.name, section: "dates", onViewSources: () => {},
     }));
+    expect(load(overview)(".public-award-deadlines dt").text()).toBe("Scholarships deadline");
+    expect(load(overview)(".public-award-deadline-list").text()).toBe("January 27, 2027");
+    expect(dates).toContain("Scholarships deadline</dt><dd>January 27, 2027</dd>");
+    expect(dates).toContain("Fellowships: January 20, 2027");
     for (const html of [overview, dates]) {
-      expect(html).toContain("Scholarships deadline</dt><dd>January 27, 2027</dd>");
-      expect(html).toContain("Fellowships: January 20, 2027");
       expect(html).not.toContain("(Boren Scholarships)");
       expect(html).not.toContain("(Boren Fellowships)");
     }
@@ -1164,7 +1318,9 @@ describe("focused award sections", () => {
     expect(application).toContain("An institutional nomination is required.");
     expect(application).toContain("Apply through the official portal.");
     expect(application).toContain("Two references.");
-    expect(application).not.toContain("Graduate students");
+    expect(application).toContain("Graduate students");
+    expect(application).toContain("Institutional deadlines vary.");
+    expect(application).toContain("January 29, 2026");
   });
 
   // The reported screenshot rendered this stored value verbatim on the card.
@@ -1184,14 +1340,16 @@ describe("focused award sections", () => {
   // labelled row rather than accepting a matching date elsewhere on the page.
   function factValue(markup: string, label: string) {
     const $ = load(markup);
-    const rows = $(".public-award-key-fact, .public-award-fact-line")
+    const rows = $(".public-award-key-fact, .public-award-fact-line, .public-award-deadlines > div")
       .filter((_index, row) => $(row).children("dt").text() === label);
     expect(rows.length, `Exactly one ${label} fact row`).toBe(1);
-    return rows.children("dd");
+    const value = rows.children("dd").clone();
+    value.find(".public-award-past-date, .public-award-date-notice").remove();
+    return value;
   }
   const deadlineText = (markup: string) => factValue(markup, "Deadline").text();
 
-  it.each(["Overview", "Dates"] as const)("renders Rhodes' day-first opening beside its existing deadline in %s", (panel) => {
+  it.each(["Applying", "Dates"] as const)("renders Rhodes' day-first opening beside its existing deadline in %s", (panel) => {
     const data: PublicAwardPageData = makeDeepLinkPageData();
     // The date pair is from the saved public Rhodes projection, not a live read.
     data.award.name = "Rhodes Scholarship (United States)";
@@ -1199,8 +1357,8 @@ describe("focused award sections", () => {
     data.facts.openingDate = "1 July 2026";
     data.facts.deadline = "7 October 2026, 11:59 PM Eastern Time";
     const before = structuredClone(data);
-    const html = panel === "Overview"
-      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }))
+    const html = panel === "Applying"
+      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "applying" }))
       : renderToStaticMarkup(createElement(AwardFactsPanel, {
         facts: data.facts, awardName: data.award.name, section: "dates", onViewSources: () => {},
       }));
@@ -1211,7 +1369,7 @@ describe("focused award sections", () => {
     expect(data).toEqual(before);
   });
 
-  it.each(["Overview", "Dates"] as const)("groups only UTC tokens in %s date facts without changing ASCII text", (panel) => {
+  it.each(["Applying", "Dates"] as const)("groups only UTC tokens in %s date facts without changing ASCII text", (panel) => {
     const data: PublicAwardPageData = makeDeepLinkPageData();
     data.facts.deadline = RAW_DEADLINE;
     data.facts.openingDate = "2026-01-05T09:30:00+05:30";
@@ -1220,8 +1378,8 @@ describe("focused award sections", () => {
       "2026-04-16T09:00:00+01:00: Interview note (UTC-09:00)",
     ];
     const before = structuredClone(data);
-    const html = panel === "Overview"
-      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }))
+    const html = panel === "Applying"
+      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "applying" }))
       : renderToStaticMarkup(createElement(AwardFactsPanel, {
         facts: data.facts, section: "dates", onViewSources: () => {},
       }));
@@ -1253,7 +1411,7 @@ describe("focused award sections", () => {
     data.facts.eligibility = [READABLE_DEADLINE, "Policy note (UTC+05:30)"];
     data.facts.requirements = [READABLE_DEADLINE];
     const before = structuredClone(data);
-    const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }));
+    const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "applying" }));
     for (const label of ["Award amount", "Eligibility", "Requirements"]) {
       expect(factValue(html, label).find(".award-date-zone").length).toBe(0);
     }
@@ -1354,7 +1512,7 @@ describe("focused award sections", () => {
     expect(data).toEqual(before);
   });
 
-  it.each(["Overview", "Dates"] as const)("gives Goldwater's recurring deadline and labeled timeline the shared style in %s without changing reviewed facts", (panel) => {
+  it.each(["Applying", "Dates"] as const)("gives Goldwater's recurring deadline and labeled timeline the shared style in %s without changing reviewed facts", (panel) => {
     const data: PublicAwardPageData = makeDeepLinkPageData();
     data.award.name = "Barry Goldwater Scholarship";
     data.facts.deadline = REVIEWED_PROSE;
@@ -1364,8 +1522,8 @@ describe("focused award sections", () => {
       "Institutional deadlines vary.",
     ];
     const before = structuredClone(data);
-    const html = panel === "Overview"
-      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }))
+    const html = panel === "Applying"
+      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "applying" }))
       : renderToStaticMarkup(createElement(AwardFactsPanel, {
         facts: data.facts, awardName: data.award.name, section: "dates", onViewSources: () => {},
       }));
@@ -1420,7 +1578,7 @@ describe("focused award sections", () => {
 
   it("explains missing details and offers sources instead of inventing a value", () => {
     const html = renderToStaticMarkup(createElement(AwardFactsPanel, {
-      facts: makeDeepLinkPageData().facts, section: "application", onViewSources: () => {},
+      facts: makeDeepLinkPageData().sources[0].facts, section: "application", onViewSources: () => {},
     }));
     expect(html).toContain("These details are not available yet.");
     expect(html).toContain("View official sources");
@@ -1430,7 +1588,7 @@ describe("focused award sections", () => {
   it.each([
     { lastCheckedAt: null, dateText: "Source check date unavailable" },
     { lastCheckedAt: "2026-06-26T12:00:00.000Z", dateText: "Last source check Jun 26, 2026" },
-  ])("keeps the six sections and labels the source panel's date: $dateText", ({ lastCheckedAt, dateText }) => {
+  ])("keeps four sections without claiming the newest source check verifies every fact: $dateText", ({ lastCheckedAt, dateText }) => {
     const fixture = makeDeepLinkPageData();
     const data: PublicAwardPageData = {
       ...fixture, facts: fixture.sources[0].facts, sources: [], changes: [], lastCheckedAt,
@@ -1438,11 +1596,12 @@ describe("focused award sections", () => {
     const before = structuredClone(data);
     const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }));
     const sourcePanel = renderToStaticMarkup(createElement(AwardSourcesPanel, { data, onSelectSource: () => {} }));
-    expect(sourcePanel).toContain(dateText);
+    expect(sourcePanel).not.toContain(dateText);
+    expect(sourcePanel).toContain("Check dates belong to individual pages, not verification of every award detail.");
     expect(asideMarkup(html)).not.toContain(dateText);
     expect(panelMarkup(html)).toContain("Award details are not available yet.");
     expect(asideMarkup(html)).not.toContain("0 source pages");
-    expect(asideMarkup(html).match(/aria-pressed=/g)).toHaveLength(6);
+    expect(asideMarkup(html).match(/aria-pressed=/g)).toHaveLength(4);
     expect(html).not.toContain("January 29, 2026");
     expect(data).toEqual(before);
   });
@@ -1764,9 +1923,9 @@ function expectSingleHighlightedChange(mainHtml: string, summary: string) {
   );
   expect(rows).toHaveLength(2);
   const row = rows[1].slice(0, rows[1].indexOf("</article>"));
-  expect(row).toContain("Selected update");
+  expect(row).not.toContain("Selected update");
   expect(row).toContain(summary);
-  expect(mainHtml.split("Selected update")).toHaveLength(2);
+  expect(mainHtml).not.toContain("Selected update");
   expect(mainHtml.split('aria-current="true"')).toHaveLength(2);
 }
 
@@ -1823,7 +1982,7 @@ describe("PublicAwardWorkspace header action", () => {
     const actions = headerActions(html);
 
     expect(actions.startsWith(`<div class="public-award-console-actions">${OFFICIAL_HOMEPAGE_LINK}`)).toBe(true);
-    expect(actions).toContain("Official homepage</a></div>");
+    expect(actions).toContain("Official award site</a></div>");
     expect(actions).not.toContain('href="/updates"');
     expect(actions.split("<a ")).toHaveLength(2);
     expect(html).not.toContain('href="/contact"');

@@ -8,7 +8,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { presentAwardDateField } from "@/lib/award-date-presentation";
+import { presentAwardDeadlines } from "@/lib/award-page-presentation";
 import { directoryFilterOptions, getAwardDirectoryCategories } from "@/lib/award-directory-filters";
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
@@ -25,6 +25,7 @@ export type SharedAwardCard = {
   officialHomepage: string | null;
   summary: string | null;
   deadline: string | null;
+  importantDates?: string[];
   academicLevels: string[];
   disciplines: string[];
   citizenship: string[];
@@ -89,8 +90,10 @@ const allFilterLabel = "All";
 // an award links.
 export function AwardDiscoveryWorkspace({
   sharedAwards,
+  presentationAsOf,
 }: {
   sharedAwards: SharedAwardCard[];
+  presentationAsOf?: string;
   canManage: boolean;
   isAuthenticated: boolean;
 }) {
@@ -455,10 +458,7 @@ export function AwardDiscoveryWorkspace({
                     key={award.id}
                     onNavigate={() => setSearchOpen(false)}
                   >
-                    <span className="award-search-option-title">{award.name}</span>
-                    {searchResultMetaText(award) && (
-                      <span className="award-search-option-meta">{searchResultMetaText(award)}</span>
-                    )}
+                    <AwardDirectoryCardContent award={award} presentationAsOf={presentationAsOf} searchResult />
                   </Link>
                 ))}
                 {matches.length === 0 && (
@@ -578,44 +578,62 @@ export function AwardDiscoveryWorkspace({
           {renderBrowseControls("top")}
 
           <div className="grid gap-3">
-            {visibleLetterAwards.map((award) => {
-              const deadline = presentAwardDateField(award.deadline, award.name);
-              return (
-                <article
-                  className="award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)]"
-                  key={award.id}
-                >
-                  <Link className="award-row-summary block" href={awardDirectoryHref(award)}>
-                    <div className={`award-row-grid ${styles.rowGrid}`}>
-                      <div className="min-w-0">
-                        <span className="inline-flex min-w-0 items-center gap-2 font-bold">
-                          <span>{award.name}</span>
-                          <ChevronRight size={17} aria-hidden="true" />
-                        </span>
-                        <AwardCardGlance
-                          changeCount={award.changeCount}
-                          latestUpdateAt={award.latestUpdateAt}
-                          firstPublishedCaptureAt={award.firstPublishedCaptureAt}
-                        />
-                      </div>
-                      <div className="award-row-deadline">
-                        <span>{deadline.label}</span>
-                        {/* A blank value means no deadline is listed here; it says
-                            nothing about whether one is upcoming. A listed value
-                            keeps its meaning; a recognized program scope goes
-                            in the label rather than beside the date. */}
-                        <strong>{deadline.value ? <AwardDateValue value={deadline.value} /> : "Not listed"}</strong>
-                      </div>
-                    </div>
-                  </Link>
-                </article>
-              );
-            })}
+            {visibleLetterAwards.map((award) => (
+              <article
+                className="award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)]"
+                key={award.id}
+              >
+                <Link className="award-row-summary block" href={awardDirectoryHref(award)}>
+                  <AwardDirectoryCardContent award={award} presentationAsOf={presentationAsOf} />
+                </Link>
+              </article>
+            ))}
           </div>
 
           {renderBrowseControls("bottom")}
         </section>
       )}
+    </div>
+  );
+}
+
+// Search and A–Z browsing keep the same facts and provenance. Only the title
+// treatment differs; neither view guesses dates or reduces scoped deadlines.
+function AwardDirectoryCardContent({
+  award,
+  presentationAsOf,
+  searchResult = false,
+}: {
+  award: SharedAwardCard;
+  presentationAsOf?: string;
+  searchResult?: boolean;
+}) {
+  const deadline = presentAwardDeadlines(award, award.name, presentationAsOf ? new Date(presentationAsOf) : undefined);
+  return (
+    <div className={`award-row-grid ${styles.rowGrid}`}>
+      <div className="min-w-0">
+        {searchResult ? <span className="award-search-option-title">{award.name}</span> : (
+          <span className="inline-flex min-w-0 items-center gap-2 font-bold">
+            <span>{award.name}</span>
+            <ChevronRight size={17} aria-hidden="true" />
+          </span>
+        )}
+        <AwardCardGlance
+          changeCount={award.changeCount}
+          latestUpdateAt={award.latestUpdateAt}
+          firstPublishedCaptureAt={award.firstPublishedCaptureAt}
+        />
+      </div>
+      <div className="award-row-deadline">
+        <span>{deadline.entries.length ? deadline.label : "Deadline"}</span>
+        {deadline.entries.length ? deadline.entries.map((entry) => (
+          <strong key={`${entry.label}:${entry.value}`}>
+            {deadline.entries.length > 1 && entry.label !== "Application deadline" && entry.label !== "Deadline" && <span>{entry.label}: </span>}
+            <AwardDateValue value={entry.value} />
+            {entry.status === "past" && <small className="block font-normal text-[var(--muted)]">Past date</small>}
+          </strong>
+        )) : <strong>Not listed</strong>}
+      </div>
     </div>
   );
 }
@@ -637,33 +655,4 @@ function searchStatusText(total: number, shown: number) {
   if (total === 0) return "No matches";
   const awards = `matching award${total === 1 ? "" : "s"}`;
   return shown < total ? `Showing ${shown} of ${total} ${awards}` : `${total} ${awards}`;
-}
-
-function searchResultMetaText(award: SharedAwardCard) {
-  if (award.sourceCount === null) return null;
-  return sourceStatusText(award);
-}
-
-function sourceStatusText(award: SharedAwardCard) {
-  if (award.sourceCount === null) {
-    // The directory carries each award's recorded public update count but
-    // not its source pages, so the count is stated and the source guidance
-    // stays. A row without a recorded count states nothing about updates.
-    const updates = award.changeCount === null ? null : recordedUpdatesText(award.changeCount);
-    return updates ? `${updates} · Open to view source pages` : "Open to view source pages";
-  }
-
-  const updates = recordedUpdatesText(award.changeCount ?? award.changes.length);
-  if (award.sourceCount === 0) return `Source search pending · ${updates}`;
-
-  return [
-    `${award.sourceCount} source page${award.sourceCount === 1 ? "" : "s"}`,
-    updates,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-function recordedUpdatesText(changeCount: number) {
-  return `${changeCount} recorded update${changeCount === 1 ? "" : "s"}`;
 }

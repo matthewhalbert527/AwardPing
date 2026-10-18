@@ -110,7 +110,7 @@ export function publicAwardFactsFromAward(input: {
   // splitting and cleanup still apply. The caller is responsible for ensuring
   // that each date includes the context required by the editorial policy.
   const importantDates = hasStructuredFacts
-    ? rawImportantDates.flatMap(splitFactItems)
+    ? structuredArrayField(rawImportantDates.flatMap(splitFactItems))
     : normalizeImportantDateItems(rawImportantDates, { deadline, openingDate });
 
   return {
@@ -301,7 +301,7 @@ function structuredArrayField(value: unknown) {
 }
 
 function listFact(values: string[]) {
-  const clean = values.map(cleanString).filter(Boolean);
+  const clean = structuredArrayField(values);
   if (clean.length === 0) return null;
   return clean.length === 1 ? clean[0] : clean;
 }

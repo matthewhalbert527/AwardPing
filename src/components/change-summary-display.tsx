@@ -1,4 +1,4 @@
-import { changeSummaryDisplayParts } from "@/lib/change-summary";
+import { changeSummaryPresentation } from "@/lib/change-summary";
 
 export function ChangeSummaryDisplay({
   summary,
@@ -15,7 +15,7 @@ export function ChangeSummaryDisplay({
   compact?: boolean;
   showLabel?: boolean;
 }) {
-  const parts = changeSummaryDisplayParts(summary, sourceUrl, sourceTitle, changeDetails);
+  const parts = changeSummaryPresentation(summary, sourceUrl, sourceTitle, changeDetails);
 
   return (
     <div className={compact ? "change-summary change-summary-compact" : "change-summary"}>

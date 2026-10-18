@@ -20,6 +20,10 @@ function overview(facts: PublicAwardPageData["facts"]) {
   return renderToStaticMarkup(createElement(PublicAwardWorkspace, { data: pageData(facts) }));
 }
 
+function applying(facts: PublicAwardPageData["facts"]) {
+  return renderToStaticMarkup(createElement(PublicAwardWorkspace, { data: pageData(facts), initialSection: "applying" }));
+}
+
 function values(markup: string, label: string) {
   const $ = load(markup);
   const row = $(".public-award-key-fact, .public-award-fact-line")
@@ -30,7 +34,7 @@ function values(markup: string, label: string) {
   return items.length ? items.map((_index, item) => $(item).text()).get() : [dd.text()];
 }
 
-describe("normalized fact boundaries in the main overview", () => {
+describe("normalized fact boundaries in full Eligibility & applying details", () => {
   const fields = [
     ["academic_levels", "Academic level"], ["disciplines", "Discipline"],
     ["citizenship", "Citizenship"], ["eligibility", "Eligibility"],
@@ -46,7 +50,7 @@ describe("normalized fact boundaries in the main overview", () => {
       const publicFacts = { [field]: items };
       const facts = publicAwardFactsFromAward({ publicFacts });
       const before = structuredClone({ publicFacts, facts });
-      const markup = overview(facts);
+      const markup = applying(facts);
       expect(values(markup, label)).toEqual(items);
       expect({ publicFacts, facts }).toEqual(before);
     }
@@ -60,24 +64,24 @@ describe("normalized fact boundaries in the main overview", () => {
     expect(load(markup)(".public-award-key-facts li")).toHaveLength(2);
   });
 
-  it.each(["overview", "dates"] as const)("keeps normalized important-date item boundaries in %s", (surface) => {
+  it.each(["applying", "dates"] as const)("keeps normalized important-date item boundaries in %s", (surface) => {
     const facts = publicAwardFactsFromAward({ publicFacts: {
       important_dates: ["Interviews: March 1, 2027; Decisions: April 1, 2027"],
     } });
     expect(facts.importantDates).toEqual(["Interviews: March 1, 2027", "Decisions: April 1, 2027"]);
-    const markup = surface === "overview" ? overview(facts) : renderToStaticMarkup(createElement(AwardFactsPanel, {
+    const markup = surface === "applying" ? applying(facts) : renderToStaticMarkup(createElement(AwardFactsPanel, {
       facts, section: "dates", onViewSources: () => {},
     }));
     expect(values(markup, "Important dates")).toEqual(facts.importantDates);
   });
 
-  it.each(["overview", "eligibility"] as const)("ignores blank direct array entries without changing nonempty wording in %s", (surface) => {
+  it.each(["overview", "applying", "eligibility"] as const)("ignores blank direct array entries without changing nonempty wording in %s", (surface) => {
     for (const citizenship of [["", "  "], ["", "A condition; its exception.", "  ", "Another condition."]]) {
       // Direct inputs exercise the renderer guard, independently of the
       // normalizer which already removes these blanks in production.
       const facts = { ...publicAwardFactsFromAward({}), citizenship };
       const before = structuredClone(facts);
-      const markup = surface === "overview" ? overview(facts) : renderToStaticMarkup(createElement(AwardFactsPanel, {
+      const markup = surface === "overview" ? overview(facts) : surface === "applying" ? applying(facts) : renderToStaticMarkup(createElement(AwardFactsPanel, {
         facts, section: "eligibility", onViewSources: () => {},
       }));
       const $ = load(markup);
@@ -89,5 +93,22 @@ describe("normalized fact boundaries in the main overview", () => {
       expect(facts).toEqual(before);
       expect($("li").filter((_index, node) => $(node).text().trim() === "")).toHaveLength(0);
     }
+  });
+
+  it("keeps complete qualifications in full details instead of duplicating them in Overview", () => {
+    const facts = publicAwardFactsFromAward({ publicFacts: {
+      eligibility: ["Students must be enrolled full-time; part-time enrollment is permitted only with written approval."],
+      requirements: ["Institutional nomination is required, except where the official source lists a waiver."],
+      application_materials: ["Two references; one must be from the research supervisor."],
+      how_to_apply: ["Apply through the institution unless its nomination process is unavailable."],
+    } });
+    const before = structuredClone(facts);
+    const overviewText = load(overview(facts)).text();
+    for (const value of [...facts.eligibility, ...facts.requirements, ...facts.applicationMaterials, ...facts.howToApply]) {
+      expect(overviewText).not.toContain(value);
+      expect(load(applying(facts)).text()).toContain(value);
+    }
+    expect(overviewText).toContain("Eligibility & applying");
+    expect(facts).toEqual(before);
   });
 });

@@ -1,12 +1,123 @@
 import { describe, expect, it } from "vitest";
 import {
   changeSummaryDisplayParts,
+  changeSummaryPresentation,
   changeSummaryDedupeKey,
   dedupeChangeSummaries,
   displayChangeSummary,
   isUsefulChangeForAward,
   isUsefulChangeSummary,
 } from "@/lib/change-summary";
+
+describe("concise public change presentation", () => {
+  const before = [
+    "2026 Eligibility Requirements",
+    "Be a college junior pursuing a bachelor’s degree during the 2025-2026 academic year.",
+    "expects to receive a bachelor’s degree between December 2026 and August 2027.",
+  ];
+  const after = [
+    "2027 Eligibility Requirements",
+    "Be a college junior pursuing a bachelor’s degree during the 2026-2027 academic year.",
+    "expects to receive a bachelor’s degree between December 2027 and August 2028.",
+  ];
+  const categories = ["Applicant eligibility", "Applicant-facing award information", "Application instructions"];
+  const cycleSummary = before.map((value, index) => `${categories[index]} changed from “${value}” to “${after[index]}”.`).join(" ");
+  const cycleDetails = {
+    reader_summary: cycleSummary, change_type: "eligibility", is_alert_worthy: true,
+    structured_diff: { removed_text: before, added_text: after },
+  };
+
+  it("condenses the retained Beinecke cycle rollover without inventing a deadline or discarding old dates", () => {
+    const original = structuredClone(cycleDetails);
+    const result = changeSummaryPresentation("Unused fallback", null, "Eligibility Requirements", cycleDetails);
+    expect(result).toMatchObject({ title: "Eligibility criteria updated for 2027", condensed: true });
+    expect(result.paragraphs).toEqual([
+      "Eligibility criteria now cover 2027 (previously 2026).",
+      "College juniors pursuing a bachelor’s degree: 2026–2027 academic year (previously 2025–2026).",
+      "Expected bachelor’s degree: between December 2027 and August 2028 (previously December 2026–August 2027).",
+    ]);
+    expect(result.text.length).toBeLessThan(cycleSummary.length * 0.6);
+    expect(result.text).not.toMatch(/deadline|published|every requirement/i);
+    expect(cycleDetails).toEqual(original);
+  });
+
+  it("does not simplify a summary that contradicts the supplied current evidence", () => {
+    const details = { ...cycleDetails, structured_diff: { removed_text: before, added_text: before } };
+    const result = changeSummaryPresentation(null, null, null, details);
+    expect(result.condensed).toBe(false);
+    expect(result.text).toBe(changeSummaryDisplayParts(null, null, null, details).text);
+  });
+
+  it("retains all distinct changes, times, audience restrictions, negations and exceptions", () => {
+    const summary = [
+      'Application deadline or cycle date changed from “US-resident applicants must apply by October 1, 2026 at 5 p.m. UK time.” to “US-resident applicants must apply by October 14, 2026 at 11:59 p.m. UK time.”.',
+      'Applicant eligibility now includes “Applicants outside the US are not eligible for this round, unless the stated exception applies.”.',
+      'Award amount or funding changed from “Tuition only; travel is not covered.” to “Tuition plus travel up to $1,000, only with prior approval.”.',
+      'Application instructions no longer includes “Applicants must submit two recommendations.”.',
+    ].join(" ");
+    const result = changeSummaryPresentation(summary);
+    expect(result).toMatchObject({ condensed: true, title: "Award information changed" });
+    expect(result.paragraphs).toHaveLength(4);
+    expect(result.text).toContain("October 1, 2026 at 5 p.m. UK time");
+    expect(result.text).toContain("October 14, 2026 at 11:59 p.m. UK time");
+    expect(result.text).toContain("Applicants outside the US are not eligible for this round, unless the stated exception applies.");
+    expect(result.text).toContain("Tuition only; travel is not covered.");
+    expect(result.text).toContain("Tuition plus travel up to $1,000, only with prior approval.");
+    expect(result.text).toContain("Application instructions removed from this page: Applicants must submit two recommendations.");
+    expect(result.text).not.toContain("recommendations are no longer required");
+  });
+
+  it("does not describe a first observation as a new publication or substantive change", () => {
+    const result = changeSummaryPresentation("The publisher posted this PDF today.", null, null, {
+      event_kind: "new_official_document", reader_summary: cycleSummary,
+    });
+    expect(result.title).toBe("Official document first recorded");
+    expect(result.text).toBe("AwardPing first recorded this official document. This does not establish when it was published.");
+    expect(result.condensed).toBe(false);
+  });
+
+  it.each([
+    `${cycleSummary} This applies only to applicants nominated by a participating institution.`,
+    'Applicant eligibility now includes “Applicants must be enrolled. Application instructions now includes an exception only for part-time students.”.',
+    'Applicant eligibility changed from “Applicants are eligible only if...” to “Applicants are not eligible”.',
+    'Applicant eligibility now includes “Applicants must apply before July 1, unless the',
+    'Applicants may submit without a nomination only if their institution does not participate.',
+  ])("preserves unrecognized/ambiguous prose without partial rewriting: %s", (summary) => {
+    const result = changeSummaryPresentation(summary);
+    // A complete quoted condition is safe to unwrap, but never to split into
+    // multiple changes or discard the text nested inside the quote.
+    if (summary.includes("part-time")) {
+      expect(result.paragraphs).toHaveLength(1);
+      expect(result.text).toContain("Application instructions now includes an exception only for part-time students.");
+    } else {
+      expect(result.condensed).toBe(false);
+      expect(result.text).toBe(changeSummaryDisplayParts(summary).text);
+    }
+  });
+
+  it.each(['"', "'", "“", "‘"])("accepts complete %s quoted templates, including apostrophes", (open) => {
+    const close = ({ '"': '"', "'": "'", "“": "”", "‘": "’" })[open];
+    const summary = `Applicant eligibility now includes ${open}Applicants must be pursuing a bachelor's degree, unless the stated exception applies.${close}.`;
+    const result = changeSummaryPresentation(summary);
+    expect(result.condensed).toBe(true);
+    expect(result.text).toContain("bachelor's degree, unless the stated exception applies.");
+  });
+
+  it("does not promote an arbitrary year change to a universal eligibility-cycle claim", () => {
+    const summary = 'Application deadline or cycle date changed from “Applications open in 2026.” to “Applications open in 2028.”.';
+    const result = changeSummaryPresentation(summary);
+    expect(result.title).toBe("Application dates changed");
+    expect(result.text).toContain("2026");
+    expect(result.text).toContain("2028");
+    expect(result.text).not.toContain("cycle");
+  });
+
+  it("keeps evidence-policy rejection and uncertainty outside the condensed path", () => {
+    for (const extra of [{ generation_status: "rejected" }, { quality_flags: ["changed_facts_not_supported_by_evidence"] }]) {
+      expect(changeSummaryPresentation(null, null, null, { ...cycleDetails, ...extra }).condensed).toBe(false);
+    }
+  });
+});
 
 describe("change summary filtering", () => {
   it("hides vague generated summaries", () => {

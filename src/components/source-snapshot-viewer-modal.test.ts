@@ -386,10 +386,10 @@ describe("expanded screenshot shape validation and compatibility", () => {
     const html = await loaded(imageSnapshot());
     expect(html).toContain('src="https://signed.test/current.jpg"');
     expect(html).toContain("Open image");
-    expect(html).toMatch(/role="tab"[^>]*>Current<\/button>/);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>Current<\/button>/);
   });
 
-  it("shows one description and one capture timestamp without repeat quotes or metadata", async () => {
+  it("shows source context and one capture timestamp without repeating the card description", async () => {
     const summary = "Applications now close on April 15 instead of April 1.";
     const capturedAt = "2026-09-09T14:10:00.000Z";
     const body = {
@@ -420,19 +420,19 @@ describe("expanded screenshot shape validation and compatibility", () => {
     const before = structuredClone({ body, props });
     const $ = load(await loaded(body, props));
 
-    expect($(".source-snapshot-evidence p")).toHaveLength(1);
-    expect($(".source-snapshot-evidence").text().trim()).toBe(summary);
-    expect($(".source-snapshot-evidence").attr("tabindex")).toBe("0");
-    expect($("[role='dialog']").text().split(summary)).toHaveLength(2);
+    expect($(".source-snapshot-evidence")).toHaveLength(0);
+    expect($("[role='dialog']").text()).not.toContain(summary);
     expect($(".source-snapshot-evidence-grid, .source-snapshot-evidence-badges, .source-snapshot-header .badge")).toHaveLength(0);
     expect($(".source-snapshot-header h2").text()).toBe(eventProps.sourceTitle);
     expect($(".source-snapshot-source-link").attr("href")).toBe(eventProps.sourceUrl);
+    expect($(".source-snapshot-source-link").text().trim()).toBe("Official source");
     expect($("time")).toHaveLength(1);
     expect($("time").attr("datetime")).toBe(capturedAt);
     expect($("time").text()).toMatch(/^Captured /);
     expect($(".source-snapshot-version-control > span").text()).toBe("Saved page");
     expect($(".source-snapshot-localization-note").text()).toBe("Highlight unavailable for this saved page.");
-    expect($("[role='tab']").map((_index, tab) => $(tab).text()).get()).toEqual(["Current", "Previous"]);
+    expect($("[role='group'][aria-label='Evidence version'] button").map((_index, button) => $(button).text()).get()).toEqual(["Current", "Previous"]);
+    expect($("[role='tab'], [aria-selected]")).toHaveLength(0);
     expect($("img").attr("src")).toBe("https://signed.test/current.jpg");
     expect($("[role='dialog']").text()).not.toMatch(/Applications close April|Application requirements|High confidence|Update advising calendars|PRIVATE|Detected/);
     expect({ body, props }).toEqual(before);
@@ -463,7 +463,10 @@ describe("expanded screenshot shape validation and compatibility", () => {
       previous: { captured_at: null, objects: { full: asset("previous.jpg") } },
     });
     expect(html).toContain('src="https://signed.test/previous.jpg"');
-    expect(html).toMatch(/aria-selected="true"[^>]*role="tab"[^>]*>Previous<\/button>/);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>Previous<\/button>/);
+    const $ = load(html);
+    expect($("button").filter((_index, button) => $(button).text() === "Current").prop("disabled"))
+      .toBe(reason === "empty current");
   });
 
   it("preserves historical artifact wording", async () => {
@@ -481,7 +484,7 @@ describe("expanded screenshot shape validation and compatibility", () => {
       previous: { captured_at: null, objects: {} },
     }, sourceProps);
     expect(html).toContain('src="https://signed.test/page.jpg"');
-    expect(html).toMatch(/role="tab"[^>]*>Latest<\/button>/);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>Latest<\/button>/);
     expect(html).not.toMatch(/thumb\.jpg|meta\.json|could not be loaded/);
   });
 
@@ -490,7 +493,7 @@ describe("expanded screenshot shape validation and compatibility", () => {
       full: { ...asset("event.jpg"), content_type: null, width: null, height: null, clip: null },
     } } });
     expect(html).toContain('src="https://signed.test/event.jpg"');
-    expect(html).toMatch(/role="tab"[^>]*>Current<\/button>/);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>Current<\/button>/);
   });
 
   it("keeps first-observed PDF wording and omits the previous-version control", async () => {
@@ -514,8 +517,8 @@ describe("expanded screenshot shape validation and compatibility", () => {
     expect(html).not.toContain(wording);
     expect(html).toContain('href="https://signed.test/document.pdf"');
     expect(html).not.toMatch(/Immutable|crop localization/);
-    expect(html).toMatch(/role="tab"[^>]*>First observed<\/button>/);
-    expect(html).not.toMatch(/role="tab"[^>]*>Previous<\/button>/);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>First observed<\/button>/);
+    expect(html).not.toMatch(/aria-pressed="[^"]+"[^>]*>Previous<\/button>/);
     const $ = load(html);
     expect($(".source-snapshot-evidence p")).toHaveLength(1);
     expect($(".source-snapshot-evidence").text().trim()).toBe(
@@ -695,6 +698,22 @@ describe("expanded screenshot request ownership", () => {
 });
 
 describe("expanded screenshot executed focus and close behavior", () => {
+  it("names the optional evidence action and announces its open state", () => {
+    mockFetch(deferred<Response>().promise);
+    const harness = mount();
+    const closed = load(harness.render());
+    expect(closed("button").text()).toBe("View evidence");
+    expect(closed("button").attr("aria-haspopup")).toBe("dialog");
+    expect(closed("button").attr("aria-expanded")).toBe("false");
+    const opened = load(harness.open());
+    expect(opened(".source-snapshot-trigger").attr("aria-expanded")).toBe("true");
+    expect(opened("[role='dialog']").attr("aria-label")).toBe(`${eventProps.sourceTitle} evidence`);
+    expect(opened(".source-snapshot-close").attr("aria-label")).toBe("Close evidence viewer");
+    expect(opened("[role='status']").text()).toContain(loading);
+    harness.close("Escape");
+    expect(load(harness.render())(".source-snapshot-trigger").attr("aria-expanded")).toBe("false");
+  });
+
   it("prevents the backdrop's native mousedown default from stealing restored trigger focus", () => {
     mockFetch(deferred<Response>().promise);
     const harness = mount();

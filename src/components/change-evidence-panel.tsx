@@ -13,6 +13,7 @@ export function ChangeEvidencePanel({
   changeDetails,
   detectedAt,
   compact = false,
+  hideSourceLink = false,
 }: {
   changeEventId?: string | null;
   sourceId?: string | null;
@@ -23,6 +24,7 @@ export function ChangeEvidencePanel({
   changeDetails?: unknown;
   detectedAt?: string | null;
   compact?: boolean;
+  hideSourceLink?: boolean;
 }) {
   const evidence = buildChangeEvidence({
     sourceUrl,
@@ -47,10 +49,10 @@ export function ChangeEvidencePanel({
             sourceUrl={sourceUrl}
           />
         ) : null}
-        {sourceUrl && (
+        {sourceUrl && !hideSourceLink && (
           <a className="change-evidence-source-link" href={sourceUrl} rel="noreferrer" target="_blank">
             <ExternalLink size={14} aria-hidden="true" />
-            Open source
+            Official source
           </a>
         )}
       </div>

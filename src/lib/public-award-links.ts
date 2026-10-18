@@ -12,7 +12,13 @@ const PUBLIC_AWARD_QUERY_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export type PublicAwardContext = {
   sourceId?: string | null;
   changeId?: string | null;
+  section?: string | null;
 };
+
+export function publicAwardSection(value: unknown) {
+  return typeof value === "string" && ["overview", "updates", "applying", "sources"].includes(value)
+    ? value : undefined;
+}
 
 export type LiveUpdateLinkInput = {
   id: string;
@@ -35,6 +41,8 @@ export function publicAwardHref(path: string, context: PublicAwardContext = {}) 
   const params = new URLSearchParams();
   if (context.sourceId) params.set(PUBLIC_AWARD_SOURCE_PARAM, context.sourceId);
   if (context.changeId) params.set(PUBLIC_AWARD_CHANGE_PARAM, context.changeId);
+  const section = publicAwardSection(context.section);
+  if (section) params.set("section", section);
   const query = params.toString();
   const safePath = sameOriginPath(path);
   return query ? `${safePath}?${query}` : safePath;

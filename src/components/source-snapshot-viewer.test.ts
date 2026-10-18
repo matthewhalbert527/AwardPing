@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   selectPrimarySnapshotObject,
+  snapshotFocusRatio,
   snapshotInitialVersion,
   snapshotLocalizationLabel,
   snapshotLocalizationNote,
@@ -65,6 +66,32 @@ describe("source snapshot viewer evidence selection", () => {
         objects: { crop, full },
       }),
     ).toMatchObject({ evidenceKind: "event_full", key: full.key });
+  });
+
+  it("starts verified crops at the top instead of reapplying the full-page scroll position", () => {
+    const side = {
+      captured_at: null,
+      exact_overlap: true,
+      focus_ratio: 0.85,
+      objects: { crop: { key: "crop.jpg", url: "https://signed.test/crop.jpg" } },
+    };
+    expect(snapshotFocusRatio(side, "change_event")).toBeNull();
+    expect(snapshotFocusRatio(side, "source_current")).toBeNull();
+  });
+
+  it("does not imply a known change location by scrolling an unlocalized event page", () => {
+    const side = {
+      captured_at: null,
+      exact_overlap: false,
+      focus_ratio: 0.85,
+      objects: { full: { key: "full.jpg", url: "https://signed.test/full.jpg" } },
+    };
+    expect(snapshotFocusRatio(side, "change_event")).toBeNull();
+    expect(snapshotFocusRatio(side, "source_current")).toBe(0.85);
+  });
+
+  it.each([NaN, Infinity, -0.1, 1.1, undefined, null])("rejects invalid approximate focus %s", (focus_ratio) => {
+    expect(snapshotFocusRatio({ captured_at: null, focus_ratio, objects: {} })).toBeNull();
   });
 
   it("describes event fallback honestly and never calls generic matching a changed section", () => {

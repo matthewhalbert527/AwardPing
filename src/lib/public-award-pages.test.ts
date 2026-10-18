@@ -206,6 +206,14 @@ describe("public award page deep links", () => {
     expect(mocks.loadStage1PublicationIndex).not.toHaveBeenCalled();
   });
 
+  it("exposes pinned fact review time separately from source checks with one serialized presentation clock", async () => {
+    const data = await getPublicAwardPageBySlug("example-fellowship");
+    expect(data?.factsReviewedAt).toBe("2026-07-01T00:00:00.000Z");
+    expect(data?.presentationAsOf).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(Number.isFinite(Date.parse(data?.presentationAsOf || ""))).toBe(true);
+    expect(data).not.toHaveProperty("factsGeneratedAt");
+  });
+
   it("keeps an unverified award out of public data loading", async () => {
     mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex({ ...publication(), effectivelyVerified: false }));
 
@@ -261,13 +269,13 @@ describe("public award page deep links", () => {
       createElement(PublicAwardWorkspace, { data, initialChangeId: NINTH_CHANGE_ID, initialSourceId: SOURCE_APPLY }),
     );
     const main = html.slice(html.indexOf("</aside>"));
-    expect(main).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
+    expect(main).toContain('<h2 id="public-award-panel-heading">Updates</h2>');
     expect(main).toContain('href="https://example.edu/fellowship/apply"');
     expect(main).not.toContain('<h2 id="public-award-panel-heading">Overview</h2>');
     const rows = main.split('<article aria-current="true" class="public-award-change-line" data-highlighted="true">');
     expect(rows).toHaveLength(2);
     expect(rows[1].slice(0, rows[1].indexOf("</article>"))).toContain("Material update 9");
-    expect(main.split("Selected update")).toHaveLength(2);
+    expect(main).not.toContain("Selected update");
   });
 
   it("keeps the recent list unchanged when the gates return nothing for the requested id", async () => {

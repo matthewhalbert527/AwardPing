@@ -149,18 +149,31 @@ function mainMarkup(html: string) {
 
 function expectSelectedApplyChange(html: string) {
   const main = mainMarkup(html);
+  const $ = load(main);
   expect(html).toContain("<h1>Example Fellowship</h1>");
-  expect(load(main)('.public-award-source-detail-heading a[href="https://example.edu/fellowship/apply"]').text().trim()).toBe("Official source");
-  expect(main).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
+  expect(main).toContain('<h2 id="public-award-panel-heading">Updates</h2>');
   expect(main).not.toContain('<h2 id="public-award-panel-heading">Overview</h2>');
-  expect(main).not.toContain("The homepage changed.");
-  const rows = main.split(
-    '<article aria-current="true" class="public-award-change-line" data-highlighted="true">',
-  );
+  expect($(".public-award-source-detail-heading")).toHaveLength(0);
+  // A change link now opens the award's Updates panel, not a source-filtered
+  // history. The requested event alone is selected; other eligible updates
+  // stay available with their own source attribution.
+  const rows = $("article.public-award-change-line");
   expect(rows).toHaveLength(2);
-  const row = rows[1].slice(0, rows[1].indexOf("</article>"));
-  expect(row).toContain("Selected update");
-  expect(row).toContain("The application instructions changed.");
+  const selected = rows.filter('[aria-current="true"][data-highlighted="true"]');
+  expect(selected).toHaveLength(1);
+  expect(selected.text()).toContain("The application instructions changed.");
+  expect(selected.text()).not.toContain("The homepage changed.");
+  expect(selected.find(".public-award-update-source").text()).toBe("Application Instructions");
+  const official = selected.find('a.change-evidence-source-link[href="https://example.edu/fellowship/apply"]');
+  expect(official).toHaveLength(1);
+  expect(official.text().trim()).toBe("Official source");
+  expect(official.attr("target")).toBe("_blank");
+  expect(official.attr("rel")).toContain("noreferrer");
+  expect(rows.not('[data-highlighted="true"]').text()).toContain("The homepage changed.");
+  expect(rows.not('[data-highlighted="true"]').find('a[href="https://example.edu/fellowship"]')).toHaveLength(1);
+  const document = load(html);
+  expect(document('nav[aria-label="Award sections"] button[aria-pressed="true"]').attr("title")).toBe("Updates");
+  expect(document(".public-award-mobile-navigation option[selected]").attr("value")).toBe("changes");
 }
 
 describe("public award page", () => {
@@ -174,7 +187,7 @@ describe("public award page", () => {
     });
   });
 
-  it("opens the linked source and marks the linked change for an anonymous visitor", async () => {
+  it("opens Updates and marks the linked change with its source for an anonymous visitor", async () => {
     const html = await renderSlugPage({ source: SOURCE_APPLY, change: CHANGE_APPLY });
 
     expectSelectedApplyChange(html);
@@ -184,7 +197,7 @@ describe("public award page", () => {
     expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenCalledTimes(1);
     expect(html).toContain('aria-label="Example Fellowship page outline"');
     expect(html).toContain('aria-label="Award sections"');
-    expect(load(html)('aside button[aria-label="Official sources"]')).toHaveLength(1);
+    expect(load(html)('aside button[aria-label="Sources"]')).toHaveLength(1);
     // The route's main is the only main landmark; the award header and H1
     // come before the outline and the selected panel.
     expect(html.split("<main")).toHaveLength(2);
@@ -310,7 +323,7 @@ describe("public award page", () => {
     expect(mocks.notFound).not.toHaveBeenCalled();
   });
 
-  it("opens the change's own source when only the change id is linked", async () => {
+  it("opens Updates with the change's own source attribution when only the change id is linked", async () => {
     const html = await renderSlugPage({ change: CHANGE_APPLY });
 
     expectSelectedApplyChange(html);

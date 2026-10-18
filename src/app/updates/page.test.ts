@@ -289,7 +289,7 @@ describe("public updates page", () => {
     expect(dayHeadings(html)).toEqual(["Today", "Yesterday", "Undated"]);
     const rows = html.split('<article class="public-live-update-row">').slice(1);
     expect(rows).toHaveLength(3);
-    expect(rows[2]).toContain('<div class="public-live-update-time"><span>Date unavailable</span><strong>Deadline</strong></div>');
+    expect(rows[2]).toContain('<div class="public-live-update-time"><span>Date unavailable</span></div>');
     expect(rows[2]).not.toContain("<time");
     expect(html.split("Date unavailable")).toHaveLength(2);
     expect(rowTimes(html)).toHaveLength(2);
@@ -297,7 +297,7 @@ describe("public updates page", () => {
     expect(html).not.toMatch(/<time(?![^>]*dateTime=)/);
   });
 
-  it("labels the official-source action and shows one category without redundant source metadata", async () => {
+  it("labels the official-source action and keeps source attribution without a generic category badge", async () => {
     useFeed([makeSeed()]);
 
     const $ = load(await renderUpdatesPage());
@@ -310,9 +310,9 @@ describe("public updates page", () => {
     expect(sourceLink.attr("target")).toBe("_blank");
     expect(sourceLink.attr("aria-label")).toBe("Official source: Application Instructions");
     expect(sourceLink.text().trim()).toBe("Official source");
-    expect(row.find(".public-live-update-time > strong").map((_index, item) => $(item).text()).get()).toEqual(["Deadline"]);
-    expect(row.find(".badge, .change-summary-label, .public-live-update-source")).toHaveLength(0);
-    expect(row.text()).not.toContain("Application Instructions");
+    expect(row.find(".public-live-update-time > strong")).toHaveLength(0);
+    expect(row.find(".badge, .change-summary-label")).toHaveLength(0);
+    expect(row.find(".public-live-update-source").text()).toBe("Application Instructions");
     expect(row.find(".change-summary").text()).toBe("The application deadline moved to January 30.");
   });
 
@@ -335,12 +335,13 @@ describe("public updates page", () => {
     const row = $(".public-live-update-row");
 
     expect(row.find(".public-live-update-source").text()).toBe("2027 Rules for Marshall Scholarship Candidates");
-    expect(row.find(".public-live-update-time > strong").map((_index, item) => $(item).text()).get()).toEqual(["New official document"]);
+    expect(row.find(".public-live-update-time > strong").map((_index, item) => $(item).text()).get()).toEqual(["Official document first recorded"]);
     expect(row.find(".badge, .change-summary-label")).toHaveLength(0);
     expect(row.find(".change-summary").text()).toBe(
       "AwardPing first recorded this official document. This does not establish when it was published.",
     );
     expect(row.text()).not.toContain("The publisher posted");
+    expect(row.text()).not.toContain("New official document");
     expect(row.text()).not.toContain("first- and second-choice courses");
     expect(row.find(".public-live-update-source-link").attr("href")).toBe("https://marshall.example/2027-rules.pdf");
     expect(row.find(".public-live-update-source-link").attr("aria-label")).toBe(

@@ -167,6 +167,166 @@ export function changeSummaryDisplayParts(
   });
 }
 
+export type ChangeSummaryPresentation = {
+  title: string;
+  label: string;
+  text: string;
+  paragraphs: string[];
+  condensed: boolean;
+};
+
+/** Reader presentation only. Never changes stored evidence, alert eligibility or deduplication. */
+export function changeSummaryPresentation(
+  summary: string | null | undefined,
+  sourceUrl?: string | null,
+  sourceTitle?: string | null,
+  changeDetails?: unknown,
+): ChangeSummaryPresentation {
+  const parts = changeSummaryDisplayParts(summary, sourceUrl, sourceTitle, changeDetails);
+  const details = parseChangeDetails(changeDetails);
+  const titles: Record<string, string> = {
+    Date: "Application dates changed",
+    Funding: "Award funding changed",
+    Eligibility: "Eligibility criteria changed",
+    Application: "Application instructions changed",
+    Document: "Official document changed",
+  };
+  const fallback = {
+    ...parts,
+    title: details?.event_kind === "new_official_document"
+      ? "Official document first recorded"
+      : titles[parts.label] || "Official page update",
+    condensed: false,
+  };
+  // An observation is not a publication or a before/after comparison. Keep the
+  // existing explicit disclaimer, regardless of claims in a legacy AI summary.
+  if (details?.event_kind === "new_official_document") return fallback;
+  if (details && (details.generation_status !== "generated" || !details.is_alert_worthy ||
+    details.quality_flags.some((flag) => /(?:contradict|unsupported|not_supported|uncertain|rejected)/i.test(flag)))) {
+    return fallback;
+  }
+
+  const claims = parts.paragraphs.map(parsePresentationClaim);
+  // Never drop an unrecognized sentence, a trailing qualification or an extra
+  // change in order to hit an arbitrary word/character limit.
+  if (!claims.length || claims.some((claim) => claim === null)) return fallback;
+  const completeClaims = claims as PresentationClaim[];
+  if (details && !completeClaims.every((claim) => presentationClaimSupported(claim, details))) return fallback;
+
+  const paragraphs = completeClaims.map(condensePresentationClaim);
+  const condensed = paragraphs.some((paragraph, index) => paragraph !== parts.paragraphs[index]);
+  if (!condensed) return fallback;
+  const cycle = completeClaims.find((claim) => isYearOnlyRollover(claim) &&
+    /^\d{4} Eligibility Requirements\.?$/i.test(claim.after || ""));
+  const categories = new Set(completeClaims.map((claim) => claim.category));
+  const title = cycle && completeClaims.every(isYearOnlyRollover)
+    ? `Eligibility criteria updated for ${cycle.after?.match(/^\d{4}/)?.[0]}`
+    : categories.size === 1 ? presentationClaimTitle(completeClaims[0]) : "Award information changed";
+  return { ...parts, title, paragraphs, text: paragraphs.join(" "), condensed: true };
+}
+
+type PresentationClaim = {
+  category: string;
+  action: "changed from" | "now includes" | "no longer includes";
+  before: string | null;
+  after: string | null;
+  original: string;
+};
+
+function parsePresentationClaim(value: string): PresentationClaim | null {
+  const prefix = value.match(/^(Application deadline or cycle date|Award amount or funding|Applicant eligibility|Application requirements or materials|Application instructions|Applicant-facing award information) (changed from|now includes|no longer includes)\s+/);
+  if (!prefix) return null;
+  const first = presentationQuotedText(value.slice(prefix[0].length));
+  if (!first) return null;
+  let remaining = first.remaining.trim();
+  let second: ReturnType<typeof presentationQuotedText> = null;
+  if (prefix[2] === "changed from") {
+    if (!remaining.startsWith("to ")) return null;
+    second = presentationQuotedText(remaining.slice(3));
+    if (!second) return null;
+    remaining = second.remaining.trim();
+  }
+  if (remaining !== "." && remaining !== "") return null;
+  const action = prefix[2] as PresentationClaim["action"];
+  return {
+    category: prefix[1], action, original: value,
+    before: action === "now includes" ? null : first.text,
+    after: action === "no longer includes" ? null : second?.text || first.text,
+  };
+}
+
+function presentationQuotedText(value: string): { text: string; remaining: string } | null {
+  const closing = ({ '"': '"', "“": "”", "‘": "’", "'": "'" } as Record<string, string>)[value[0]];
+  if (!closing) return null;
+  for (let index = 1; index < value.length; index += 1) {
+    if (value[index] !== closing) continue;
+    if (/['’]/.test(closing) && /[\p{L}\p{N}]/u.test(value[index - 1]) && /[\p{L}\p{N}]/u.test(value[index + 1] || "")) continue;
+    if ((value.slice(0, index).match(/\\+$/)?.[0].length || 0) % 2 === 1) continue;
+    const text = value.slice(1, index).trim();
+    if (!text || /(?:\.\.\.|…)/.test(text)) return null;
+    return { text, remaining: value.slice(index + 1) };
+  }
+  return null;
+}
+
+function presentationClaimSupported(claim: PresentationClaim, details: NonNullable<ReturnType<typeof parseChangeDetails>>) {
+  const before = [details.exact_before, details.before, ...details.structured_diff.removed_text].filter(Boolean) as string[];
+  const after = [details.exact_after, details.after, ...details.structured_diff.added_text].filter(Boolean) as string[];
+  const normalize = (value: string) => value.toLowerCase().replace(/[‘’]/g, "'").replace(/[–—]/g, "-").replace(/\s+/g, " ").trim();
+  const supported = (text: string | null, evidence: string[]) => !text || !evidence.length ||
+    evidence.some((excerpt) => normalize(excerpt).includes(normalize(text)));
+  return supported(claim.before, before) && supported(claim.after, after);
+}
+
+function isYearOnlyRollover(claim: PresentationClaim) {
+  if (!claim.before || !claim.after || claim.action !== "changed from") return false;
+  const years = /\b(?:19|20)\d{2}\b/g;
+  const before = claim.before.match(years) || [];
+  const after = claim.after.match(years) || [];
+  return before.length > 0 && before.length === after.length &&
+    before.every((year, index) => Number(after[index]) === Number(year) + 1) &&
+    claim.before.replace(years, "YEAR") === claim.after.replace(years, "YEAR");
+}
+
+function condensePresentationClaim(claim: PresentationClaim) {
+  if (isYearOnlyRollover(claim)) {
+    const heading = claim.after?.match(/^(\d{4}) Eligibility Requirements\.?$/i);
+    if (heading) return `Eligibility criteria now cover ${heading[1]} (previously ${claim.before?.match(/^\d{4}/)?.[0]}).`;
+    const academic = claim.after?.match(/^Be a college (freshman|sophomore|junior|senior) pursuing a (bachelor['’]s degree) during the (\d{4}[-–]\d{4}) academic year\.?$/i);
+    const oldAcademic = claim.before?.match(/(\d{4}[-–]\d{4}) academic year/i);
+    if (academic && oldAcademic) {
+      const plural = academic[1].toLowerCase() === "freshman" ? "freshmen" : `${academic[1].toLowerCase()}s`;
+      return `College ${plural} pursuing a ${academic[2]}: ${academic[3].replace("-", "–")} academic year (previously ${oldAcademic[1].replace("-", "–")}).`;
+    }
+    const graduation = claim.after?.match(/^expects to receive a (bachelor['’]s degree) between ([A-Za-z]+ \d{4}) and ([A-Za-z]+ \d{4})\.?$/i);
+    const oldGraduation = claim.before?.match(/between ([A-Za-z]+ \d{4}) and ([A-Za-z]+ \d{4})\.?$/i);
+    if (graduation && oldGraduation) return `Expected ${graduation[1]}: between ${graduation[2]} and ${graduation[3]} (previously ${oldGraduation[1]}–${oldGraduation[2]}).`;
+  }
+  // For arbitrary changes, remove only the machine-generated wrapper. Both
+  // exact sides remain, including negations, applicant groups and exceptions.
+  const label = presentationClaimLabel(claim.category);
+  if (claim.action === "now includes") return `${label} added: ${sentenceForDisplay(claim.after || "")}`;
+  if (claim.action === "no longer includes") return `${label} removed from this page: ${sentenceForDisplay(claim.before || "")}`;
+  return `${label} — previously: ${sentenceForDisplay(claim.before || "")} Now: ${sentenceForDisplay(claim.after || "")}`;
+}
+
+function presentationClaimLabel(category: string) {
+  return ({
+    "Application deadline or cycle date": "Application dates",
+    "Award amount or funding": "Funding",
+    "Applicant eligibility": "Eligibility",
+    "Application requirements or materials": "Application requirements",
+    "Application instructions": "Application instructions",
+    "Applicant-facing award information": "Award information",
+  } as Record<string, string>)[category];
+}
+
+function presentationClaimTitle(claim: PresentationClaim) {
+  const label = presentationClaimLabel(claim.category);
+  return claim.action === "no longer includes" ? `${label} wording removed`
+    : claim.action === "now includes" ? `${label} added` : `${label} changed`;
+}
+
 export function dedupeChangeSummaries<
   Change extends {
     shared_award_id?: string | null;

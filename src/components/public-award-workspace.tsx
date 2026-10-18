@@ -14,12 +14,14 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Search,
-  Users,
   type LucideIcon,
 } from "lucide-react";
 import { presentAwardDateField, presentAwardTimelineDate } from "@/lib/award-date-presentation";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import { readableSourceTitle } from "@/lib/display-text";
+import { publicAwardHref, publicAwardQueryId, publicAwardSection } from "@/lib/public-award-links";
+import { awardFactCurrentness, presentAwardDeadlines } from "@/lib/award-page-presentation";
+import { changeSummaryPresentation } from "@/lib/change-summary";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import {
   PUBLIC_AWARD_PANEL_HEADING_ID,
@@ -27,6 +29,7 @@ import {
   activatePanelSelection,
   readPanelRevealEnvironment,
   revealSelectedPanel,
+  revealAwardTargetWithoutFocus,
   shouldRevealPanel,
   type PanelActivationState,
 } from "@/lib/public-award-panel-focus";
@@ -34,12 +37,12 @@ import { describeTimestamp, formatCentralDate } from "@/lib/time-zone";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { AwardDateValue } from "@/components/award-date-value";
-import { SourceSnapshotInlinePreview } from "@/components/source-snapshot-viewer";
 
 type PublicAwardWorkspaceProps = {
   data: PublicAwardPageData;
   initialChangeId?: string | null;
   initialSourceId?: string | null;
+  initialSection?: string | null;
 };
 
 export type SelectedPanel =
@@ -47,6 +50,8 @@ export type SelectedPanel =
   | { kind: "eligibility" | "dates" | "application" | "sources" }
   | { kind: "changes" }
   | { kind: "source"; sourceId: string };
+
+type AwardPanelContext = { detail?: string; changeId?: string | null };
 
 type PublicAwardSource = PublicAwardPageData["sources"][number];
 type PublicAwardChange = PublicAwardPageData["changes"][number];
@@ -60,22 +65,26 @@ export function PublicAwardWorkspace({
   data,
   initialChangeId,
   initialSourceId,
+  initialSection,
 }: PublicAwardWorkspaceProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const initialContext = initialPanelForQuery(data, initialSourceId, initialChangeId);
+  const initialContext = initialPanelForQuery(data, initialSourceId, initialChangeId, initialSection);
   // The selection plus the count of visitor activations; the count starts
-  // at zero, so mounting and deep links never run the reveal effect below.
+  // at zero, so mounting and deep links never move keyboard focus.
   const [activation, setActivation] = useState<PanelActivationState<SelectedPanel>>(() => ({
     selected: initialContext.panel,
     revealSequence: 0,
   }));
   const selected = activation.selected;
-  const highlightedChangeId = initialContext.highlightedChangeId;
+  const [highlightedChangeId, setHighlightedChangeId] = useState(initialContext.highlightedChangeId);
   const [readChangeIds, setReadChangeIds] = useState<Set<string>>(
     () => new Set(data.changes.filter((change) => change.unread === false).map((change) => change.id)),
   );
   const panelRef = useRef<HTMLElement>(null);
   const activationOrigin = useRef<"outline" | "panel">("outline");
+  const activationAnchor = useRef<string | null>(null);
+  const lastSelectionSearch = useRef<string | null>(null);
+  const historyNavigation = useRef(false);
   const selectedSource =
     selected.kind === "source"
       ? data.sources.find((source) => source.id === selected.sourceId) || null
@@ -135,6 +144,7 @@ export function PublicAwardWorkspace({
     return names;
   }, [data.award.name, data.changes, data.officialHomepage, data.sources]);
   const factRows = awardFactRows(data.facts, data.award.name);
+  const currentness = awardFactCurrentness(data);
   const markChangesRead = (changeIds: string[]) => {
     const uniqueIds = [...new Set(changeIds)].filter(Boolean);
     if (uniqueIds.length === 0) return;
@@ -144,17 +154,71 @@ export function PublicAwardWorkspace({
   // Every outline activation goes through here: it marks what the visitor
   // is about to see as read and applies the pure activation transition,
   // whose advancing sequence drives the reveal effect below.
-  const activatePanel = (next: SelectedPanel, origin: "outline" | "panel" = "outline") => {
-    if (!isKnownPanel(data, next)) return;
+  const activatePanel = (next: SelectedPanel, origin: "outline" | "panel" = "outline", context: AwardPanelContext = {}) => {
+    const navigation = awardPanelNavigation(data, next, context);
+    if (!navigation) return;
     activationOrigin.current = origin;
+    historyNavigation.current = false;
+    activationAnchor.current = navigation.anchor;
+    setHighlightedChangeId(navigation.highlightedChangeId);
     markChangesRead(changeIdsToMarkRead(data, readChangeIds, next));
     setActivation((state) => activatePanelSelection(state, next, (panel) => isKnownPanel(data, panel)));
+    const href = navigation.href;
+    if (typeof window !== "undefined" && `${window.location.pathname}${window.location.search}${window.location.hash}` !== href) {
+      window.history.pushState(null, "", href);
+      lastSelectionSearch.current = window.location.search;
+    }
   };
 
   useEffect(() => {
-    if (!shouldRevealPanel(activation.revealSequence)) return;
-    revealSelectedPanel(panelRef.current, readPanelRevealEnvironment(), activationOrigin.current);
-  }, [activation.revealSequence]);
+    lastSelectionSearch.current = window.location.search;
+    const restore = () => {
+      const hash = window.location.hash.slice(1);
+      const knownAnchor = APPLICATION_GROUPS.some((group) => `award-${group.id}` === hash) ? hash : null;
+      // A known subsection needs a post-layout reveal: native restoration can
+      // remember the position before the panel's click-driven scroll. Never
+      // turn an unknown hash-only change into a scroll to the panel top.
+      if (lastSelectionSearch.current === window.location.search && !knownAnchor) return;
+      lastSelectionSearch.current = window.location.search;
+      const params = new URLSearchParams(window.location.search);
+      const context = initialPanelForQuery(data, publicAwardQueryId(params.get("source")), publicAwardQueryId(params.get("change")), publicAwardSection(params.get("section")));
+      activationOrigin.current = "panel";
+      historyNavigation.current = true;
+      activationAnchor.current = knownAnchor;
+      setHighlightedChangeId(context.highlightedChangeId);
+      setActivation((state) => activatePanelSelection(state, context.panel, (panel) => isKnownPanel(data, panel)));
+    };
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, [data]);
+
+  useEffect(() => {
+    const target = activationAnchor.current ? document.getElementById(activationAnchor.current) : null;
+    const highlighted = highlightedChangeId && (selected.kind === "changes" || selected.kind === "source")
+      ? panelRef.current?.querySelector<HTMLElement>('article[data-highlighted="true"]') : null;
+    const fromHistory = historyNavigation.current;
+    historyNavigation.current = false;
+    if (shouldRevealPanel(activation.revealSequence) && !fromHistory) {
+      revealSelectedPanel(target ?? panelRef.current, readPanelRevealEnvironment(), target ? "panel" : activationOrigin.current);
+    }
+    // Mount/deep links never invoke the panel-focus handoff. Only the selected
+    // evidence card may scroll, and only when its start is outside the viewport.
+    const scrollTarget = fromHistory ? target ?? highlighted ?? panelRef.current : highlighted;
+    if (!scrollTarget) return;
+    // Follow React layout and the browser's native history restoration. Cancel
+    // queued work if the visitor changes section again before it executes.
+    let frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(() => {
+        const headerBottom = document.querySelector<HTMLElement>(".app-header")?.getBoundingClientRect().bottom ?? 0;
+        revealAwardTargetWithoutFocus(scrollTarget, {
+          viewportHeight: window.innerHeight,
+          topInset: Math.max(0, headerBottom) + 16,
+          reducedMotion: fromHistory || readPanelRevealEnvironment().reducedMotion,
+        }, (options) => window.scrollBy(options));
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activation.revealSequence, highlightedChangeId, selected.kind]);
 
   return (
     <div className={`public-award-console ${sidebarOpen ? "" : "public-award-console-collapsed"}`}>
@@ -166,7 +230,7 @@ export function PublicAwardWorkspace({
           <div className="public-award-console-actions">
             <a className="button-secondary" href={data.officialHomepage} rel="noreferrer" target="_blank">
               <ExternalLink size={15} aria-hidden="true" />
-              Official homepage
+              Official award site
             </a>
           </div>
         )}
@@ -205,24 +269,6 @@ export function PublicAwardWorkspace({
             onClick={() => activatePanel({ kind: "overview" })}
           />
           <PanelButton
-            active={selected.kind === "eligibility"}
-            label="Eligibility"
-            icon={Users}
-            onClick={() => activatePanel({ kind: "eligibility" })}
-          />
-          <PanelButton
-            active={selected.kind === "dates"}
-            label="Dates & deadlines"
-            icon={CalendarDays}
-            onClick={() => activatePanel({ kind: "dates" })}
-          />
-          <PanelButton
-            active={selected.kind === "application"}
-            label="How to apply"
-            icon={ListChecks}
-            onClick={() => activatePanel({ kind: "application" })}
-          />
-          <PanelButton
             active={selected.kind === "changes"}
             label="Updates"
             icon={Inbox}
@@ -230,12 +276,29 @@ export function PublicAwardWorkspace({
             updateCount={unreadChangeCount}
           />
           <PanelButton
+            active={selected.kind === "application"}
+            label="Eligibility & applying"
+            icon={ListChecks}
+            onClick={() => activatePanel({ kind: "application" })}
+          />
+          <PanelButton
             active={selected.kind === "sources" || selected.kind === "source"}
-            label="Official sources"
+            label="Sources"
             icon={FileText}
             onClick={() => activatePanel({ kind: "sources" })}
           />
         </nav>
+        <div className="public-award-mobile-navigation">
+          <label htmlFor="award-section-select">On this award</label>
+          <select id="award-section-select" value={selected.kind === "source" ? "sources" : selected.kind}
+            aria-controls={PUBLIC_AWARD_PANEL_ID}
+            onChange={(event) => activatePanel({ kind: event.target.value as "overview" | "changes" | "application" | "sources" })}>
+            <option value="overview">Overview</option>
+            <option value="changes">Updates{unreadChangeCount ? ` (${unreadChangeCount} unread)` : ""}</option>
+            <option value="application">Eligibility & applying</option>
+            <option value="sources">Sources</option>
+          </select>
+        </div>
       </aside>
 
       {/* One stable region for whichever panel is selected: outline buttons
@@ -249,11 +312,21 @@ export function PublicAwardWorkspace({
         ref={panelRef}
         tabIndex={-1}
       >
+        {currentness && (selected.kind === "overview" || selected.kind === "application") && (
+          <div className="public-award-currentness" role="note">
+            <strong>{currentness.title}</strong>
+            <p>{currentness.message}</p>
+            <button className="public-award-context-link" type="button" onClick={() => activatePanel({ kind: "changes" }, "panel", { changeId: currentness.changeId })}>Review the recorded change <ArrowRight size={15} aria-hidden="true" /></button>
+          </div>
+        )}
         {selected.kind === "overview" && (
           <OverviewPanel
+            data={data}
             factRows={factRows}
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
             overview={data.facts.overview}
+            onViewDetails={(detail) => activatePanel({ kind: "application" }, "panel", { detail })}
+            onViewUpdates={(changeId) => activatePanel({ kind: "changes" }, "panel", { changeId })}
           />
         )}
         {(selected.kind === "eligibility" || selected.kind === "dates" || selected.kind === "application") && (
@@ -299,15 +372,30 @@ export function PublicAwardWorkspace({
   );
 }
 
-// Resolves the page's query state (`source`, `change`) to the panel that
-// should open first and the change to mark in it. A requested source wins;
-// otherwise a listed change opens its own source, or the award's recent
-// changes when that source is no longer listed. Unknown ids fall back to
-// the overview, so a stale link still lands on the award.
-function initialPanelForQuery(
+// Each activation describes its own destination. Never reuse the highlight
+// left over from an older deep link for a new "latest update" action.
+export function awardPanelNavigation(data: PublicAwardPageData, panel: SelectedPanel, context: AwardPanelContext = {}) {
+  if (!isKnownPanel(data, panel)) return null;
+  const requestedChangeId = context.changeId;
+  const highlightedChangeId = panel.kind === "changes" && typeof requestedChangeId === "string"
+    && data.changes.some((change) => change.id === requestedChangeId) ? requestedChangeId : null;
+  const anchor = panel.kind === "application" && APPLICATION_GROUPS.some((group) => group.id === context.detail)
+    ? `award-${context.detail}` : null;
+  return {
+    highlightedChangeId,
+    anchor,
+    href: awardPanelHref(data.canonicalPath, panel, highlightedChangeId) + (anchor ? `#${anchor}` : ""),
+  };
+}
+
+// Explicit section navigation is stable across refresh/back. A valid change
+// link opens Updates even when it also carries source attribution. A source-
+// only link opens source history. Unknown IDs never bypass the loader's gates.
+export function initialPanelForQuery(
   data: PublicAwardPageData,
   sourceId?: string | null,
   changeId?: string | null,
+  section?: string | null,
 ): { panel: SelectedPanel; highlightedChangeId: string | null } {
   const change = changeId
     ? data.changes.find((candidate) => candidate.id === changeId) || null
@@ -315,18 +403,32 @@ function initialPanelForQuery(
   const requestedSource = sourceId
     ? data.sources.find((source) => source.id === sourceId) || null
     : null;
+  const requestedSection = publicAwardSection(section);
+  if (requestedSection === "overview") return { panel: { kind: "overview" }, highlightedChangeId: null };
+  if (requestedSection === "applying") return { panel: { kind: "application" }, highlightedChangeId: null };
+  if (requestedSection === "updates" || (change && !requestedSection)) {
+    return { panel: { kind: "changes" }, highlightedChangeId: change?.id ?? null };
+  }
   if (requestedSource) {
     return {
       panel: { kind: "source", sourceId: requestedSource.id },
       highlightedChangeId: change && isChangeForSource(change, requestedSource) ? change.id : null,
     };
   }
+  if (requestedSection === "sources") return { panel: { kind: "sources" }, highlightedChangeId: null };
   if (!change) return { panel: { kind: "overview" }, highlightedChangeId: null };
   const changeSource = data.sources.find((source) => isChangeForSource(change, source)) || null;
   if (changeSource) {
     return { panel: { kind: "source", sourceId: changeSource.id }, highlightedChangeId: change.id };
   }
   return { panel: { kind: "changes" }, highlightedChangeId: change.id };
+}
+
+export function awardPanelHref(path: string, panel: SelectedPanel, changeId?: string | null) {
+  const section = panel.kind === "overview" ? "overview" : panel.kind === "changes" ? "updates"
+    : panel.kind === "source" || panel.kind === "sources" ? "sources" : "applying";
+  return publicAwardHref(path, { section, sourceId: panel.kind === "source" ? panel.sourceId : null,
+    changeId: panel.kind === "changes" ? changeId : null });
 }
 
 // A panel the outline can show: the overview, recent changes, or a listed
@@ -395,7 +497,6 @@ function PanelButton({
   );
 }
 
-const KEY_FACT_LABELS = new Set(["Deadline", "Opening date", "Award amount"]);
 const DATE_FACT_LABELS = new Set(["Deadline", "Opening date", "Important dates"]);
 
 const FACT_SECTIONS = {
@@ -410,9 +511,9 @@ const FACT_SECTIONS = {
     labels: ["Deadline", "Opening date", "Important dates"],
   },
   application: {
-    title: "How to apply",
-    description: "Application steps, required materials, and contacts in one place.",
-    labels: ["How to apply", "Requirements", "Application materials", "Documents", "Contact"],
+    title: "Eligibility & applying",
+    description: "Full requirements, funding details, and application steps. Check the official source before applying.",
+    labels: ["Academic level", "Discipline", "Citizenship", "Eligibility", "Requirements", "How to apply", "Application materials", "Documents", "Award amount", "Deadline", "Opening date", "Important dates", "Contact"],
   },
 } as const;
 
@@ -433,9 +534,11 @@ export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSo
         <p className="public-award-section-description">{definition.description}</p>
       </div>
       {sectionRows.length > 0 ? (
-        <div className="public-award-fact-table public-award-fact-table-compact">
-          {sectionRows.map((fact) => <FactLine fact={fact} key={fact.label} />)}
-        </div>
+        section === "application" ? <ApplicationSections rows={sectionRows} /> : (
+          <dl className="public-award-fact-table public-award-fact-table-compact">
+            {sectionRows.map((fact) => <FactLine fact={fact} key={fact.label} />)}
+          </dl>
+        )
       ) : (
         <EmptyState text="These details are not available yet. Check the official sources before applying." />
       )}
@@ -444,6 +547,29 @@ export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSo
       </button>
     </div>
   );
+}
+
+const APPLICATION_GROUPS = [
+  { id: "eligibility", title: "Who can apply", labels: ["Academic level", "Discipline", "Citizenship", "Eligibility", "Requirements"] },
+  { id: "application", title: "Application checklist", labels: ["How to apply", "Application materials", "Documents"] },
+  { id: "funding", title: "Funding", labels: ["Award amount"] },
+  { id: "schedule", title: "Dates & deadlines", labels: ["Deadline", "Opening date", "Important dates"] },
+  { id: "contact", title: "Contact", labels: ["Contact"] },
+];
+
+function ApplicationSections({ rows }: { rows: FactRow[] }) {
+  const groups = APPLICATION_GROUPS.map((group) => ({ ...group, rows: rows.filter((row) => group.labels.includes(row.label)) })).filter((group) => group.rows.length);
+  return <>
+    <nav className="public-award-facts-jumps" aria-label="Application details">
+      {groups.map((group) => <a key={group.id} href={`#award-${group.id}`}>{group.title}</a>)}
+    </nav>
+    {groups.map((group) => <section key={group.id} id={`award-${group.id}`} className="public-award-facts-section" aria-labelledby={`award-${group.id}-heading`} tabIndex={-1}>
+      <h3 id={`award-${group.id}-heading`}>{group.title}</h3>
+      <dl className="public-award-fact-table public-award-fact-table-compact">
+        {group.rows.map((fact) => <FactLine fact={fact} key={fact.label} />)}
+      </dl>
+    </section>)}
+  </>;
 }
 
 // Search never filters the underlying award data or its publication gates.
@@ -471,9 +597,9 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
   return (
     <div className="public-award-panel-stack">
       <div className="public-award-section-heading">
-        <h2 id={headingId}>Official sources</h2>
+        <h2 id={headingId}>Sources</h2>
         <p className="public-award-section-description">
-          {data.lastCheckedAt ? `Last source check ${formatDate(data.lastCheckedAt)}` : "Source check date unavailable"}
+          Official pages used for this award. Check dates belong to individual pages, not verification of every award detail.
         </p>
       </div>
       {data.sources.length > 0 && (
@@ -499,6 +625,7 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
                   <span>{pageTypeLabel(source.pageType)}</span>
                   <span>{countLabel(sourceChangeCounts.get(source.id) ?? 0, "update")} shown</span>
                   {(sourceUnreadCounts.get(source.id) ?? 0) > 0 && <span className="public-award-source-unread">Unread updates</span>}
+                  <span>{source.lastCheckedAt ? `Checked ${formatDate(source.lastCheckedAt)}` : "Check date unavailable"}</span>
                 </span>
                 <span className="public-award-source-address">{source.url}</span>
               </span>
@@ -521,30 +648,54 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
 }
 
 function OverviewPanel({
+  data,
   factRows,
   headingId,
   overview,
+  onViewDetails,
+  onViewUpdates,
 }: {
+  data: PublicAwardPageData;
   factRows: FactRow[];
   headingId?: string;
   overview: string | null;
+  onViewDetails: (detail?: string) => void;
+  onViewUpdates: (changeId: string) => void;
 }) {
-  const keyFacts = factRows.filter((fact) => KEY_FACT_LABELS.has(fact.label));
-  const detailRows = factRows.filter((fact) => !KEY_FACT_LABELS.has(fact.label));
+  const keyFacts = factRows.filter((fact) => ["Award amount", "Academic level", "Citizenship"].includes(fact.label));
+  const deadlines = presentAwardDeadlines(data.facts, data.award.name, data.presentationAsOf ? new Date(data.presentationAsOf) : undefined);
+  const latestChange = data.changes[0];
 
   return (
     <div className="public-award-panel-stack">
       <div className="public-award-section-heading">
         <h2 id={headingId}>Overview</h2>
         {overview && <p className="public-award-section-description">{overview}</p>}
+        {data.factsReviewedAt && <p className="public-award-review-date">Details reviewed {formatDate(data.factsReviewedAt)}. Recorded changes are shown separately below.</p>}
       </div>
+      <dl className="public-award-deadlines">
+        <div>
+          <dt>{deadlines.label}</dt>
+          <dd>
+            {deadlines.entries.length > 0 && <ul className="public-award-deadline-list">
+              {deadlines.entries.map((entry) => <li key={`${entry.label}:${entry.value}`}>
+                {deadlines.entries.length > 1 && entry.label !== "Application deadline" && entry.label !== "Deadline" && <span>{entry.label}: </span>}
+                <AwardDateValue value={entry.value} />
+                {entry.status === "past" && <span className="public-award-past-date">Date passed</span>}
+              </li>)}
+            </ul>}
+            {deadlines.notice && <p className="public-award-date-notice">{deadlines.notice}</p>}
+          </dd>
+        </div>
+      </dl>
       {keyFacts.length > 0 && (
         <dl className="public-award-key-facts">
           {keyFacts.map((fact) => (
             <div className="public-award-key-fact" key={fact.label}>
               <dt>{fact.displayLabel ?? fact.label}</dt>
               <dd>
-                <FactValueDisplay className="public-award-fact-list" value={fact.value} isDate={DATE_FACT_LABELS.has(fact.label)} />
+                {factTextLength(fact.value) <= 220 ? <FactValueDisplay className="public-award-fact-list" value={fact.value} />
+                  : <button type="button" className="public-award-context-link" onClick={() => onViewDetails(fact.label === "Award amount" ? "funding" : "eligibility")}>View {fact.label === "Award amount" ? "funding details" : "full criteria"} <ArrowRight size={15} aria-hidden="true" /></button>}
               </dd>
             </div>
           ))}
@@ -555,15 +706,24 @@ function OverviewPanel({
         <EmptyState text="Award details are not available yet. Check the official sources before applying." />
       )}
 
-      {detailRows.length > 0 && (
-        <div className="public-award-fact-table public-award-fact-table-compact">
-          {detailRows.map((fact) => (
-            <FactLine fact={fact} key={fact.label} />
-          ))}
-        </div>
-      )}
+      <div className="public-award-overview-next">
+        <p>This is a summary. Eligibility exceptions, nomination requirements and application materials are in the full details.</p>
+        <button type="button" className="public-award-context-link" onClick={() => onViewDetails()}>Eligibility & applying <ArrowRight size={15} aria-hidden="true" /></button>
+      </div>
+      <section className="public-award-latest" aria-labelledby="award-latest-heading">
+        <div className="public-award-latest-heading"><h3 id="award-latest-heading">Latest update</h3>
+          {latestChange && <ChangeTimestamp value={latestChange.detectedAt} />}</div>
+        {latestChange ? <>
+          <ChangeSummaryDisplay summary={latestChange.summary} changeDetails={latestChange.changeDetails} sourceTitle={latestChange.sourceTitle} sourceUrl={latestChange.sourceUrl} compact />
+          <button className="public-award-context-link" type="button" onClick={() => onViewUpdates(latestChange.id)}>View updates & evidence <ArrowRight size={15} aria-hidden="true" /></button>
+        </> : <p>No updates are available in this view yet. This does not confirm that the official pages have stayed unchanged.</p>}
+      </section>
     </div>
   );
+}
+
+function factTextLength(value: FactValue) {
+  return (Array.isArray(value) ? value.join(" ") : value).length;
 }
 
 function SourcePanel({
@@ -612,8 +772,7 @@ function SourcePanel({
         emptyText="No updates for this source are included in this view."
         highlightedChangeId={highlightedChangeId}
         listedSourceNames={listedSourceNames}
-        showSnapshotPreviews
-        sourceIdFallback={source.id}
+        hideSourceLink
         showHeading={false}
       />
     </div>
@@ -626,8 +785,7 @@ function ChangesPanel({
   headingId,
   highlightedChangeId = null,
   listedSourceNames,
-  showSnapshotPreviews = false,
-  sourceIdFallback,
+  hideSourceLink = false,
   showHeading = true,
 }: {
   changes: PublicAwardPageData["changes"];
@@ -635,8 +793,7 @@ function ChangesPanel({
   headingId?: string;
   highlightedChangeId?: string | null;
   listedSourceNames: ReadonlyMap<string, string>;
-  showSnapshotPreviews?: boolean;
-  sourceIdFallback?: string | null;
+  hideSourceLink?: boolean;
   showHeading?: boolean;
 }) {
   const isHighlighted = (change: PublicAwardChange) =>
@@ -660,8 +817,8 @@ function ChangesPanel({
             >
               <ChangeTimestamp value={change.detectedAt} />
               <div>
-                {isHighlighted(change) && <span className="badge">Selected update</span>}
-                <h3>{listedSourceNames.get(change.id) ?? change.sourceTitle}</h3>
+                <h3>{changeSummaryPresentation(change.summary, change.sourceUrl, change.sourceTitle, change.changeDetails).title}</h3>
+                <p className="public-award-update-source">{listedSourceNames.get(change.id) ?? change.sourceTitle}</p>
                 <ChangeSummaryDisplay
                   summary={change.summary}
                   changeDetails={change.changeDetails}
@@ -669,17 +826,8 @@ function ChangesPanel({
                   sourceUrl={change.sourceUrl}
                   compact
                 />
-                {showSnapshotPreviews && (
-                  <SourceSnapshotInlinePreview
-                    changeEventId={change.id}
-                    changeDetails={change.changeDetails}
-                    changeSummary={change.summary}
-                    sourceId={change.sourceId || sourceIdFallback}
-                    sourceTitle={change.sourceTitle}
-                    sourceUrl={change.sourceUrl}
-                  />
-                )}
                 <ChangeEvidencePanel
+                  hideSourceLink={hideSourceLink}
                   changeEventId={change.id}
                   changeDetails={change.changeDetails}
                   compact
@@ -710,7 +858,7 @@ function ChangeTimestamp({ value }: { value: string }) {
   if (!stamp.dateTime) return <span>{stamp.full}</span>;
   return (
     <time dateTime={stamp.dateTime} title={stamp.full}>
-      {formatDate(value)}
+      Recorded {formatDate(value)}
       <span className="sr-only"> ({stamp.full})</span>
     </time>
   );

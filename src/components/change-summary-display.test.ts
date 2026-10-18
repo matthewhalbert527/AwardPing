@@ -47,4 +47,14 @@ describe("consistent reader summaries", () => {
     const $ = load(renderToStaticMarkup(createElement(ChangeSummaryDisplay, { summary, compact: true })));
     expect($("p").text()).toBe(summary);
   });
+
+  it("uses concise presentation once while retaining both sides and conditions", () => {
+    const $ = load(renderToStaticMarkup(createElement(ChangeSummaryDisplay, {
+      summary: 'Applicant eligibility changed from “Applicants must be enrolled full-time.” to “Applicants may be enrolled part-time only if their institution approves.”.',
+    })));
+    expect($("p")).toHaveLength(1);
+    expect($("p").text()).toBe("Eligibility — previously: Applicants must be enrolled full-time. Now: Applicants may be enrolled part-time only if their institution approves.");
+    expect($.text()).not.toContain("Applicant eligibility changed from");
+    expect($("h2,h3,h4")).toHaveLength(0);
+  });
 });

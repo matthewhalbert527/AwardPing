@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Clock3,
   ExternalLink,
@@ -203,8 +203,8 @@ function SnapshotViewerSession({
   }, [closeViewer, open]);
 
   const activeSnapshot = snapshot?.[activeVersion] || null;
+  const canShowCurrent = Boolean(snapshot && hasSnapshotObjects(snapshot.latest));
   const canShowPrevious = Boolean(snapshot && hasSnapshotObjects(snapshot.previous));
-  const hasEvidencePanel = Boolean(evidence.summarySnippet || evidence.isFirstObservation);
 
   async function openViewer() {
     requestRef.current?.abort();
@@ -265,13 +265,15 @@ function SnapshotViewerSession({
   return (
     <>
       <button
+        aria-expanded={open}
+        aria-haspopup="dialog"
         className="button-secondary source-snapshot-trigger px-3 py-2 text-sm"
         ref={triggerRef}
         type="button"
         onClick={openViewer}
       >
         <ImageIcon size={14} aria-hidden="true" />
-        Snapshot
+        View evidence
       </button>
 
       {open && (
@@ -284,7 +286,7 @@ function SnapshotViewerSession({
           }}
         >
           <section
-            aria-label={`${sourceTitle} snapshot`}
+            aria-label={`${sourceTitle} evidence`}
             aria-modal="true"
             className="source-snapshot-dialog"
             ref={dialogRef}
@@ -312,12 +314,12 @@ function SnapshotViewerSession({
                   target="_blank"
                 >
                   <ExternalLink size={13} aria-hidden="true" />
-                  <span>{snapshot?.source_url || sourceUrl}</span>
+                  <span>Official source</span>
                 </a>
               </div>
 
               <button
-                aria-label="Close snapshot viewer"
+                aria-label="Close evidence viewer"
                 className="source-snapshot-close"
                 ref={closeButtonRef}
                 type="button"
@@ -327,14 +329,19 @@ function SnapshotViewerSession({
               </button>
             </div>
 
-            {hasEvidencePanel && (
-              <SnapshotEvidencePanel evidence={evidence} />
+            {evidence.isFirstObservation && (
+              <aside className="source-snapshot-evidence" aria-label="First observation">
+                <p className="source-snapshot-evidence-summary">
+                  {FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY}
+                </p>
+              </aside>
             )}
 
             <SnapshotBody
               activeSnapshot={activeSnapshot}
               error={error}
               loading={loading}
+              canShowCurrent={canShowCurrent}
               canShowPrevious={canShowPrevious}
               firstObservation={evidence.isFirstObservation}
               onVersionChange={setActiveVersion}
@@ -471,24 +478,6 @@ export function SourceSnapshotInlinePreview({
   );
 }
 
-function SnapshotEvidencePanel({
-  evidence,
-}: {
-  evidence: ReturnType<typeof buildChangeEvidence>;
-}) {
-  return (
-    <aside
-      className="source-snapshot-evidence"
-      aria-label={evidence.isFirstObservation ? "First observation" : "Change description"}
-      tabIndex={0}
-    >
-      <p className="source-snapshot-evidence-summary">
-        {evidence.summarySnippet || FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY}
-      </p>
-    </aside>
-  );
-}
-
 function SnapshotTab({
   active,
   disabled = false,
@@ -500,22 +489,13 @@ function SnapshotTab({
   label: string;
   onSelect: () => void;
 }) {
-  function onKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onSelect();
-    }
-  }
-
   return (
     <button
-      aria-selected={active}
+      aria-pressed={active}
       className="source-snapshot-tab"
       disabled={disabled}
-      role="tab"
       type="button"
       onClick={onSelect}
-      onKeyDown={onKeyDown}
     >
       {label}
     </button>
@@ -524,6 +504,7 @@ function SnapshotTab({
 
 function SnapshotBody({
   activeSnapshot,
+  canShowCurrent,
   canShowPrevious,
   evidenceScope,
   evidenceStatus,
@@ -535,6 +516,7 @@ function SnapshotBody({
   version,
 }: {
   activeSnapshot: SnapshotSide | null;
+  canShowCurrent: boolean;
   canShowPrevious: boolean;
   evidenceScope: "change_event" | "source_current";
   evidenceStatus: string | null;
@@ -551,9 +533,7 @@ function SnapshotBody({
     () => selectPrimarySnapshotObject(activeSnapshot),
     [activeSnapshot],
   );
-  const focusRatio = typeof activeSnapshot?.focus_ratio === "number"
-    ? activeSnapshot.focus_ratio
-    : null;
+  const focusRatio = snapshotFocusRatio(activeSnapshot, evidenceScope);
 
   useEffect(() => {
     scrollToFocusRatio(frameRef.current, imageRef.current, focusRatio);
@@ -561,7 +541,7 @@ function SnapshotBody({
 
   if (loading) {
     return (
-      <div className="source-snapshot-state">
+      <div className="source-snapshot-state" role="status">
         <LoaderCircle className="animate-spin" size={22} aria-hidden="true" />
         Loading snapshot...
       </div>
@@ -569,12 +549,12 @@ function SnapshotBody({
   }
 
   if (error) {
-    return <div className="source-snapshot-state source-snapshot-state-error">{error}</div>;
+    return <div className="source-snapshot-state source-snapshot-state-error" role="status">{error}</div>;
   }
 
   if (!activeSnapshot || !primaryObject) {
     return (
-      <div className="source-snapshot-state">
+      <div className="source-snapshot-state" role="status">
         {evidenceStatus === "historical_artifact_unrecoverable"
           ? snapshotUnavailableMessage({ evidence_status: evidenceStatus })
           : version === "previous"
@@ -589,6 +569,7 @@ function SnapshotBody({
       <div className="source-snapshot-frame" ref={frameRef}>
         <SnapshotFrameActions
           activeVersion={version}
+          canShowCurrent={canShowCurrent}
           canShowPrevious={canShowPrevious}
           currentLabel={
             firstObservation ? "First observed" : evidenceScope === "change_event" ? "Current" : "Latest"
@@ -616,6 +597,7 @@ function SnapshotBody({
     <div className="source-snapshot-frame" ref={frameRef}>
       <SnapshotFrameActions
         activeVersion={version}
+        canShowCurrent={canShowCurrent}
         canShowPrevious={canShowPrevious}
         currentLabel={
           firstObservation ? "First observed" : evidenceScope === "change_event" ? "Current" : "Latest"
@@ -666,9 +648,7 @@ function SnapshotInlineBody({
     () => selectPrimarySnapshotObject(activeSnapshot),
     [activeSnapshot],
   );
-  const focusRatio = typeof activeSnapshot?.focus_ratio === "number"
-    ? activeSnapshot.focus_ratio
-    : null;
+  const focusRatio = snapshotFocusRatio(activeSnapshot, snapshot.evidence_scope || "source_current");
 
   useEffect(() => {
     scrollToFocusRatio(frameRef.current, imageRef.current, focusRatio);
@@ -694,7 +674,7 @@ function SnapshotInlineBody({
               snapshot.evidence_scope || "source_current",
             )}
           </span>
-          <div className="source-snapshot-tabs source-snapshot-inline-tabs" aria-label="Evidence version">
+          <div className="source-snapshot-tabs source-snapshot-inline-tabs" role="group" aria-label="Evidence version">
             <SnapshotTab
               active={resolvedVersion === "latest"}
               disabled={!latestAvailable}
@@ -747,6 +727,7 @@ function SnapshotInlineBody({
 
 function SnapshotFrameActions({
   activeVersion,
+  canShowCurrent,
   canShowPrevious,
   currentLabel,
   firstObservation,
@@ -757,6 +738,7 @@ function SnapshotFrameActions({
   onVersionChange,
 }: {
   activeVersion: SnapshotVersion;
+  canShowCurrent: boolean;
   canShowPrevious: boolean;
   currentLabel: string;
   firstObservation: boolean;
@@ -770,9 +752,10 @@ function SnapshotFrameActions({
     <div className="source-snapshot-frame-actions">
       <div className="source-snapshot-version-control">
         <span>{localizationLabel}</span>
-        <div className="source-snapshot-tabs" aria-label="Evidence version">
+        <div className="source-snapshot-tabs" role="group" aria-label="Evidence version">
           <SnapshotTab
             active={activeVersion === "latest"}
+            disabled={!canShowCurrent}
             label={currentLabel}
             onSelect={() => onVersionChange("latest")}
           />
@@ -826,6 +809,21 @@ function snapshotFocusSnippets(version: SnapshotVersion, evidence: ReturnType<ty
       .filter((snippet) => snippet.length >= 8)
       .map((snippet) => snippet.slice(0, 220)),
   ).slice(0, 4);
+}
+
+export function snapshotFocusRatio(
+  snapshot: SnapshotSide | null,
+  evidenceScope: "change_event" | "source_current" = "source_current",
+) {
+  // A verified crop already is the changed area. A full-page ratio applied to
+  // that crop would scroll past its start. Event fallbacks have no verified
+  // location; only generic source previews may use an explicitly approximate
+  // text match, which their visible note describes as approximate.
+  if (evidenceScope === "change_event" || (snapshot?.exact_overlap && snapshot.objects.crop)) return null;
+  const ratio = snapshot?.focus_ratio;
+  return typeof ratio === "number" && Number.isFinite(ratio) && ratio >= 0 && ratio <= 1
+    ? ratio
+    : null;
 }
 
 function scrollToFocusRatio(

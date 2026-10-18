@@ -7,6 +7,7 @@ import {
   activatePanelSelection,
   readPanelRevealEnvironment,
   revealSelectedPanel,
+  revealAwardTargetWithoutFocus,
   shouldRevealPanel,
   type PanelActivationState,
 } from "@/lib/public-award-panel-focus";
@@ -25,6 +26,38 @@ function fakeTarget() {
     },
   };
 }
+
+describe("revealAwardTargetWithoutFocus", () => {
+  it.each([false, true])("reveals an offscreen ninth update without focus stealing (reduced motion: %s)", (reducedMotion) => {
+    const calls: unknown[] = [];
+    const target = {
+      getBoundingClientRect: () => ({ top: 2600, height: 400 }),
+      focus: () => { throw new Error("Selected update scrolling must not move focus"); },
+    };
+    expect(revealAwardTargetWithoutFocus(target, { viewportHeight: 900, topInset: 96, reducedMotion }, (options) => calls.push(options))).toBe(true);
+    expect(calls).toEqual([{ top: 2504, behavior: reducedMotion ? "auto" : "smooth" }]);
+  });
+
+  it("leaves an already-visible update or long card's visible start untouched", () => {
+    for (const height of [60, 2000]) {
+      const target = { getBoundingClientRect: () => ({ top: 100, height }) };
+      expect(revealAwardTargetWithoutFocus(target, { viewportHeight: 900, topInset: 96, reducedMotion: false }, () => { throw new Error("Must not scroll"); })).toBe(false);
+    }
+  });
+
+  it("clears the sticky header when an anchor's heading is above the visible content", () => {
+    const calls: unknown[] = [];
+    const target = { getBoundingClientRect: () => ({ top: 40, height: 600 }) };
+    expect(revealAwardTargetWithoutFocus(target, { viewportHeight: 844, topInset: 96, reducedMotion: true }, (options) => calls.push(options))).toBe(true);
+    expect(calls).toEqual([{ top: -56, behavior: "auto" }]);
+  });
+
+  it("does nothing for a missing, hidden or invalid target", () => {
+    for (const target of [null, undefined, { getBoundingClientRect: () => ({ top: 1000, height: 0 }) }, { getBoundingClientRect: () => ({ top: NaN, height: 200 }) }]) {
+      expect(revealAwardTargetWithoutFocus(target, { viewportHeight: 844, topInset: 96, reducedMotion: false }, () => { throw new Error("Must not scroll"); })).toBe(false);
+    }
+  });
+});
 
 describe("revealSelectedPanel", () => {
   it("focuses the panel and scrolls it into view smoothly on the one-column layout", () => {

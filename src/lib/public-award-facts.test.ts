@@ -71,6 +71,16 @@ describe("public award deadline descriptions", () => {
 });
 
 describe("public award facts", () => {
+  it("deduplicates exact split amounts and timeline items without merging conditions", () => {
+    const facts = publicAwardFactsFromAward({ publicFacts: {
+      award_amounts: ["Full tuition; Living stipend", "Full tuition"],
+      important_dates: ["Application deadline: January 1, 2027; Application deadline: January 1, 2027", "Application deadline for US applicants: January 1, 2027"],
+      disciplines: ["Social sciences", "Social sciences (excluding clinical psychology)", "Social sciences"],
+    } });
+    expect(facts.awardAmount).toEqual(["Full tuition", "Living stipend"]);
+    expect(facts.importantDates).toEqual(["Application deadline: January 1, 2027", "Application deadline for US applicants: January 1, 2027"]);
+    expect(facts.disciplines).toEqual(["Social sciences", "Social sciences (excluding clinical psychology)"]);
+  });
   it("uses reconciled public facts for public details", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,

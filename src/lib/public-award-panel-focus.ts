@@ -51,6 +51,24 @@ export function shouldRevealPanel(sequence: number) {
   return sequence > 0;
 }
 
+/** Scroll evidence/known history anchors without changing keyboard focus. */
+export function revealAwardTargetWithoutFocus(
+  target: { getBoundingClientRect: () => { top: number; height: number } } | null | undefined,
+  environment: { viewportHeight: number; topInset: number; reducedMotion: boolean },
+  scrollBy: (options: { top: number; behavior: "auto" | "smooth" }) => void,
+) {
+  if (!target) return false;
+  const { top, height } = target.getBoundingClientRect();
+  const { viewportHeight, topInset, reducedMotion } = environment;
+  if (![top, height, viewportHeight, topInset].every(Number.isFinite) || height <= 0 || viewportHeight <= topInset) return false;
+  // A long card need not fit in the viewport. Its heading and first lines
+  // being visible is sufficient; do not jerk an already-visible card upward.
+  const visibleStart = Math.min(height, 120, viewportHeight - topInset);
+  if (top >= topInset && top + visibleStart <= viewportHeight) return false;
+  scrollBy({ top: top - topInset, behavior: reducedMotion ? "auto" : "smooth" });
+  return true;
+}
+
 export function revealSelectedPanel(
   target: PanelRevealTarget | null | undefined,
   environment: PanelRevealEnvironment,

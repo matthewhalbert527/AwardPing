@@ -95,6 +95,7 @@ export default async function AwardDirectoryPage() {
     <DirectoryFrame>
       <AwardDiscoveryWorkspace
         sharedAwards={sharedCatalog}
+        presentationAsOf={new Date().toISOString()}
         canManage={officeContext ? canManageOffice(officeContext.current.role) : false}
         isAuthenticated={Boolean(user)}
       />
@@ -219,6 +220,7 @@ function mapSharedAwards(
       officialHomepage: award.official_homepage,
       summary: compactAwardDirectorySummary(facts.overview || award.summary, award.name),
       deadline: facts.deadline,
+      importantDates: facts.importantDates,
       academicLevels: facts.academicLevels,
       disciplines: facts.disciplines,
       citizenship: facts.citizenship,

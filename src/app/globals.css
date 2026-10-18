@@ -2437,7 +2437,7 @@ a {
   padding: 0.36rem 0.85rem;
 }
 
-.source-snapshot-tab[aria-selected="true"] {
+.source-snapshot-tab[aria-pressed="true"] {
   background: var(--foreground);
   color: var(--text-inverse);
 }
@@ -4246,11 +4246,10 @@ a {
 }
 
 .public-award-console-panel .public-award-section-heading h2 {
-  color: var(--text-tertiary);
-  font-size: 0.72rem;
+  color: var(--text);
+  font-size: 1.12rem;
   font-weight: 600;
-  letter-spacing: var(--tracking-label);
-  text-transform: uppercase;
+  letter-spacing: -0.01em;
 }
 
 .public-award-fact-table,
@@ -8399,4 +8398,134 @@ a {
 /* Footer sits at the bottom on short pages instead of floating mid-viewport. */
 .page-shell > main {
   flex: 1 0 auto;
+}
+
+/* Award pages: four destinations, brief overview, details only where needed. */
+.public-award-mobile-navigation {
+  display: none;
+}
+
+.public-award-review-date { margin-top: 0.6rem; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; }
+
+.public-award-deadlines {
+  margin: 0;
+  padding: 1.15rem 1.25rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.public-award-deadlines dt {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.public-award-deadline-list {
+  display: grid;
+  gap: 0.8rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  line-height: 1.55;
+  font-weight: 600;
+}
+
+.public-award-past-date {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.public-award-date-notice,
+.public-award-overview-next p,
+.public-award-latest > p {
+  max-width: 68ch;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.public-award-deadline-list + .public-award-date-notice { margin-top: 0.6rem; }
+
+.public-award-currentness {
+  padding: 0.9rem 1.1rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid #92631d;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.public-award-currentness p { margin-top: 0.3rem; max-width: 68ch; }
+.public-award-currentness .public-award-context-link { margin-top: 0.2rem; }
+
+.public-award-latest {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--border);
+}
+
+.public-award-latest-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.public-award-latest-heading h3,
+.public-award-facts-section h3 { font-size: 1rem; font-weight: 600; }
+.public-award-latest-heading time { font-size: 0.8rem; color: var(--text-secondary); }
+
+.public-award-facts-jumps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.public-award-facts-jumps a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  font-size: 0.9rem;
+}
+
+.public-award-facts-jumps a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.public-award-facts-section { display: grid; gap: 0.75rem; scroll-margin-top: 6rem; }
+.public-award-console .public-award-change-line { grid-template-columns: minmax(0, 1fr); gap: 0.35rem; padding: 1.2rem; }
+.public-award-console .public-award-change-line time { font-size: 0.8rem; color: var(--text-secondary); }
+.public-award-console .public-award-update-source { font-size: 0.8rem; margin: 0.35rem 0 0.7rem; color: var(--text-secondary); }
+.public-award-console .change-summary { max-width: 70ch; }
+
+@media (max-width: 720px) {
+  .public-award-console { gap: 1rem; }
+  .public-award-sidebar,
+  .public-award-console-collapsed .public-award-sidebar { border: 0; padding: 0; background: transparent; }
+  .public-award-sidebar > .public-award-directory-link,
+  .public-award-sidebar > .public-award-sidebar-header,
+  .public-award-sidebar > .public-award-task-nav { display: none; }
+  .public-award-mobile-navigation { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0.65rem; }
+  .public-award-mobile-navigation label { font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); }
+  .public-award-mobile-navigation select { width: 100%; min-width: 0; min-height: 2.75rem; padding: 0.5rem; font-size: 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+  .public-award-mobile-navigation select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .public-award-console-header { gap: 0.6rem; padding-bottom: 0.85rem; }
+  .public-award-console-header h1 { font-size: 1.75rem; }
+  .public-award-console-header > .public-award-console-actions { flex: 0 1 auto; }
+  .public-award-console-header .public-award-console-actions .button-secondary { flex: 0 1 auto; }
+  .public-award-deadlines { padding: 1rem; }
 }

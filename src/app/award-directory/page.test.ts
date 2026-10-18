@@ -153,6 +153,28 @@ function expectNoticeFrame(html: string) {
 }
 
 describe("award directory page", () => {
+  it("passes scoped application deadlines from reviewed important dates to directory cards", async () => {
+    const index = publicationIndex();
+    index.verifiedEntries[0].publishedFacts = {
+      overview: "A fellowship for testing.",
+      important_dates: [
+        "US citizens resident in the USA round — Wednesday 14 October 2026 at 11:59 p.m. GMT: Application deadline",
+        "All other eligible applicants round — Tuesday 8 December 2026 or Wednesday 6 January 2027 at 11:59 p.m. GMT (dependent on course): Application deadline",
+        "US citizens resident in the USA round — Monday 14 December 2026: Notification of application outcome",
+      ],
+    };
+    mocks.loadStage1PublicationIndex.mockResolvedValue(index);
+    const html = await renderDirectory();
+    const $ = load(html);
+    const card = $(".award-row-deadline");
+    expect(card.text()).toContain("Application deadlines");
+    expect(card.text()).toContain("US citizens resident in the USA round");
+    expect(card.text()).toContain("All other eligible applicants round");
+    expect(card.text()).toContain("(dependent on course)");
+    expect(card.text()).not.toContain("Not listed");
+    expect(card.text()).not.toContain("Notification");
+  });
+
   beforeEach(() => {
     for (const mock of Object.values(mocks)) mock.mockReset();
     mocks.hasSupabaseConfig.mockReturnValue(true);

@@ -59,10 +59,12 @@ function render(input: PanelProps) {
 function expectActions($: ReturnType<typeof load>, sourceUrl: string) {
   expect($("details, summary")).toHaveLength(0);
   expect($("button")).toHaveLength(1);
-  expect($("button").text().trim()).toBe("Snapshot");
+  expect($("button").text().trim()).toBe("View evidence");
+  expect($("button").attr("aria-haspopup")).toBe("dialog");
+  expect($("button").attr("aria-expanded")).toBe("false");
   expect($("button").attr("type")).toBe("button");
   expect($("a")).toHaveLength(1);
-  expect($("a").text().trim()).toBe("Open source");
+  expect($("a").text().trim()).toBe("Official source");
   expect($("a").attr("href")).toBe(sourceUrl);
   expect($("a").attr("target")).toBe("_blank");
   expect($("a").attr("rel")).toBe("noreferrer");
@@ -106,30 +108,38 @@ describe("ChangeEvidencePanel compact evidence actions", () => {
     { changeEventId: "event-only", sourceId: null },
     { changeEventId: null, sourceId: "source-only" },
     { changeEventId: "event-and-source", sourceId: "source-1" },
-  ])("offers one Snapshot for identifiers $changeEventId / $sourceId", (identifiers) => {
+  ])("offers one evidence action for identifiers $changeEventId / $sourceId", (identifiers) => {
     const input = props(identifiers);
     expectActions(render(input), input.sourceUrl!);
   });
 
-  it.each([null, undefined, ""])("offers only Open source when identifiers are %s", (missing) => {
+  it.each([null, undefined, ""])("offers only Official source when identifiers are %s", (missing) => {
     const input = props({ changeEventId: missing, sourceId: missing });
     const $ = render(input);
     expect($("details, summary, button")).toHaveLength(0);
     expect($("a")).toHaveLength(1);
-    expect($("a").text().trim()).toBe("Open source");
+    expect($("a").text().trim()).toBe("Official source");
     expect($("a").attr("href")).toBe(input.sourceUrl);
-    expect($("body").text().trim()).toBe("Open source");
+    expect($("body").text().trim()).toBe("Official source");
   });
 
-  it.each([null, undefined, ""])("offers no Snapshot or source link when sourceUrl is %s", (sourceUrl) => {
+  it.each([null, undefined, ""])("offers no evidence or source link when sourceUrl is %s", (sourceUrl) => {
     const $ = render(props({ sourceUrl }));
     expect($("details, summary, button, a")).toHaveLength(0);
     expect($("body").text().trim()).toBe("");
   });
 
+  it("keeps evidence available without duplicating a source link already supplied by its parent", () => {
+    const $ = render(props({ hideSourceLink: true }));
+    expect($("button")).toHaveLength(1);
+    expect($("button").text().trim()).toBe("View evidence");
+    expect($("a")).toHaveLength(0);
+    expect($("body").text().trim()).toBe("View evidence");
+  });
+
   it("preserves event/source identity and raw evidence props for the snapshot viewer", () => {
     const viewer = vi.spyOn(snapshotViewer, "SourceSnapshotViewerButton").mockImplementation(() => (
-      createElement("button", { type: "button" }, "Snapshot")
+      createElement("button", { type: "button" }, "View evidence")
     ));
     const input = deepFreeze(props({ sourceId: null }));
     const before = structuredClone(input);

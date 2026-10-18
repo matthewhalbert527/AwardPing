@@ -11,7 +11,7 @@ import {
   getPublicAwardPageResolutionBySlug,
   type PublicAwardPageData,
 } from "@/lib/public-award-pages";
-import { publicAwardHref, publicAwardQueryId } from "@/lib/public-award-links";
+import { publicAwardHref, publicAwardQueryId, publicAwardSection } from "@/lib/public-award-links";
 import { getSeoPage, seoPages } from "@/lib/seo-pages";
 
 export const dynamic = "force-dynamic";
@@ -25,7 +25,7 @@ type Props = {
   params: Promise<{ slug: string }>;
   // A repeated key arrives as an array; publicAwardQueryId keeps only a
   // single well-formed id.
-  searchParams?: Promise<{ source?: string | string[]; change?: string | string[] }>;
+  searchParams?: Promise<{ source?: string | string[]; change?: string | string[]; section?: string | string[] }>;
 };
 
 export function generateStaticParams() {
@@ -72,6 +72,7 @@ export default async function SlugPage({ params, searchParams }: Props) {
   const context = {
     sourceId: publicAwardQueryId(query.source),
     changeId: publicAwardQueryId(query.change),
+    section: publicAwardSection(query.section),
   };
   const page = getSeoPage(slug);
   if (page) return <SeoLandingPageContent page={page} />;
@@ -111,6 +112,7 @@ export default async function SlugPage({ params, searchParams }: Props) {
       data={awardPage}
       initialChangeId={context.changeId}
       initialSourceId={context.sourceId}
+      initialSection={context.section}
     />
   );
 }
@@ -206,10 +208,12 @@ function PublicAwardPage({
   data,
   initialChangeId,
   initialSourceId,
+  initialSection,
 }: {
   data: PublicAwardPageData;
   initialChangeId?: string;
   initialSourceId?: string;
+  initialSection?: string;
 }) {
   if (!data) notFound();
 
@@ -218,9 +222,11 @@ function PublicAwardPage({
       <SiteHeader />
       <main className="public-award-console-wrap">
         <PublicAwardWorkspace
+          key={`${data.award.id}:${initialSection ?? ""}:${initialSourceId ?? ""}:${initialChangeId ?? ""}`}
           data={data}
           initialChangeId={initialChangeId}
           initialSourceId={initialSourceId}
+          initialSection={initialSection}
         />
       </main>
       <SiteFooter />

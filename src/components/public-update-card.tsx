@@ -1,13 +1,19 @@
 import Link from "next/link";
 import { ArrowRight, ExternalLink } from "lucide-react";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
-import { isFirstObservedOfficialDocument } from "@/lib/change-details";
+import { changeSummaryPresentation } from "@/lib/change-summary";
 import type { LiveUpdateItem } from "@/lib/live-updates";
 import { liveUpdateAwardHref } from "@/lib/public-award-links";
 
 /** One reader-facing update presentation shared by home and the full feed. */
 export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
   const awardHref = liveUpdateAwardHref(update);
+  const presentation = changeSummaryPresentation(update.summary, update.sourceUrl, update.sourceTitle, update.changeDetails);
+  const normalizedTitle = normalizedSentence(presentation.title);
+  // Keep the existing compact metadata slot, not another category badge or
+  // a second copy of a complete summary. Generic fallbacks add no information.
+  const showTitle = presentation.title !== "Official page update" &&
+    !presentation.paragraphs.some((paragraph) => normalizedSentence(paragraph) === normalizedTitle);
   return (
     <article className="public-live-update-row">
       <h3 className="public-live-update-title-row">
@@ -24,9 +30,9 @@ export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
             update.detectedLabel
           )}
         </span>
-        <strong>{update.changeTypeLabel}</strong>
+        {showTitle && <strong>{presentation.title}</strong>}
       </div>
-      {isFirstObservedOfficialDocument(update.changeDetails) && (
+      {update.sourceTitle && (
         <p className="public-live-update-source">{update.sourceTitle}</p>
       )}
       <ChangeSummaryDisplay
@@ -58,4 +64,8 @@ export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
       </div>
     </article>
   );
+}
+
+function normalizedSentence(value: string) {
+  return value.trim().toLowerCase().replace(/[.!?]+$/, "");
 }
