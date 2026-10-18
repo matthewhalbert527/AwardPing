@@ -384,14 +384,36 @@ def observe(page):
     return observation, document, signal
 
 
-def collect_stable(page, stable_ms=1000, max_ms=12000):
+def screenshot_bounds(page):
+    """Use the same full-page extent as Playwright, without changing the DOM."""
+    bounds = page.evaluate("""() => {
+        if (!document.body || !document.documentElement) return null;
+        const b = document.body, r = document.documentElement;
+        return {width: Math.max(b.scrollWidth, r.scrollWidth, b.offsetWidth, r.offsetWidth, b.clientWidth, r.clientWidth),
+            height: Math.max(b.scrollHeight, r.scrollHeight, b.offsetHeight, r.offsetHeight, b.clientHeight, r.clientHeight)};
+    }""")
+    if not bounds:
+        raise CaptureFailure("missing_document")
+    width, height = bounds["width"], bounds["height"]
+    if not (type(width) is int and type(height) is int and 0 < width <= 4096 and
+            0 < height <= 20000 and width * height <= MAX_SCREENSHOT_PIXELS):
+        raise CaptureFailure("screenshot_dimension_limit")
+    return bounds
+
+
+def collect_stable(page, stable_ms=1000, max_ms=12000, *, geometry=False):
     started = time.monotonic()
     last_changed = started
     previous = None
     samples = 0
     while (time.monotonic() - started) * 1000 <= max_ms:
         try:
+            bounds = screenshot_bounds(page) if geometry else None
             observation, document, signal = observe(page)
+            if geometry:
+                if screenshot_bounds(page) != bounds:
+                    raise CaptureFailure("content_changed_during_capture")
+                signal = (signal, bounds)
         except CaptureFailure as error:
             if str(error) != "content_changed_during_capture":
                 raise
@@ -413,6 +435,10 @@ def collect_stable(page, stable_ms=1000, max_ms=12000):
             readiness = {"ready_state": "complete", "fonts_status": "loaded", "stable": True,
                          "samples": samples, "stable_ms": stable_ms, "waited_ms": round((now - started) * 1000),
                          "basis": "native_layout_rendered_text_and_links_bracketing_ancillary_dom"}
+            if geometry:
+                readiness.update({"full_page_dimensions_stable": True,
+                                  "full_page_dimensions": bounds,
+                                  "basis": readiness["basis"] + "_and_full_page_dimensions"})
             return observation, document, readiness
         page.wait_for_timeout(300)
     raise CaptureFailure("page_not_stable")
@@ -464,7 +490,7 @@ def semantic_mismatches(before, after, prefix, fields):
     return result
 
 
-def capture_evidence(page, observed):
+def capture_evidence(page, observed, *, viewport_capture=None):
     """Passive screenshot + source text, not fabricated geometry or visibility for HTML."""
     observation, document, _ = observed
     try:
@@ -472,13 +498,13 @@ def capture_evidence(page, observed):
     except HtmlDocumentError as error:
         raise CaptureFailure(str(error)) from None
     html_links = discover_html_links(page)
-    bounds_script = """() => ({width: Math.ceil(Math.max(innerWidth, document.documentElement.scrollWidth, document.body.scrollWidth)),
-        height: Math.ceil(Math.max(innerHeight, document.documentElement.scrollHeight, document.body.scrollHeight))})"""
-    bounds = page.evaluate(bounds_script)
+    bounds = screenshot_bounds(page)
     width, height = bounds["width"], bounds["height"]
-    if not (0 < width <= 4096 and 0 < height <= 20000 and width * height <= MAX_SCREENSHOT_PIXELS):
-        raise CaptureFailure("screenshot_dimension_limit")
-    image = page.screenshot(type="jpeg", quality=80, full_page=True, scale="css", animations="allow", caret="initial", timeout=15000)
+    if viewport_capture is not None:
+        if (bounds != viewport_capture or page.viewport_size != viewport_capture or
+                page.evaluate("() => ({width: innerWidth, height: innerHeight})") != viewport_capture):
+            raise CaptureFailure("screenshot_document_exceeds_viewport")
+    image = page.screenshot(type="jpeg", quality=80, full_page=viewport_capture is None, scale="css", animations="allow", caret="initial", timeout=15000)
     captured_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     if len(image) > MAX_SCREENSHOT_BYTES:
         raise CaptureFailure("screenshot_size_limit")
@@ -496,7 +522,10 @@ def capture_evidence(page, observed):
         raise CaptureFailure("screenshot_page_unreadable")
     if CHALLENGE.search(after_document["text"][:1000]):
         raise CaptureFailure("blocked_page_content")
-    if page.evaluate(bounds_script) != bounds:
+    if screenshot_bounds(page) != bounds:
+        raise CaptureFailure("screenshot_dimensions_changed")
+    if viewport_capture is not None and (page.viewport_size != viewport_capture or
+            page.evaluate("() => ({width: innerWidth, height: innerHeight})") != viewport_capture):
         raise CaptureFailure("screenshot_dimensions_changed")
     after_links = discover_html_links(page)
     mismatches = (semantic_mismatches(document, after_document, "visible", ("title", "text", "blocks", "links"))
@@ -507,12 +536,14 @@ def capture_evidence(page, observed):
         "base64": base64.b64encode(image).decode("ascii"), "sha256": hashlib.sha256(image).hexdigest(),
         "byte_length": len(image), "width": image_width, "height": image_height,
         "captured_at": captured_at, "source_url": observation["url"], "full_page": True,
+        **({"capture_method": "document_fitting_viewport", "viewport": viewport_capture} if viewport_capture is not None else {}),
         "geometry_status": "unavailable", "alignment": "not_verified", "semantics_bracketed": not mismatches,
         "semantic_mismatches": mismatches, "primary_html_captured_at": observation["captured_at"],
         "limitations": ["No change coordinates or screenshot/text pixel alignment were verified.",
             "No scrolling or section expansion; hidden HTML source text is not asserted to appear in this image.",
             "Image pixels, animation, embedded documents and lazy content were not independently stabilized.",
             "The pre-screenshot atomic HTML snapshot is primary; this later screenshot is supplementary."]
+            + (["After a full-page screenshot changed layout, the viewport height was set once to fit the document; primary HTML and visible content were observed again in that viewport."] if viewport_capture is not None else [])
             + (["Content changed during the supplementary screenshot; it must not be presented as matching the primary snapshot."] if mismatches else [])}}
 
 
@@ -608,10 +639,33 @@ def capture(request, fixture=None):
             if response["upstream_challenge"]:
                 # An explicit upstream interstitial is unavailable, not an empty applicant page.
                 raise CaptureFailure("upstream_challenge_response")
-            state["observed"] = collect_stable(page)
-            require_document_response_url(state["observed"][0]["url"], response)
-            if profile == EVIDENCE_PROFILE:
-                state["evidence"] = capture_evidence(page, state["observed"])
+            viewport_capture = None
+            for attempt in range(2 if profile == EVIDENCE_PROFILE else 1):
+                state["observed"] = (collect_stable(page, geometry=True) if profile == EVIDENCE_PROFILE
+                                     else collect_stable(page))
+                require_document_response_url(state["observed"][0]["url"], response)
+                if profile == EVIDENCE_PROFILE:
+                    try:
+                        state["evidence"] = capture_evidence(page, state["observed"], viewport_capture=viewport_capture)
+                    except CaptureFailure as error:
+                        # Chromium's beyond-viewport screenshot temporarily resizes
+                        # to 1x1 and can trigger a site's responsive JS. One bounded
+                        # fixed-width, document-fitting viewport avoids that path.
+                        # Discard the first shot and re-observe ALL primary content;
+                        # no script suppression, DOM edits, or geometry tolerance.
+                        if str(error) != "screenshot_dimensions_changed" or attempt:
+                            raise
+                        previous_bounds = state["observed"][2]["full_page_dimensions"]
+                        current_bounds = screenshot_bounds(page)
+                        viewport = page.viewport_size
+                        if not viewport or max(previous_bounds["width"], current_bounds["width"]) > viewport["width"]:
+                            raise CaptureFailure("screenshot_document_exceeds_viewport")
+                        viewport_capture = {"width": viewport["width"],
+                                            "height": max(previous_bounds["height"], current_bounds["height"], viewport["height"])}
+                        page.set_viewport_size(viewport_capture)
+                        continue
+                    state["observed"][2]["screenshot_attempts"] = attempt + 1
+                break
             require_document_response_url(page.url, response)
             if state["response"] is not response:
                 raise CaptureFailure("http_response_changed_during_capture")

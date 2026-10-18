@@ -377,6 +377,15 @@ try {
     await submitPendingCandidates();
   }
 
+  // Stored changed-page answers must not delay normal polling or submission.
+  // Initial-document recovery keeps its existing placement inside polling.
+  if (
+    apply && poll && !submitOnly &&
+    paidLane === GEMINI_PAID_LANES.CHANGED_PAGE_REVIEW
+  ) {
+    await reconcileStoredSucceededCandidates();
+  }
+
   await refreshStatusCounts();
   report.status = report.billing_block ? "billing_blocked" : "succeeded";
 } catch (error) {
@@ -729,6 +738,8 @@ async function reconcileStoredSucceededCandidates(
   priorityCandidateIds = [],
   { priorityOnly = false } = {},
 ) {
+  const changedPageRetry = paidLane === GEMINI_PAID_LANES.CHANGED_PAGE_REVIEW;
+  const retryDeadline = changedPageRetry ? Date.now() + 60_000 : Infinity;
   const staleBefore = new Date(
     Date.now() - publicationClaimStaleMinutes * 60_000,
   ).toISOString();
@@ -766,7 +777,7 @@ async function reconcileStoredSucceededCandidates(
     const { data: loaded, error } = await storedSucceededQuery
       .order("updated_at", { ascending: true })
       .order("id", { ascending: true })
-      .limit(Math.max(limit, 500));
+      .limit(changedPageRetry ? Math.min(limit, 100) : Math.max(limit, 500));
     if (error) throw new Error(`Load stored visual publication retries failed: ${error.message}`);
     data = loaded || [];
   }
@@ -782,6 +793,12 @@ async function reconcileStoredSucceededCandidates(
   const policyRefreshedPriorityCandidateIds = [];
   for (const candidate of candidates) {
     try {
+      // Stop before claiming another row; never cancel an in-flight publication.
+      // Untouched rows remain eligible for the next scheduled run.
+      if (Date.now() >= retryDeadline) {
+        console.log("VISUAL_REVIEW_STORED_RETRY_DEFERRED reason=soft_time_budget");
+        break;
+      }
       const usage = candidate.candidate_scope === INITIAL_OFFICIAL_DOCUMENT_SCOPE
         ? {}
         : normalizeGeminiUsage(candidate.actual_usage);

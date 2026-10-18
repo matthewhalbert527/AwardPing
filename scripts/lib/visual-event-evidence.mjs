@@ -1636,6 +1636,7 @@ function validateNewWebpageStateReferences({ candidate, side, resolved }) {
       required: true,
     });
     if (!state.geometry_path) {
+      if (explicitlyUnavailableMainGeometry({ candidate, side, resolved, state })) continue;
       throw new DeterministicVisualArtifactError(
         `Candidate ${candidate.id} ${side} visual state ${state.state_id} has no geometry artifact.`,
         "visual_state_geometry_missing",
@@ -1689,6 +1690,64 @@ function validateNewWebpageStateReferences({ candidate, side, resolved }) {
     left: main.geometry_ref,
     right: resolved.file_refs.layout,
   });
+}
+
+// A sealed main-only capture may explicitly retain no geometry. Its full image
+// and text remain evidence, never proof of a crop. Manifest/byte checks run first;
+// missing, contradictory, expansion-state, and formerly-ready geometry still fail.
+function explicitlyUnavailableMainGeometry({ candidate, side, resolved, state }) {
+  const ref = objectValue(resolved.ref);
+  const meta = objectValue(resolved.meta);
+  const stateRef = (Array.isArray(ref.visual_states) ? ref.visual_states : [])
+    .find((value) => value.state_id === state.state_id);
+  const refGeometry = objectValue(ref.metadata?.text_geometry);
+  const metaGeometry = objectValue(meta.text_geometry);
+  const localization = objectValue(meta.localization);
+  const refLocalization = ref.metadata?.localization;
+  const emptyOrAbsent = (value) => value == null || (Array.isArray(value) && value.length === 0);
+  const textHash = side === "previous" ? candidate.previous_text_hash : candidate.new_text_hash;
+  return state.kind === "main" && state.state_id === "main" && resolved.states.length === 1
+    && stateRef?.local_paths?.layout === null && ref.local_paths?.layout === null
+    && meta.files?.layout === null && meta.layout_path == null
+    && meta.expansion_state_count === 0
+    && Array.isArray(meta.expansion_state_screenshots) && meta.expansion_state_screenshots.length === 0
+    && Array.isArray(meta.files?.expansion_states) && meta.files.expansion_states.length === 0
+    && (meta.persist_expansion_state_screenshots == null || meta.persist_expansion_state_screenshots === false)
+    && stateRef.geometry_hash === null && ref.layout_hash === null && meta.layout_hash === null
+    && !state.geometry_ref?.sha256 && state.geometry_ref?.byte_length === null
+    && !resolved.file_refs.layout?.sha256 && resolved.file_refs.layout?.byte_length === null
+    && Object.keys(objectValue(state.geometry)).length === 0
+    && metaGeometry.status === "unavailable_no_visible_text_nodes"
+    // unavailableR2TextGeometryReference preserves these two explicit reasons
+    // in snapshot refs; the retained meta file summarizes zero runs instead.
+    && (refGeometry.status === metaGeometry.status || (
+      refLocalization?.status === localization.status && (
+        (refGeometry.status === "unavailable_layout_changed_during_screenshot"
+          && localization.status === "unavailable_layout_changed_during_screenshot")
+        || (refGeometry.status === "unavailable_retained_geometry_verification"
+          && localization.status === "evidence_only_geometry_unavailable"))))
+    && [refGeometry, metaGeometry].every((geometry) =>
+      geometry.geometry_hash === null && geometry.file == null
+      && geometry.node_count === 0 && geometry.run_count === 0
+      && emptyOrAbsent(geometry.nodes) && emptyOrAbsent(geometry.runs)
+      && geometry.screenshot !== null && typeof geometry.screenshot === "object" && !Array.isArray(geometry.screenshot)
+      && geometry.screenshot.image_hash == null && geometry.screenshot.image_ref == null)
+    && new Set(["unavailable_layout_changed_during_screenshot", "evidence_only_geometry_unavailable"])
+      .has(localization.status)
+    && localization.exact === false && localization.geometry_ready === false
+    && localization.geometry_hash === null && localization.bound_image_hash === null
+    && (refLocalization == null || (
+      typeof refLocalization === "object" && !Array.isArray(refLocalization)
+      && refLocalization.status === localization.status && refLocalization.exact === false
+      && refLocalization.geometry_ready === false && refLocalization.geometry_hash === null
+      && refLocalization.bound_image_hash === null))
+    && meta.captured_at === ref.captured_at
+    && meta.source?.id === candidate.shared_award_source_id
+    && meta.image_hash === ref.image_hash && ref.image_hash === resolved.expected_main_hash
+    && /^[a-f0-9]{64}$/.test(cleanText(textHash))
+    && textHash === ref.text_hash && ref.text_hash === meta.text_hash
+    && Boolean(resolved.files.text)
+    && /^[a-f0-9]{64}$/.test(cleanText(resolved.file_refs.text?.sha256));
 }
 
 function assertSemanticArtifactRef({

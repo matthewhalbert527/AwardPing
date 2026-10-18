@@ -4,6 +4,7 @@ import { buildScraplingReviewDiff, parseScraplingReviewText } from "./scrapling-
 import { scraplingReviewText } from "./scrapling-worker.mjs";
 import { normalizeVisibleText } from "./capture-stability.mjs";
 import { buildVisualReviewPromptPayload, buildVisualReviewPromptText } from "./visual-review-queue.mjs";
+import { analyzeGeminiRequestInput, estimateGeminiMaximumBatchRequestsCostUsd } from "./gemini-spend-ledger.mjs";
 
 const source = { id: "10000000-0000-0000-0000-000000000001", shared_award_id: "20000000-0000-0000-0000-000000000001",
   url: "https://example.edu/award", title: "Scholarship eligibility", page_type: "eligibility", shared_awards: { name: "Example Scholarship" } };
@@ -681,12 +682,47 @@ describe("lossless labeled context tables for repeated long-page context", () =>
   it("uses actual serialized UTF-8 bytes, not characters, and keeps an oversized table packet held", () => {
     const { a, b } = tablePair();
     for (const doc of [a, b]) {
-      doc.blocks.push(block("🎓漢字".repeat(1250)));
+      doc.blocks.push(block("🎓漢字".repeat(6500)));
       doc.text = doc.blocks.map(item => item.text).join(" ");
     }
     const result = buildScraplingReviewDiff(inputs(a, b));
     expect(Buffer.byteLength(b.text, "utf8")).toBeGreaterThan(b.text.length);
     expect(result).toMatchObject({ status: "manual_review_required", reason: "complete_diff_exceeds_review_bound", diff: null });
+  });
+  it("reviews a complete long page without dropping distant qualifications or changing the compact representation", () => {
+    const { a, b } = tablePair();
+    const distantQualification = "Separate international route: these dates do not apply to international applicants. Institutional nomination may be earlier.";
+    for (const doc of [a, b]) {
+      doc.blocks.push(block("Unchanged application instructions and supporting background. ".repeat(500)), block(distantQualification));
+      doc.text = doc.blocks.map(item => item.text).join(" ");
+    }
+    expect(b.text.length).toBeGreaterThan(24000);
+    const input = inputs(a, b), result = buildScraplingReviewDiff(input);
+    expect(result.status).toBe("changed_needs_review");
+    expect(result.publishable).toBe(false);
+    expect(result.baseline_advance_allowed).toBe(false);
+    expect(result.diff.scrapling_semantics.version).toBe(4);
+    const bytes = Buffer.byteLength(JSON.stringify(result.diff), "utf8");
+    expect(bytes).toBeGreaterThan(24000);
+    expect(bytes).toBeLessThanOrEqual(128000);
+    expectRoundTrip(a, b, result.diff);
+    expect(result.diff.scrapling_semantics.current_source_prose.endsWith(distantQualification)).toBe(true);
+    expect(buildScraplingReviewDiff(input, { maxDiffBytes: 24000 }).reason).toBe("complete_diff_exceeds_review_bound");
+
+    const payload = buildVisualReviewPromptPayload({ ...input, diff: result.diff, deterministic: result.deterministic });
+    const prompt = buildVisualReviewPromptText(payload);
+    expect(payload.previous_text_excerpt).toBe("");
+    expect(payload.new_text_excerpt).toBe("");
+    expect(payload.deterministic_diff).toEqual(result.diff);
+    expect(prompt).toContain(distantQualification);
+    const request = text => ({ contents: [{ parts: [{ text }] }] });
+    expect(analyzeGeminiRequestInput(request(prompt)).textBytes).toBeGreaterThan(bytes);
+    const cost = text => estimateGeminiMaximumBatchRequestsCostUsd("gemini-3.8-flash", [request(text)], { maxOutputTokensPerRequest: 1600 });
+    expect(cost(prompt)).toBeGreaterThan(cost(prompt.slice(0, 24000)));
+    // Ordinary submission still reserves against this full request; this helper
+    // neither calls a provider nor increases the lane's existing spending limit.
+    expect(buildScraplingReviewDiff(input, { maxDiffBytes: bytes }).status).toBe("changed_needs_review");
+    expect(buildScraplingReviewDiff(input, { maxDiffBytes: bytes - 1 }).reason).toBe("complete_diff_exceeds_review_bound");
   });
   it("checks the exact final byte boundary including its legend and JSON escaping", () => {
     const { a, b } = tablePair();
@@ -783,7 +819,7 @@ describe("identity, integrity and bounded fail-closed behavior", () => {
   it("rejects an oversized retained artifact", () => {
     expect(buildScraplingReviewDiff(inputs(), { maxArtifactBytes: 10 }).reason).toBe("artifact_size_limit");
   });
-  it.each([{ maxDiffBytes: 25000 }, { maxDiffBytes: NaN }, { maxProseChars: 0 }, { maxArtifactBytes: 7 * 1024 * 1024 }])("rejects expanded/invalid limits %j", options => {
+  it.each([{ maxDiffBytes: 128001 }, { maxDiffBytes: NaN }, { maxProseChars: 0 }, { maxArtifactBytes: 7 * 1024 * 1024 }])("rejects expanded/invalid limits %j", options => {
     expect(buildScraplingReviewDiff(inputs(), options).reason).toBe("invalid_limits");
   });
 });

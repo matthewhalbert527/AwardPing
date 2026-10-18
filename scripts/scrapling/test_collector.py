@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from playwright.sync_api import Page, WebSocketRoute, sync_playwright
 
-from collector import CaptureFailure, EVIDENCE_PROFILE, capture, collect_stable, discover_html_links, jpeg_dimensions, observe, parse_projection, require_document_response_url, validate_url
+from collector import CaptureFailure, EVIDENCE_PROFILE, capture, collect_stable, discover_html_links, jpeg_dimensions, observe, parse_projection, require_document_response_url, screenshot_bounds, validate_url
 from html_document import extract_html_document
 
 
@@ -466,6 +466,222 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(shot["semantic_mismatches"], [])
         self.assertEqual(shot["primary_html_captured_at"], result["captured_at"])
         self.assertFalse(result["html_document"]["visibility_verified"])
+        self.assertTrue(result["readiness"]["full_page_dimensions_stable"])
+        self.assertEqual(result["readiness"]["screenshot_attempts"], 1)
+
+    def test_full_page_extent_matches_browser_offset_dimensions(self):
+        body = '<style>body{margin:0;height:1000px;border-bottom:200px solid;overflow:hidden;' \
+               'transform:scale(.5);transform-origin:top left}</style><h1>Award</h1>' \
+               '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p>'
+        result, _ = self.fetch_fixture(body, profile=EVIDENCE_PROFILE)
+        self.assertEqual(result["screenshot"]["height"], 1200)
+        self.assertTrue(result["screenshot"]["semantics_bracketed"])
+
+    def test_one_late_geometry_change_uses_fresh_observation_and_image(self):
+        screenshot = Page.screenshot
+        body = '<style>body{margin:0}main{height:1100px}</style><main><h1>Award</h1>' \
+               '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>'
+        for when in ("before", "after"):
+            images, observations = [], []
+
+            def stable(page, *args, **kwargs):
+                value = collect_stable(page, *args, **kwargs)
+                observations.append(value)
+                return value
+
+            def changing_screenshot(page, **kwargs):
+                first = not images
+                if first and when == "before":
+                    page.evaluate("document.body.style.paddingBottom='3px';document.querySelector('p').textContent='New deadline February 2, 2027. International applicants may apply.'")
+                image = screenshot(page, **kwargs)
+                images.append(image)
+                if first and when == "after":
+                    page.evaluate("document.body.style.paddingBottom='3px';document.querySelector('p').textContent='New deadline February 2, 2027. International applicants may apply.'")
+                return image
+
+            with self.subTest(when=when), patch.object(Page, "screenshot", changing_screenshot), \
+                    patch("collector.collect_stable", stable):
+                result, _ = self.fetch_fixture(body, profile=EVIDENCE_PROFILE)
+            self.assertEqual(len(images), 2)
+            self.assertEqual(len(observations), 2)
+            self.assertNotEqual(observations[0][0]["html"], observations[1][0]["html"])
+            self.assertGreater(result["captured_at"], observations[0][0]["captured_at"])
+            self.assertEqual(result["captured_at"], observations[1][0]["captured_at"])
+            self.assertEqual(result["html"], observations[1][0]["html"])
+            self.assertIn("New deadline February 2, 2027. International applicants", result["text"])
+            self.assertNotIn("Only U.S. citizens", result["text"])
+            self.assertEqual(result["html_document"], extract_html_document(result["html"], result["final_url"]))
+            self.assertEqual(base64.b64decode(result["screenshot"]["base64"]), images[-1])
+            self.assertEqual(result["screenshot"]["height"], 1103)
+            self.assertEqual(result["readiness"]["screenshot_attempts"], 2)
+            self.assertTrue(result["readiness"]["full_page_dimensions_stable"])
+            self.assertTrue(result["screenshot"]["semantics_bracketed"])
+            self.assertEqual(result["screenshot"]["alignment"], "not_verified")
+            self.assertEqual(result["screenshot"]["capture_method"], "document_fitting_viewport")
+            self.assertEqual(result["screenshot"]["viewport"], {"width": 1280, "height": 1103})
+            self.assertTrue(any("viewport height was set once to fit the document" in item for item in result["screenshot"]["limitations"]))
+
+    def test_viewport_fallback_paints_bottom_and_uses_fresh_responsive_content(self):
+        screenshot, resize = Page.screenshot, Page.set_viewport_size
+        options, sizes, bottom_pixels = [], [], []
+
+        def resized(page, value):
+            sizes.append(value)
+            return resize(page, value)
+
+        def image(page, **kwargs):
+            options.append(kwargs)
+            value = screenshot(page, **kwargs)
+            if len(options) == 1:
+                page.evaluate("document.body.style.paddingBottom='3px'")
+            else:
+                bottom_pixels.append(page.evaluate("""async encoded => {
+                    const image = new Image(); image.src = 'data:image/jpeg;base64,' + encoded;
+                    await image.decode();
+                    const canvas = new OffscreenCanvas(image.width, image.height);
+                    const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+                    return Array.from(context.getImageData(20, image.height - 20, 1, 1).data);
+                }""", base64.b64encode(value).decode("ascii")))
+            return value
+
+        body = '<style>body{margin:0;background:white}main{height:1200px}footer{height:100px;background:#0000ff}</style>' \
+               '<main><h1>Award</h1><p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main><footer>Official footer</footer>' \
+               '<script>addEventListener("resize",()=>{if(innerHeight>900)' \
+               'document.querySelector("p").textContent="Apply February 2, 2027. International applicants may apply."})</script>'
+        with patch.object(Page, "screenshot", image), patch.object(Page, "set_viewport_size", resized):
+            result, _ = self.fetch_fixture(body, profile=EVIDENCE_PROFILE)
+        self.assertEqual([item["full_page"] for item in options], [True, False])
+        self.assertEqual(sizes, [{"width": 1280, "height": 1303}])
+        self.assertEqual(result["screenshot"]["viewport"], sizes[0])
+        self.assertTrue(result["screenshot"]["full_page"])
+        self.assertTrue(result["screenshot"]["semantics_bracketed"])
+        self.assertIn("International applicants", result["text"])
+        self.assertIn("International applicants", result["html_document"]["text"])
+        self.assertNotIn("Only U.S. citizens", result["text"])
+        self.assertEqual(len(bottom_pixels), 1)
+        self.assertLess(bottom_pixels[0][0], 10)
+        self.assertLess(bottom_pixels[0][1], 10)
+        self.assertGreater(bottom_pixels[0][2], 240)
+
+    def test_viewport_dependent_growth_is_not_clipped_or_retried_again(self):
+        screenshot, resize = Page.screenshot, Page.set_viewport_size
+        images, sizes = [], []
+
+        def resized(page, value):
+            sizes.append(value)
+            return resize(page, value)
+
+        def image(page, **kwargs):
+            value = screenshot(page, **kwargs)
+            images.append(value)
+            page.evaluate("document.body.style.paddingBottom='3px'")
+            return value
+
+        with patch.object(Page, "screenshot", image), patch.object(Page, "set_viewport_size", resized), \
+                self.assertRaisesRegex(CaptureFailure, "^screenshot_document_exceeds_viewport$"):
+            self.fetch_fixture('<style>body{margin:0}main{height:150vh}</style><main><h1>Award</h1>'
+                               '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>', profile=EVIDENCE_PROFILE)
+        self.assertEqual(len(images), 1)
+        self.assertEqual(sizes, [{"width": 1280, "height": 1353}])
+
+    def test_horizontal_overflow_is_not_widened_for_viewport_fallback(self):
+        screenshot = Page.screenshot
+        images = []
+
+        def image(page, **kwargs):
+            value = screenshot(page, **kwargs)
+            images.append(value)
+            page.evaluate("document.body.style.paddingBottom='3px'")
+            return value
+
+        with patch.object(Page, "screenshot", image), patch.object(Page, "set_viewport_size") as resize, \
+                self.assertRaisesRegex(CaptureFailure, "^screenshot_document_exceeds_viewport$"):
+            self.fetch_fixture('<style>body{margin:0}main{width:1400px;height:1100px}</style><main><h1>Award</h1>'
+                               '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>', profile=EVIDENCE_PROFILE)
+        self.assertEqual(len(images), 1)
+        resize.assert_not_called()
+
+    def test_persistent_screenshot_geometry_change_fails_after_two_attempts(self):
+        screenshot = Page.screenshot
+        images = []
+
+        def moving_screenshot(page, **kwargs):
+            image = screenshot(page, **kwargs)
+            images.append(image)
+            page.evaluate("document.body.style.paddingBottom=(parseInt(document.body.style.paddingBottom||'0')+3)+'px'")
+            return image
+
+        with patch.object(Page, "screenshot", moving_screenshot), \
+                self.assertRaisesRegex(CaptureFailure, "^screenshot_dimensions_changed$"):
+            self.fetch_fixture('<style>body{margin:0}main{height:1100px}</style><main><h1>Award</h1>'
+                               '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>', profile=EVIDENCE_PROFILE)
+        self.assertEqual(len(images), 2)
+
+    def test_geometry_retry_preserves_later_semantic_mismatch_disclosure(self):
+        screenshot = Page.screenshot
+        images = []
+
+        def changing_screenshot(page, **kwargs):
+            image = screenshot(page, **kwargs)
+            images.append(image)
+            if len(images) == 1:
+                page.evaluate("document.body.style.paddingBottom='3px'")
+            else:
+                page.evaluate("document.querySelector('p').textContent='New deadline February 2, 2027. International applicants may apply.'")
+            return image
+
+        with patch.object(Page, "screenshot", changing_screenshot):
+            result, _ = self.fetch_fixture('<style>body{margin:0}main{height:1100px}</style><main><h1>Award</h1>'
+                                          '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>', profile=EVIDENCE_PROFILE)
+        self.assertEqual(len(images), 2)
+        self.assertEqual(result["readiness"]["screenshot_attempts"], 2)
+        self.assertIn("Deadline January 1, 2027.", result["html_document"]["text"])
+        self.assertFalse(result["screenshot"]["semantics_bracketed"])
+        self.assertEqual(result["screenshot"]["alignment"], "not_verified")
+        self.assertIn("visible.text", [item["field"] for item in result["screenshot"]["semantic_mismatches"]])
+        self.assertIn("supplementary_screenshot_semantics_changed_not_aligned", result["warnings"])
+
+    def test_geometry_retry_does_not_retry_other_evidence_failures(self):
+        for reason in ("blocked_page_content", "screenshot_page_identity_or_readiness_changed", "invalid_screenshot"):
+            with self.subTest(reason=reason), patch("collector.capture_evidence", side_effect=CaptureFailure(reason)) as evidence:
+                with self.assertRaisesRegex(CaptureFailure, "^" + reason + "$"):
+                    self.fetch_fixture('<h1>Award</h1><p>Deadline January 1, 2027. Only U.S. citizens may apply.</p>', profile=EVIDENCE_PROFILE)
+                self.assertEqual(evidence.call_count, 1)
+
+    def test_late_oversized_page_is_not_retried_or_accepted(self):
+        screenshot = Page.screenshot
+        images = []
+
+        def oversized_screenshot(page, **kwargs):
+            image = screenshot(page, **kwargs)
+            images.append(image)
+            page.evaluate("document.body.style.height='21000px'")
+            return image
+
+        with patch.object(Page, "screenshot", oversized_screenshot), \
+                self.assertRaisesRegex(CaptureFailure, "^screenshot_dimension_limit$"):
+            self.fetch_fixture('<h1>Award</h1><p>Deadline January 1, 2027. Only U.S. citizens may apply.</p>', profile=EVIDENCE_PROFILE)
+        self.assertEqual(len(images), 1)
+
+    def test_dimensions_must_stabilize_even_when_visible_semantics_do_not_change(self):
+        calls = []
+
+        def moving_bounds(page):
+            page.evaluate("document.body.style.paddingBottom=(parseInt(document.body.style.paddingBottom||'0')+1)+'px'")
+            bounds = screenshot_bounds(page)
+            calls.append(bounds)
+            return bounds
+
+        def bounded_stable(page, *args, **kwargs):
+            return collect_stable(page, max_ms=1400, *args, **kwargs)
+
+        with patch("collector.screenshot_bounds", moving_bounds), patch("collector.collect_stable", bounded_stable), \
+                patch.object(Page, "screenshot", side_effect=AssertionError("unstable page must not be rendered")) as image:
+            with self.assertRaisesRegex(CaptureFailure, "^page_not_stable$"):
+                self.fetch_fixture('<style>body{margin:0}main{height:1100px}</style><main><h1>Award</h1>'
+                                   '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>', profile=EVIDENCE_PROFILE)
+            image.assert_not_called()
+        self.assertGreaterEqual(len(calls), 4)
 
     def test_closed_after_layout_evidence_keeps_html_without_false_visible_answer(self):
         body = '<h1>Award eligibility and application instructions</h1>' \
@@ -489,8 +705,10 @@ class FetchTests(unittest.TestCase):
                                 ("document.querySelector('#hidden').textContent='Two references now required.'", "html_source.text"),
                                 ("document.querySelector('#hidden').textContent='Countdown seconds 42.'", "html_source.text"),
                                 ("document.querySelector('a').title='Changed document label'", "discovery.links")]:
+            screenshot_calls = []
             def changing_screenshot(page, **kwargs):
                 image = screenshot(page, **kwargs)
+                screenshot_calls.append(image)
                 page.evaluate(mutation)
                 return image
             with self.subTest(mutation=mutation), patch.object(Page, "screenshot", changing_screenshot):
@@ -504,6 +722,7 @@ class FetchTests(unittest.TestCase):
                 self.assertIn("One reference required.", result["html_document"]["text"])
                 self.assertEqual(result["html_document"], extract_html_document(result["html"], result["final_url"]))
                 self.assertEqual(result["html_links"][0]["title"], "Guide")
+                self.assertEqual(len(screenshot_calls), 1)
 
     def test_screenshot_navigation_is_still_refused(self):
         screenshot = Page.screenshot

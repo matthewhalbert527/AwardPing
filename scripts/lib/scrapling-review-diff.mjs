@@ -5,7 +5,11 @@ import { normalizePublicHttpUrl } from "./public-network-safety.mjs";
 const PROFILE = "scrapling-evidence-v1";
 const MARKER = "HTML source context and link attributes (may include hidden or stale content; not screenshot locations):";
 const MAX_ARTIFACT_BYTES = 6 * 1024 * 1024;
-const MAX_DIFF_BYTES = 24000;
+// Keep compact packets unchanged, but allow complete long-page context through
+// the same review path. This is a packet bound, not a larger spending budget:
+// the provider reserves against the entire serialized request before submission.
+const COMPACT_DIFF_BYTES = 24000;
+const MAX_DIFF_BYTES = 128000;
 const MAX_PROSE_CHARS = 8000;
 // The publication normalizer retains eight blocks even though the queue accepts
 // sixteen. Never enqueue a larger complete change set that would be shortened.
@@ -438,7 +442,8 @@ export function buildScraplingReviewDiff(input = {}, {
         previous_context: before.context, current_context: after.context,
         caution: "Only the complete changed blocks are uniquely corroborated in native visible text with ordered context. Other full HTML source context may be hidden or stale. This is not proof of current award facts or screenshot coordinates. Review the named award, audience and cycle; structural context is not a source quotation." },
     };
-    if (needsSharedContext || Buffer.byteLength(JSON.stringify(diff), "utf8") > maxDiffBytes) {
+    const compactBound = Math.min(maxDiffBytes, COMPACT_DIFF_BYTES);
+    if (needsSharedContext || Buffer.byteLength(JSON.stringify(diff), "utf8") > compactBound) {
       const shared = losslessSharedContext(before, after, visibleChanges.changed);
       if (!shared) return manual("lossless_shared_context_reconstruction_failed");
       delete diff.scrapling_semantics.previous_source_prose;
@@ -446,7 +451,7 @@ export function buildScraplingReviewDiff(input = {}, {
       Object.assign(diff.scrapling_semantics, shared);
       diff.changed_text_excerpt = "Complete changed blocks are listed. Full current source prose/context is included once; all previous values can be reconstructed from exact replacements. Original before/current artifacts remain retained.";
     }
-    if (Buffer.byteLength(JSON.stringify(diff), "utf8") > maxDiffBytes) {
+    if (Buffer.byteLength(JSON.stringify(diff), "utf8") > compactBound) {
       const tables = losslessContextTables(before, after, visibleChanges.changed);
       if (!tables) return manual("lossless_context_table_reconstruction_failed");
       delete diff.scrapling_semantics.current_context;
