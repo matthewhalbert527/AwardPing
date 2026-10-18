@@ -13,6 +13,7 @@ import {
   geminiBatchInlineResponseMap, geminiInlineError, geminiInlineResponsePayload,
   geminiBatchExactMappingComplete, geminiBatchUsageAccounting,
 } from "./lib/gemini-batch-support.mjs";
+import { readCompletedSourceIntakeProviderResponse } from "./lib/source-intake.mjs";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -77,6 +78,7 @@ function harness({ ids = [A], requests = [], reservations = [], functions = [], 
     SOURCE_INTAKE_SCOPE_LIMIT, sourceIntakeMembershipDecision, sourceIntakeScopeBindings,
     extractGeminiBatchInlineResponses, geminiBatchInlineResponseKey, geminiBatchInlineResponseMap,
     geminiBatchExactMappingComplete, geminiBatchUsageAccounting, geminiInlineError, geminiInlineResponsePayload,
+    readCompletedSourceIntakeProviderResponse,
     apply: true, limit: 100, statuses: ["pending"], maxRequestsPerBatch: 100,
     staleInFlightMs: 1000, maxBatchAgeMs: 1000, workerRunId: "fixture-worker",
     SOURCE_BACKFILL_APPROVAL_REQUEST_REASON: "fixture-approval-request",
@@ -180,7 +182,8 @@ describe("exact source-intake request scope", () => {
   });
 
   it("actual stored-result reconciliation only claims and replays the selected request", async () => {
-    const rows = [A, B].map((id) => ({ ...row(id, "ai_review_succeeded", { status: "accepted", raw: { safe: true } }), status_reason: "manual_reconciliation_retry_requested" }));
+    const providerResponse = { candidates: [{ finishReason: "STOP", content: { parts: [{ text: '{"safe":true}' }] } }] };
+    const rows = [A, B].map((id) => ({ ...row(id, "ai_review_succeeded", { status: "accepted", raw: { safe: true }, provider_response: providerResponse }), status_reason: "manual_reconciliation_retry_requested" }));
     const finalize = vi.fn();
     const capture = { retained_artifact: { r2_verified_at: "2026-10-18T00:00:00Z" } };
     const h = harness({ requests: rows, functions: ["processRequestedReconciliationRetries"], overrides: {
@@ -278,7 +281,7 @@ describe("actual mixed-batch defer boundary", () => {
 
   it("allows a complete selected-only historical batch to reconcile without another paid call", async () => {
     const rows = [A, B].map((id) => row(id, "ai_review_submitted", { gemini_batch_name: batch }));
-    const provider = vi.fn(async () => ({ state: "JOB_STATE_SUCCEEDED", response: { inlinedResponses: rows.map((item) => ({ key: item.id, response: { candidates: [{ content: { parts: [{ text: '{"status":"accepted"}' }] } }] } })) } }));
+    const provider = vi.fn(async () => ({ state: "JOB_STATE_SUCCEEDED", response: { inlinedResponses: rows.map((item) => ({ key: item.id, response: { candidates: [{ finishReason: "STOP", content: { parts: [{ text: '{"status":"accepted"}' }] } }] } })) } }));
     const finalize = vi.fn();
     const h = harness({ ids: [A, B], requests: [...rows, row(C)], functions: pollFunctions, overrides: {
       fetchGeminiJson: provider, captureFromRow: () => ({}), parseJsonObject: JSON.parse, finalizeReviewedRequest: finalize,

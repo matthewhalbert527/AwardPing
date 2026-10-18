@@ -13,6 +13,8 @@ import {
   validateSourceIntakeProviderInputBinding,
 } from "./source-intake-provider-binding.mjs";
 import { sourceQualityDecision } from "./source-quality.mjs";
+import { readSourceIntakeScalarFactIssue } from "./source-intake-scalar-facts.mjs";
+import { visualReviewCompletionDecision } from "./gemini-worker-policy.mjs";
 
 export const intakeStatuses = new Set([
   "pending",
@@ -614,7 +616,7 @@ export function buildGeminiIntakePrompt(
 
 export function normalizeGeminiIntakeResult(value) {
   const result = objectValue(value);
-  const sourceRelevance = cleanChoice(result.source_relevance, [
+  const sourceRelevance = intakeDecisionChoice(result.source_relevance, [
     "primary",
     "supporting",
     "generic_listing",
@@ -623,14 +625,14 @@ export function normalizeGeminiIntakeResult(value) {
     "unclear",
     "access_error",
   ], "unclear");
-  const cycleRelevance = cleanChoice(result.cycle_relevance, [
+  const cycleRelevance = intakeDecisionChoice(result.cycle_relevance, [
     "current_or_upcoming",
     "evergreen",
     "archived_or_past",
     "not_program_page",
     "unclear",
   ], "unclear");
-  const status = cleanChoice(result.status, ["accepted", "needs_review", "rejected"], "needs_review");
+  const status = intakeReviewStatus(result.status);
   const pageType = cleanChoice(result.page_type, [
     "homepage",
     "application",
@@ -650,8 +652,8 @@ export function normalizeGeminiIntakeResult(value) {
     source_relevance: sourceRelevance,
     cycle_relevance: cycleRelevance,
     page_type: pageType,
-    officialness: cleanChoice(result.officialness, ["official", "likely_official", "third_party", "unclear"], "unclear"),
-    confidence: cleanChoice(result.confidence, ["high", "medium", "low"], "low"),
+    officialness: intakeDecisionChoice(result.officialness, ["official", "likely_official", "third_party", "unclear"], "unclear"),
+    confidence: intakeDecisionChoice(result.confidence, ["high", "medium", "low"], "low"),
     evidence_quotes: stringArray(result.evidence_quotes).map((item) => truncate(item, 240)).slice(0, 8),
     facts: normalizeFacts(result.facts),
     suggested_sources: normalizeSuggestedSources(result.suggested_sources),
@@ -692,6 +694,7 @@ export function baselineFactsFromIntakeReview(review) {
   };
 }
 
+// Pass the original provider result: normalization can erase invalid fact types.
 export function validateIntakeAiDecision(review) {
   const facts = normalizeGeminiIntakeResult(review);
   const evidenceOk = facts.evidence_quotes.length > 0;
@@ -701,6 +704,11 @@ export function validateIntakeAiDecision(review) {
   if (!acceptedCycle.has(facts.cycle_relevance)) return { accepted: false, manual: facts.cycle_relevance === "unclear", reason: `cycle_relevance_${facts.cycle_relevance}` };
   if (!["official", "likely_official"].includes(facts.officialness)) return { accepted: false, manual: true, reason: `officialness_${facts.officialness}` };
   if (facts.confidence === "low") return { accepted: false, manual: true, reason: "confidence_low" };
+  // Strong supporting signals cannot override a request for human review.
+  // Keep earlier specific failure reasons and use a stable status fallback.
+  if (facts.status !== "accepted") return { accepted: false, manual: true, reason: `ai_status_${facts.status}` };
+  const scalarIssue = readSourceIntakeScalarFactIssue(review);
+  if (scalarIssue) return { accepted: false, manual: true, reason: scalarIssue.reason };
   return { accepted: true, manual: false, reason: "accepted" };
 }
 
@@ -983,7 +991,9 @@ export function buildDiscoveredPdfIntakeRequest({
 }
 
 export function sourceQualityForIntakeSource(sourceLike) {
-  return sourceQualityDecision(sourceLike, { purpose: "monitoring" });
+  const decision = sourceQualityDecision(sourceLike, { purpose: "monitoring" });
+  const status = normalizeGeminiIntakeResult(objectValue(sourceLike?.page_metadata).intake_review).status;
+  return status === "accepted" ? decision : { ...decision, allowed: false, reason: `ai_status_${status}` };
 }
 
 export function normalizeSharedAwardPageType(value) {
@@ -1099,6 +1109,42 @@ export function parseJsonObject(value) {
   }
 }
 
+/** Fresh and replayed intake results require actual, complete provider evidence. */
+export function readCompletedSourceIntakeProviderResponse(payload, { rawResult } = {}) {
+  const refuse = (reason) => {
+    const error = new Error(`Source-intake provider response held: ${reason}. No automatic paid retry.`);
+    error.code = `source_intake_provider_${reason}`;
+    throw error;
+  };
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+  const candidate = objectValue(candidates[0]);
+  const finish = candidate.finishReason ?? candidate.finish_reason;
+  const completion = visualReviewCompletionDecision(typeof finish === "string" ? finish : null, {
+    candidateCount: candidates.length,
+  });
+  if (!completion.allowed) refuse(completion.reason);
+  if (candidate.finishReason != null && candidate.finish_reason != null
+    && candidate.finishReason !== candidate.finish_reason) refuse("conflicting_finish_reason");
+  const ratings = [candidate.safetyRatings, candidate.safety_ratings].filter((value) => value != null);
+  if (ratings.some((value) => !Array.isArray(value))) refuse("invalid_safety_ratings");
+  if (payload?.promptFeedback?.blockReason || payload?.prompt_feedback?.block_reason
+    || ratings.some((values) => values.some((rating) => rating?.blocked === true))) refuse("blocked_response");
+  const parts = candidate.content?.parts;
+  if (!Array.isArray(parts) || !parts.length || parts.some((part) =>
+    !part || typeof part.text !== "string" || part.thought === true
+    || Object.keys(part).some((key) => !["text", "thought", "thoughtSignature"].includes(key)))) {
+    refuse("non_text_response");
+  }
+  const rawText = parts.map((part) => part.text).join("\n").trim();
+  if (!rawText) refuse("empty_response_text");
+  const parsed = parseJsonObject(rawText);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) refuse("invalid_intake_json");
+  if (rawResult !== undefined && sha256Canonical(parsed) !== sha256Canonical(rawResult)) {
+    refuse("response_result_mismatch");
+  }
+  return { parsed, rawText, finishReason: completion.finish_reason, providerResponse: payload };
+}
+
 export function extractGeminiText(payload) {
   const parts = payload?.candidates?.[0]?.content?.parts || payload?.response?.candidates?.[0]?.content?.parts || [];
   return parts.map((part) => part.text || "").join("\n").trim();
@@ -1124,9 +1170,9 @@ function review(allowed, status, reason, pageType, qualityFlags, normalizedUrl, 
 function normalizeFacts(value) {
   const facts = objectValue(value);
   return {
-    description: cleanNullable(facts.description),
-    deadline: cleanNullable(facts.deadline),
-    amount: cleanNullable(facts.amount || facts.award_amount),
+    description: intakeScalarText(facts.description),
+    deadline: intakeScalarText(facts.deadline),
+    amount: intakeScalarText(facts.amount || facts.award_amount),
     eligibility: stringArray(facts.eligibility).slice(0, 12),
     application_materials: stringArray(facts.application_materials).slice(0, 12),
     important_dates: stringArray(facts.important_dates).slice(0, 12),
@@ -1376,6 +1422,27 @@ function stringArray(value) {
   return value.split(/\s*(?:;|\n|\u2022)\s*/).map(cleanText).filter(Boolean);
 }
 
+const INTAKE_REVIEW_STATUSES = new Set(["accepted", "needs_review", "rejected"]);
+
+/**
+ * Status controls disposition, so do not coerce arrays or strip punctuation
+ * as cleanChoice does. Malformed verdicts remain unresolved; valid string
+ * tokens retain ordinary trim/case normalization.
+ */
+function intakeReviewStatus(value) {
+  if (typeof value !== "string") return "needs_review";
+  const token = value.trim().toLowerCase();
+  return INTAKE_REVIEW_STATUSES.has(token) ? token : "needs_review";
+}
+
+// Model decision fields allow casing and separator aliases, not coercion or
+// punctuation removal: "official?" and ["official"] are not confirmations.
+function intakeDecisionChoice(value, choices, fallback) {
+  if (typeof value !== "string") return fallback;
+  const key = value.trim().toLowerCase().replace(/[\s_-]+/g, "_");
+  return choices.includes(key) ? key : fallback;
+}
+
 function cleanChoice(value, choices, fallback) {
   const key = cleanKey(value).replace(/-/g, "_");
   return choices.includes(key) ? key : fallback;
@@ -1384,6 +1451,12 @@ function cleanChoice(value, choices, fallback) {
 function cleanNullable(value) {
   const text = cleanText(value);
   return text || null;
+}
+
+// Do not invoke object conversion while preparing the review display. The
+// raw-result validator records wrong-type facts for manual review separately.
+function intakeScalarText(value) {
+  return typeof value === "string" ? cleanNullable(value) : null;
 }
 
 function cleanKey(value) {

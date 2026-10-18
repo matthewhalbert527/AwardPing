@@ -15,6 +15,7 @@ import {
   normalizeSharedAwardPageType,
   normalizeSourceIntakeUrl,
   parseJsonObject,
+  readCompletedSourceIntakeProviderResponse,
   persistSourceIntakeFactCandidates,
   sourceIntakeCaptureDisposition,
   sourceLikeFromIntake,
@@ -458,6 +459,7 @@ async function processRequestedReconciliationRetries() {
       if (cleanNullable(storedReview.status) !== "accepted") {
         throw new Error("Reconciliation-only retry requires a stored accepted AI review.");
       }
+      readCompletedSourceIntakeProviderResponse(storedReview.provider_response, { rawResult: storedReview.raw });
       const replayBinding = validateSourceIntakeProviderReplayBinding({
         request: requested,
         capture,
@@ -2240,7 +2242,8 @@ async function pollSubmittedBatch(batchName, batchRows) {
       const failed = await failSubmittedResponse(row, batchName, {
         status: "failed",
         status_reason: "gemini_batch_item_error",
-        ai_review: { ...(objectValue(row.ai_review)), gemini_item_error: itemError },
+        ai_review: { ...(objectValue(row.ai_review)), gemini_item_error: itemError,
+          provider_response: geminiInlineResponsePayload(responseItem) },
         failed_at: new Date().toISOString(),
         error: message.slice(0, 1000),
       });
@@ -2254,19 +2257,22 @@ async function pollSubmittedBatch(batchName, batchRows) {
       }
       continue;
     }
-    const rawText = extractGeminiText(geminiInlineResponsePayload(responseItem));
-    const parsed = parseJsonObject(rawText);
-    if (!parsed) {
-      const message = "Gemini did not return valid intake JSON.";
+    const providerResponse = geminiInlineResponsePayload(responseItem);
+    let completedResponse;
+    try {
+      completedResponse = readCompletedSourceIntakeProviderResponse(providerResponse);
+    } catch (error) {
+      const message = errorMessage(error);
       const failed = await failSubmittedResponse(row, batchName, {
-        status: "failed",
-        status_reason: "invalid_gemini_intake_json",
-        ai_review: { ...(objectValue(row.ai_review)), raw_text: rawText, parse_error: "invalid_json" },
+        status: "needs_manual_review",
+        status_reason: error.code,
+        ai_review: { ...(objectValue(row.ai_review)), provider_response: providerResponse, completion_error: error.code },
         failed_at: new Date().toISOString(),
         error: message,
       });
       if (failed) {
         report.failed += 1;
+        report.needs_manual_review += 1;
         batchReport.failed += 1;
         report.errors.push({ request_id: row.id, batch_name: batchName, stage: "reconcile", message });
         report.stage_counts.reconcile.completed += 1;
@@ -2275,6 +2281,7 @@ async function pollSubmittedBatch(batchName, batchRows) {
       }
       continue;
     }
+    const { parsed } = completedResponse;
     const claimedRow = await claimSubmittedResponse(row, batchName);
     if (!claimedRow) {
       report.reconcile_claim_conflicts += 1;
@@ -2288,7 +2295,7 @@ async function pollSubmittedBatch(batchName, batchRows) {
         capture,
         deterministicReview,
         parsed,
-        { providerResultMode: "provider_result" },
+        { providerResultMode: "provider_result", providerResponse },
       );
       report.ai_review_succeeded += 1;
       batchReport.reconciled += 1;
@@ -2566,15 +2573,20 @@ async function finalizeReviewedRequest(
   capture,
   deterministicReview,
   rawResult,
-  { providerResultMode } = {},
+  { providerResultMode, providerResponse } = {},
 ) {
   const normalizedReview = normalizeGeminiIntakeResult(rawResult);
-  const validation = validateIntakeAiDecision(normalizedReview);
+  const validation = validateIntakeAiDecision(rawResult);
   const now = new Date().toISOString();
   const storedAiReview = objectValue(row.ai_review);
   let providerInputBinding;
   let providerResultBinding;
+  // Do not infer STOP from accepted JSON, a request status, or an old binding.
+  // Retain the actual payload so a no-charge replay can recheck completion and
+  // the canonical parsed result before any matching or registration side effect.
+  const response = providerResultMode === "replay" ? storedAiReview.provider_response : providerResponse;
   if (providerResultMode === "provider_result") {
+    readCompletedSourceIntakeProviderResponse(response, { rawResult });
     providerInputBinding = validateSourceIntakeProviderInputBinding(
       storedAiReview.provider_input_binding,
       { request: row, capture, deterministicReview },
@@ -2591,6 +2603,7 @@ async function finalizeReviewedRequest(
       acceptedAt: now,
     });
   } else if (providerResultMode === "replay") {
+    readCompletedSourceIntakeProviderResponse(response, { rawResult });
     const replayBinding = validateSourceIntakeProviderReplayBinding({
       request: row,
       capture,
@@ -2609,6 +2622,7 @@ async function finalizeReviewedRequest(
     ...storedAiReview,
     ...normalizedReview,
     raw: rawResult,
+    provider_response: response,
     completed_at: now,
     provider_input_binding: providerInputBinding,
     provider_result_binding: providerResultBinding,
