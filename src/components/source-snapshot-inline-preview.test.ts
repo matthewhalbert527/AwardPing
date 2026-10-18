@@ -180,6 +180,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("inline verified crop outlines", () => {
+  it("shares the crop-relative outline and caption without marking a generic current source", async () => {
+    const crop = { ...asset("crop.jpg"), width: 900, height: 500 };
+    const side = { captured_at: null, exact_overlap: true, localization_status: "verified",
+      objects: { crop }, highlights: { schema: "verified-crop-highlights-v1", image_key: crop.key,
+        width: 900, height: 500, rects: [{ x: 0.1, y: 0.2, width: 0.6, height: 0.04 }] } };
+    const html = await loaded({ ...emptySnapshot(), latest: side });
+    expect(html).toContain("Outlined text is the wording matched to this update.");
+    expect(html).toContain('class="snapshot-verified-highlight-rect"');
+    expect(html).toContain("left:10%;top:20%;width:60%;height:4%");
+    const source = await loaded({ ...emptySnapshot(), evidence_scope: "source_current", latest: side }, sourceProps);
+    expect(source).not.toContain("snapshot-verified-highlight-rect");
+    expect(source).toContain(crop.url);
+  });
+});
+
 describe.each([ ["event", eventProps], ["source-only", sourceProps] ] as const)(
   "inline screenshot %s request outcomes", (_name, props) => {
     it.each([401, 403, 404])("keeps HTTP %i unavailable and privacy-neutral", async (status) => {

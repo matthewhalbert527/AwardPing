@@ -1,3 +1,5 @@
+import { buildVerifiedSnapshotHighlights, type VerifiedSnapshotHighlights } from "@/lib/verified-snapshot-highlights";
+
 export type EventVisualEvidenceObject = {
   key: string;
   url: string;
@@ -20,6 +22,7 @@ export type EventVisualEvidenceSide = {
   localization_status: string;
   objects: Record<string, EventVisualEvidenceObject>;
   state_id: string | null;
+  highlights?: VerifiedSnapshotHighlights | null;
 };
 
 export type EventVisualCaptureManifest = {
@@ -113,6 +116,11 @@ export async function buildEventVisualEvidenceSide({
     localization_status: exposedLocalizationStatus,
     objects,
     state_id: cleanText(capture.state_id) || cleanText(localization.state_id) || null,
+    highlights: exactOverlap && kind === "image" ? buildVerifiedSnapshotHighlights({
+      captureValue,
+      localizationValue,
+      exactCropAllowed,
+    }) : null,
   };
 }
 

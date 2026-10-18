@@ -101,6 +101,13 @@ export function laneClaimRpcParameters({ laneKey, workerSource, workerRunId = nu
   };
 }
 
+export function laneSkippedLogLine(laneKey, claim) {
+  // The claim RPC returns retry_at (not the unrelated audit next_retry_at).
+  // Preserve the existing log key for consumers without inventing a retry time
+  // for disabled lanes or active leases. This is reporting, not retry authority.
+  return `LANE_RUNNER_SKIPPED lane=${laneKey} reason=${cleanText(claim?.reason) || "lease_unavailable"} next_retry_at=${cleanText(claim?.retry_at) || "none"}`;
+}
+
 export function laneCompletionRpcParameters({
   laneKey,
   runId,
@@ -179,9 +186,7 @@ async function main() {
     }),
   );
   if (!Boolean(claim?.claimed)) {
-    console.log(
-      `LANE_RUNNER_SKIPPED lane=${laneKey} reason=${cleanText(claim?.reason) || "lease_unavailable"} next_retry_at=${cleanText(claim?.next_retry_at) || "none"}`,
-    );
+    console.log(laneSkippedLogLine(laneKey, claim));
     return;
   }
 

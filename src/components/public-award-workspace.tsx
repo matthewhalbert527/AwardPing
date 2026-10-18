@@ -20,7 +20,7 @@ import { presentAwardDateField, presentAwardTimelineDate } from "@/lib/award-dat
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import { readableSourceTitle } from "@/lib/display-text";
 import { publicAwardHref, publicAwardQueryId, publicAwardSection } from "@/lib/public-award-links";
-import { awardFactCurrentness, presentAwardDeadlines } from "@/lib/award-page-presentation";
+import { awardFactCurrentnessNotices, presentAwardDeadlines, type AwardFactCurrentnessNotice } from "@/lib/award-page-presentation";
 import { changeSummaryPresentation } from "@/lib/change-summary";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import {
@@ -58,7 +58,7 @@ type PublicAwardChange = PublicAwardPageData["changes"][number];
 type FactValue = string | string[];
 // Canonical labels still control section membership; display wording must not
 // move a scoped deadline out of the Deadline slot.
-type FactRow = { label: string; displayLabel?: string; value: FactValue; icon?: "calendar" | "checklist" };
+type FactRow = { label: string; displayLabel?: string; value: FactValue; icon?: "calendar" | "checklist"; conflictHref?: string };
 type MaybeFactRow = { label: string; displayLabel?: string; value: FactValue | null; icon?: "calendar" | "checklist" };
 
 export function PublicAwardWorkspace({
@@ -143,8 +143,10 @@ export function PublicAwardWorkspace({
     }
     return names;
   }, [data.award.name, data.changes, data.officialHomepage, data.sources]);
-  const factRows = awardFactRows(data.facts, data.award.name);
-  const currentness = awardFactCurrentness(data);
+  const currentnessNotices = awardFactCurrentnessNotices(data);
+  const currentness = currentnessNotices[0];
+  const factConflicts = factConflictLinks(currentnessNotices, data.canonicalPath);
+  const factRows = awardFactRows(data.facts, data.award.name, factConflicts);
   const markChangesRead = (changeIds: string[]) => {
     const uniqueIds = [...new Set(changeIds)].filter(Boolean);
     if (uniqueIds.length === 0) return;
@@ -321,6 +323,7 @@ export function PublicAwardWorkspace({
         )}
         {selected.kind === "overview" && (
           <OverviewPanel
+            deadlineConflictHref={factConflicts.get("Application deadlines")}
             data={data}
             factRows={factRows}
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
@@ -331,6 +334,7 @@ export function PublicAwardWorkspace({
         )}
         {(selected.kind === "eligibility" || selected.kind === "dates" || selected.kind === "application") && (
           <AwardFactsPanel
+            factConflicts={factConflicts}
             facts={data.facts}
             awardName={data.award.name}
             section={selected.kind}
@@ -517,15 +521,16 @@ const FACT_SECTIONS = {
   },
 } as const;
 
-export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSources }: {
+export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSources, factConflicts }: {
   facts: PublicAwardPageData["facts"];
   awardName?: string;
   section: keyof typeof FACT_SECTIONS;
   headingId?: string;
   onViewSources: () => void;
+  factConflicts?: ReadonlyMap<string, string>;
 }) {
   const definition = FACT_SECTIONS[section];
-  const rows = awardFactRows(facts, awardName);
+  const rows = awardFactRows(facts, awardName, factConflicts);
   const sectionRows = definition.labels.flatMap((label) => rows.filter((row) => row.label === label));
   return (
     <div className="public-award-panel-stack">
@@ -648,6 +653,7 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
 }
 
 function OverviewPanel({
+  deadlineConflictHref,
   data,
   factRows,
   headingId,
@@ -655,6 +661,7 @@ function OverviewPanel({
   onViewDetails,
   onViewUpdates,
 }: {
+  deadlineConflictHref?: string;
   data: PublicAwardPageData;
   factRows: FactRow[];
   headingId?: string;
@@ -677,6 +684,7 @@ function OverviewPanel({
         <div>
           <dt>{deadlines.label}</dt>
           <dd>
+            <FactConflictNotice href={deadlineConflictHref} />
             {deadlines.entries.length > 0 && <ul className="public-award-deadline-list">
               {deadlines.entries.map((entry) => <li key={`${entry.label}:${entry.value}`}>
                 {deadlines.entries.length > 1 && entry.label !== "Application deadline" && entry.label !== "Deadline" && <span>{entry.label}: </span>}
@@ -694,6 +702,7 @@ function OverviewPanel({
             <div className="public-award-key-fact" key={fact.label}>
               <dt>{fact.displayLabel ?? fact.label}</dt>
               <dd>
+                <FactConflictNotice href={fact.conflictHref} />
                 {factTextLength(fact.value) <= 220 ? <FactValueDisplay className="public-award-fact-list" value={fact.value} />
                   : <button type="button" className="public-award-context-link" onClick={() => onViewDetails(fact.label === "Award amount" ? "funding" : "eligibility")}>View {fact.label === "Award amount" ? "funding details" : "full criteria"} <ArrowRight size={15} aria-hidden="true" /></button>}
               </dd>
@@ -877,10 +886,40 @@ function FactLine({
         {fact.displayLabel ?? fact.label}
       </dt>
       <dd>
+        <FactConflictNotice href={fact.conflictHref} />
         <FactValueDisplay className="public-award-fact-list" value={fact.value} isDate={DATE_FACT_LABELS.has(fact.label)} />
       </dd>
     </div>
   );
+}
+
+function FactConflictNotice({ href }: { href?: string }) {
+  if (!href) return null;
+  return <p className="public-award-review-date" role="note">
+    <strong>These details need review.</strong>{" "}
+    <Link href={href} prefetch={false}>Review the change before using this information.</Link>
+  </p>;
+}
+
+const FACT_FIELD_LABELS: Record<string, string> = {
+  deadline: "Deadline", openingDate: "Opening date", awardAmount: "Award amount",
+  academicLevels: "Academic level", disciplines: "Discipline", citizenship: "Citizenship",
+  eligibility: "Eligibility", requirements: "Requirements", applicationMaterials: "Application materials",
+  howToApply: "How to apply", importantDates: "Important dates", documents: "Documents", contacts: "Contact",
+};
+
+function factConflictLinks(notices: AwardFactCurrentnessNotice[], canonicalPath: string) {
+  const links = new Map<string, string>();
+  for (const notice of notices) {
+    if (notice.affectsApplicationDeadline && !links.has("Application deadlines")) {
+      links.set("Application deadlines", publicAwardHref(canonicalPath, { changeId: notice.changeId }));
+    }
+    for (const field of notice.fields) {
+      const label = FACT_FIELD_LABELS[field];
+      if (label && !links.has(label)) links.set(label, publicAwardHref(canonicalPath, { changeId: notice.changeId }));
+    }
+  }
+  return links;
 }
 
 function FactValueDisplay({
@@ -920,7 +959,7 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
-function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string): FactRow[] {
+function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, conflicts?: ReadonlyMap<string, string>): FactRow[] {
   const deadline = presentAwardDateField(facts.deadline, awardName);
   const opening = presentAwardDateField(facts.openingDate, awardName, "Opening date");
   const rows: MaybeFactRow[] = [
@@ -943,7 +982,7 @@ function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string):
     { label: "Contact", value: compactList(facts.contacts) },
   ];
 
-  return rows.filter(isFactRow);
+  return rows.filter(isFactRow).map((row) => ({ ...row, conflictHref: conflicts?.get(row.label) }));
 }
 
 function compactList(values: string[]) {

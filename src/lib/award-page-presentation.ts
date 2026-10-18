@@ -92,6 +92,7 @@ export type AwardFactCurrentnessNotice = {
   changeId: string;
   detectedAt: string;
   fields: string[];
+  affectsApplicationDeadline: boolean;
 };
 
 /**
@@ -100,16 +101,27 @@ export type AwardFactCurrentnessNotice = {
  * that a null result means current. It deliberately catches only exact old
  * wording or explicit changed date windows, not broad AI semantic guesses.
  */
-export function awardFactCurrentness(input: {
+type AwardFactCurrentnessInput = {
   facts: PublicAwardFacts;
   changes: Array<{ id: string; detectedAt: string; changeDetails?: unknown }>;
   factsReviewedAt?: string | null;
-}): AwardFactCurrentnessNotice | null {
+};
+
+export function awardFactCurrentness(input: AwardFactCurrentnessInput): AwardFactCurrentnessNotice | null {
+  return awardFactCurrentnessNotices(input)[0] ?? null;
+}
+
+/** All exact conflicts, so a newer event cannot hide a different stale field. */
+export function awardFactCurrentnessNotices(input: AwardFactCurrentnessInput): AwardFactCurrentnessNotice[] {
+  const notices: AwardFactCurrentnessNotice[] = [];
+  const seen = new Set<string>();
   const fields = Object.entries(input.facts).flatMap(([key, value]) =>
-    typeof value === "string" ? [{ key, value: normalize(value) }]
-      : Array.isArray(value) ? value.map((item) => ({ key, value: normalize(item) })) : [],
+    typeof value === "string" ? [{ key, raw: value, value: normalize(value) }]
+      : Array.isArray(value) ? value.map((item) => ({ key, raw: item, value: normalize(item) })) : [],
   ).filter((field) => field.key !== "confidence");
   for (const change of input.changes) {
+    if (seen.has(change.id)) continue;
+    seen.add(change.id);
     const details = parseChangeDetails(change.changeDetails);
     if (!details || details.event_kind === "new_official_document" || !details.is_alert_worthy) continue;
     const before = [details.exact_before, details.before, ...details.structured_diff.removed_text].filter((value): value is string => Boolean(value));
@@ -127,16 +139,18 @@ export function awardFactCurrentness(input: {
       (field.value.split(" ").length >= 6 && oldText.includes(field.value) && !newText.includes(field.value)),
     );
     if (!affected.length) continue;
-    return {
+    notices.push({
       kind: "possible_conflict",
       title: "Some details may be out of date",
       message: "A recorded update changes wording still present in these details. Review the update and official source before applying.",
       changeId: change.id,
       detectedAt: change.detectedAt,
       fields: [...new Set(affected.map((field) => field.key))],
-    };
+      affectsApplicationDeadline: affected.some((field) => field.key === "deadline" ||
+        (field.key === "importantDates" && applicationDeadlineItem(field.raw) !== null)),
+    });
   }
-  return null;
+  return notices;
 }
 
 function explicitDateWindows(value: string) {

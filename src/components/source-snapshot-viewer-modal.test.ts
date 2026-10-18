@@ -365,6 +365,31 @@ describe.each([["event", eventProps], ["source-only", sourceProps]] as const)(
 );
 
 describe("expanded screenshot shape validation and compatibility", () => {
+  it("outlines only the crop-bound verified wording with an accessible caption", async () => {
+    const crop = { ...asset("crop.jpg"), width: 900, height: 500 };
+    const side = { captured_at: null, exact_overlap: true, localization_status: "verified",
+      objects: { full: asset("full.jpg"), crop },
+      highlights: { schema: "verified-crop-highlights-v1", image_key: crop.key, width: 900, height: 500,
+        rects: [{ x: 0.1, y: 0.2, width: 0.6, height: 0.04 }] } };
+    const html = load(await loaded({ ...emptySnapshot(), latest: side }));
+    expect(html("figcaption").text()).toBe("Outlined text is the wording matched to this update.");
+    expect(html(".snapshot-verified-highlight-rect").attr("style")).toBe("left:10%;top:20%;width:60%;height:4%");
+    expect(html(".snapshot-verified-highlight-layer").attr("aria-hidden")).toBe("true");
+    expect(html("img").attr("src")).toBe(crop.url);
+    const fallback = await loaded({ ...emptySnapshot(), latest: { ...side, localization_status: "full_screenshot_fallback", exact_overlap: false } });
+    expect(fallback).not.toContain("snapshot-verified-highlight-rect");
+    expect(fallback).toContain("https://signed.test/full.jpg");
+  });
+
+  it("ignores malformed optional outlines while retaining the trusted evidence image", async () => {
+    const crop = { ...asset("crop.jpg"), width: 900, height: 500 };
+    const html = await loaded({ ...emptySnapshot(), latest: { captured_at: null, exact_overlap: true,
+      localization_status: "verified", objects: { crop }, highlights: { rects: "bad" } } });
+    expect(html).toContain(crop.url);
+    expect(html).not.toContain("snapshot-verified-highlight-rect");
+    expect(html).not.toContain(loadError);
+  });
+
   it.each([
     ["null", null], ["primitive", "bad"], ["array", []], ["missing sides", {}],
     ["missing previous objects", { ...imageSnapshot(), previous: {} }],

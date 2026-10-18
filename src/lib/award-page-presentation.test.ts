@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { awardFactCurrentness, presentAwardDeadlines } from "@/lib/award-page-presentation";
+import { awardFactCurrentness, awardFactCurrentnessNotices, presentAwardDeadlines } from "@/lib/award-page-presentation";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 
 const now = new Date("2026-10-17T20:00:00Z");
@@ -105,5 +105,34 @@ describe("explicit possible stale-fact notices", () => {
     for (const changeDetails of [null, { reader_summary: "A new 2027 cycle is open" }, { ...details, event_kind: "new_official_document" }, { ...details, is_alert_worthy: false }]) {
       expect(awardFactCurrentness({ facts, changes: [{ ...change, changeDetails }], factsReviewedAt: "2025-01-01T00:00:00Z" })).toBeNull();
     }
+  });
+
+  it("retains independent conflicting fields across events without duplicating an event or mutating input", () => {
+    const facts = publicAwardFactsFromAward({ publicFacts: {
+      academic_levels: ["College juniors expecting graduation between December 2026 and August 2027"],
+      requirements: ["All applicants must submit exactly three reference letters"],
+    } });
+    const second = { ...change, id: "references-change", changeDetails: {
+      ...details, before: "All applicants must submit exactly three reference letters",
+      after: "All applicants must submit exactly two reference letters",
+    } };
+    const input = { facts, changes: [change, second, change] };
+    const original = structuredClone(input);
+    expect(awardFactCurrentnessNotices(input).map(({ changeId, fields }) => ({ changeId, fields }))).toEqual([
+      { changeId: change.id, fields: ["academicLevels"] },
+      { changeId: second.id, fields: ["requirements"] },
+    ]);
+    expect(input).toEqual(original);
+  });
+
+  it.each([
+    ["Application deadline for all eligible applicants: January 27, 2027", true],
+    ["Final interview results for all eligible applicants: January 27, 2027", false],
+  ])("qualifies only changed application timeline entries for deadline notices: %s", (value, expected) => {
+    const facts = publicAwardFactsFromAward({ publicFacts: { important_dates: [value] } });
+    const notice = awardFactCurrentness({ facts, changes: [{ ...change, changeDetails: {
+      ...details, before: value, after: value.replace("January 27", "January 28"),
+    } }] });
+    expect(notice?.affectsApplicationDeadline).toBe(expected);
   });
 });

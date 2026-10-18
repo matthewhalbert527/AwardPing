@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   Clock3,
   ExternalLink,
@@ -12,6 +12,7 @@ import {
 import { buildChangeEvidence } from "@/lib/change-evidence";
 import { FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY } from "@/lib/change-details";
 import { formatCentralDateTime } from "@/lib/time-zone";
+import { snapshotHighlightRects, type SnapshotHighlightRect } from "@/lib/verified-snapshot-highlights";
 
 type SnapshotObject = {
   key: string;
@@ -35,6 +36,7 @@ type SnapshotSide = {
   localization_reason?: string | null;
   kind?: "webpage" | "image" | "pdf" | string;
   objects: Record<string, SnapshotObject>;
+  highlights?: unknown;
 };
 
 type SourceSnapshotResponse = {
@@ -609,12 +611,12 @@ function SnapshotBody({
         openUrl={primaryObject.url}
         onVersionChange={onVersionChange}
       />
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
+      <SnapshotImage
         alt={`${title} ${version} snapshot`}
         className="source-snapshot-image"
-        ref={imageRef}
+        imageRef={imageRef}
         src={primaryObject.url}
+        highlights={snapshotImageHighlights(activeSnapshot, evidenceScope)}
         onLoad={() => scrollToFocusRatio(frameRef.current, imageRef.current, focusRatio)}
       />
     </div>
@@ -711,17 +713,63 @@ function SnapshotInlineBody({
         </div>
       ) : (
         <div className="source-snapshot-inline-frame" ref={frameRef}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
+          <SnapshotImage
             alt={`${title} ${resolvedVersion} snapshot`}
             className="source-snapshot-inline-image"
-            ref={imageRef}
+            imageRef={imageRef}
             src={primaryObject.url}
+            highlights={snapshotImageHighlights(activeSnapshot, snapshot.evidence_scope || "source_current")}
             onLoad={() => scrollToFocusRatio(frameRef.current, imageRef.current, focusRatio)}
           />
         </div>
       )}
     </div>
+  );
+}
+
+export function snapshotImageHighlights(
+  snapshot: SnapshotSide | null,
+  evidenceScope: "change_event" | "source_current",
+) {
+  if (evidenceScope !== "change_event" || snapshot?.exact_overlap !== true ||
+    snapshot.localization_status !== "verified" || snapshot.kind === "pdf" || !snapshot.objects.crop) return [];
+  return snapshotHighlightRects(snapshot.highlights, snapshot.objects.crop);
+}
+
+function SnapshotImage({
+  alt, className, imageRef, src, highlights, onLoad,
+}: {
+  alt: string;
+  className: string;
+  imageRef: RefObject<HTMLImageElement | null>;
+  src: string;
+  highlights: SnapshotHighlightRect[];
+  onLoad: () => void;
+}) {
+  const image = (
+    // Retained signed evidence must not be fetched or transformed by an image optimizer.
+    // eslint-disable-next-line @next/next/no-img-element
+    <img alt={alt} className={className} ref={imageRef} src={src} onLoad={onLoad} />
+  );
+  if (!highlights.length) return image;
+  return (
+    <figure className="snapshot-verified-highlight-figure">
+      <figcaption className="snapshot-verified-highlight-caption">
+        Outlined text is the wording matched to this update.
+      </figcaption>
+      <div className="snapshot-verified-highlight-canvas">
+        {image}
+        <div className="snapshot-verified-highlight-layer" aria-hidden="true">
+          {highlights.map((rect, index) => (
+            <span
+              className="snapshot-verified-highlight-rect"
+              key={`${rect.x}-${rect.y}-${index}`}
+              style={{ left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.width * 100}%`, height: `${rect.height * 100}%` }}
+            />
+          ))}
+        </div>
+      </div>
+    </figure>
   );
 }
 

@@ -13,6 +13,49 @@ import * as SnapshotViewer from "@/components/source-snapshot-viewer";
 import * as ChangeEvidence from "@/components/change-evidence-panel";
 
 describe("PublicAwardWorkspace", () => {
+  it("labels only conflicting fields for review in overview and full requirements", () => {
+    const data = makeDeepLinkPageData();
+    data.facts = publicAwardFactsFromAward({ publicFacts: {
+      academic_levels: ["College juniors expecting graduation between December 2026 and August 2027"],
+      citizenship: ["U.S. citizens"],
+      requirements: ["All applicants must submit exactly three reference letters"],
+    } });
+    const first = data.changes[0];
+    data.changes = [
+      { ...first, id: "graduation-change", changeDetails: {
+        reader_summary: "The graduation window changed.",
+        before: "Applicants expect graduation between December 2026 and August 2027",
+        after: "Applicants expect graduation between December 2027 and August 2028",
+        change_type: "eligibility", is_alert_worthy: true,
+      } },
+      { ...first, id: "references-change", changeDetails: {
+        reader_summary: "The number of reference letters changed.",
+        before: "All applicants must submit exactly three reference letters",
+        after: "All applicants must submit exactly two reference letters",
+        change_type: "requirements", is_alert_worthy: true,
+      } },
+    ];
+    const original = structuredClone(data);
+    for (const initialSection of ["overview", "applying"]) {
+      const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection })));
+      const row = $("dt").filter((_, el) => $(el).text() === "Academic level").parent();
+      expect(row.text()).toContain("These details need review.");
+      expect(row.text()).toContain("December 2026 and August 2027");
+      expect(row.find("a").attr("href")).toBe(`${data.canonicalPath}?change=graduation-change`);
+      const citizenship = $("dt").filter((_, el) => $(el).text() === "Citizenship").parent();
+      expect(citizenship.text()).toContain("U.S. citizens");
+      expect(citizenship.text()).not.toContain("These details need review");
+      if (initialSection === "applying") {
+        const requirements = $("dt").filter((_, el) => $(el).text() === "Requirements").parent();
+        expect(requirements.find("a").attr("href")).toBe(`${data.canonicalPath}?change=references-change`);
+      }
+    }
+    expect(data).toEqual(original);
+    data.facts.academicLevels = ["College juniors expecting graduation between December 2027 and August 2028"];
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect($(".public-award-key-facts").text()).not.toContain("These details need review");
+  });
+
   it("renders four distinct sections and a concise overview without full application details", () => {
     const html = renderToStaticMarkup(
       createElement(PublicAwardWorkspace, {
