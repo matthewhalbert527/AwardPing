@@ -5,13 +5,16 @@ export const GEMINI_WORKER_MODEL = "gemini-2.5-flash-lite";
 
 // Strong tier: Stage 1 manifest sources (the ~125 sources behind the released
 // cohorts) and escalated retries after an invalid-JSON fleet verdict.
-export const GEMINI_STRONG_WORKER_MODEL = "gemini-3.7-flash";
+// Google deprecated 3.7 on 2026-10-08 and redirects it to 3.8. New claims
+// name 3.8 explicitly; existing claimed/requested model identities stay intact.
+export const GEMINI_STRONG_WORKER_MODEL = "gemini-3.8-flash";
 
 // Strong-model provider batches stay small so a single reservation cannot
 // consume the fixed daily lane cap and a bad batch has a bounded blast radius.
 export const VISUAL_REVIEW_STRONG_MODEL_MAX_REQUESTS_PER_BATCH = 25;
 
 export const VISUAL_REVIEW_ESCALATION_REASON_INVALID_AI_JSON = "invalid_ai_json";
+export const VISUAL_REVIEW_ESCALATION_REASON_MAX_TOKENS = "max_tokens";
 export const VISUAL_REVIEW_ESCALATION_MAX_ATTEMPTS = 1;
 export const VISUAL_REVIEW_ESCALATION_PRIOR_RAW_TEXT_LIMIT = 4_000;
 
@@ -174,6 +177,53 @@ export function visualReviewClaimedModel(candidate) {
 }
 
 /**
+ * Parsable JSON is not proof that generation completed. Both fresh responses
+ * and retained results must carry an explicit provider STOP before use.
+ * Historical results without it stay unpublished; never infer completion
+ * from their candidate status or normalize a safety refusal into a verdict.
+ */
+export function visualReviewCompletionDecision(finishReason, { candidateCount = 1 } = {}) {
+  const finish = cleanText(finishReason) || null;
+  return {
+    allowed: candidateCount === 1 && finish === "STOP",
+    reason: candidateCount !== 1
+      ? "provider_candidate_count_not_one"
+      : finish === "STOP"
+      ? "completed"
+      : finish === null ? "missing_ai_finish_reason" : "incomplete_ai_response",
+    finish_reason: finish,
+  };
+}
+
+export function assertVisualReviewCompletedResult(result) {
+  const completion = visualReviewCompletionDecision(result?.finish_reason, {
+    candidateCount: result?.provider_candidate_count ?? 1,
+  });
+  if (!completion.allowed) {
+    throw new Error(
+      `Visual review publication held: ${completion.reason} (${completion.finish_reason || "missing"}).`,
+    );
+  }
+}
+
+/**
+ * Only a completed malformed response or actual token truncation may use the
+ * existing one-time fleet escalation. Safety refusals, missing reasons and
+ * every other non-STOP reason never acquire automatic paid retry authority.
+ */
+export function visualReviewResponseEscalationDecision(candidate, finishReason, { candidateCount = 1 } = {}) {
+  if (candidateCount !== 1) return { escalate: false, reason: "provider_candidate_count_not_one" };
+  const finish = cleanText(finishReason);
+  if (finish !== "STOP" && finish !== "MAX_TOKENS") {
+    return { escalate: false, reason: "finish_reason_not_retryable" };
+  }
+  const decision = visualReviewInvalidJsonEscalationDecision(candidate);
+  return decision.escalate && finish === "MAX_TOKENS"
+    ? { ...decision, reason: VISUAL_REVIEW_ESCALATION_REASON_MAX_TOKENS }
+    : decision;
+}
+
+/**
  * Decide whether an invalid-JSON verdict should be retried once on the strong
  * model instead of failing the candidate. Failed rows are excluded because a
  * failed -> pending transition is reserved for operator-approved paid retries.
@@ -213,7 +263,8 @@ export function visualReviewInvalidJsonEscalationDecision(candidate) {
  */
 export function buildEscalationRequeue(
   candidate,
-  { usage, rawText, parseError, finishReason, model, batchName, now } = {},
+  { usage, rawText, parseError, completionError, finishReason, providerModelVersion,
+    reason = VISUAL_REVIEW_ESCALATION_REASON_INVALID_AI_JSON, model, batchName, now } = {},
 ) {
   const escalatedAt = cleanText(now) || new Date().toISOString();
   const existingMetadata = objectValue(candidate?.worker_metadata);
@@ -240,12 +291,14 @@ export function buildEscalationRequeue(
       ...clearedMetadata,
       escalation: {
         attempt: visualReviewEscalationAttempt(candidate) + 1,
-        reason: VISUAL_REVIEW_ESCALATION_REASON_INVALID_AI_JSON,
+        reason,
         from_model: fromModel,
         from_batch_name: fromBatchName,
         finish_reason: cleanText(finishReason) || null,
+        provider_model_version: cleanText(providerModelVersion) || null,
         prior_raw_text: String(rawText || "").slice(0, VISUAL_REVIEW_ESCALATION_PRIOR_RAW_TEXT_LIMIT),
         prior_parse_error: cleanText(parseError) || null,
+        prior_completion_error: cleanText(completionError) || null,
         escalated_at: escalatedAt,
       },
     },

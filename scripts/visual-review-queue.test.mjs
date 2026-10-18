@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { accuracyReviewInput, buildControlledAccuracyCases } from "./lib/scrapling-accuracy-fixtures.mjs";
+import { buildScraplingReviewDiff } from "./lib/scrapling-review-diff.mjs";
 import {
   buildVisualReviewPromptPayload,
   buildVisualReviewPromptText,
@@ -86,6 +88,58 @@ function sourceFixture(overrides = {}) {
 }
 
 describe("visual review queue helpers", () => {
+  it("retains lossless long-page context instead of clipped duplicate prefix excerpts", () => {
+    // Explicitly synthetic provider-free routing test, not an AI review.
+    const fixture = buildControlledAccuracyCases().find(item => item.id === "oversized-prose");
+    const result = buildScraplingReviewDiff(fixture.input);
+    expect(result.diff.scrapling_semantics).toMatchObject({ version: 3, representation: "lossless_shared_context", complete: true });
+    const payload = buildVisualReviewPromptPayload({ ...fixture.input, diff: result.diff, deterministic: result.deterministic, promptChars: 5 });
+    expect(payload.deterministic_diff).toEqual(result.diff);
+    expect(payload.previous_text_excerpt).toBe("");
+    expect(payload.new_text_excerpt).toBe("");
+    expect(payload.text_context_representation).toBe("lossless_shared_context");
+    const prompt = buildVisualReviewPromptText(payload);
+    expect(prompt).toContain("COMPLETE current source text");
+    expect(prompt).toContain("complete previous page is not quoted separately");
+    expect(prompt).toContain("Read all audience, award-cycle, exception and date-conflict context");
+    expect(prompt).toContain(fixture.after.text.trim());
+    expect(prompt).toContain(result.diff.removed_text[0]);
+    expect(payload.deterministic_diff.scrapling_semantics.evidence).toEqual(result.evidence);
+  });
+  it("does not change legacy or incomplete evidence into shared-context prompts", () => {
+    for (const semantics of [{ version: 2, representation: "lossless_shared_context", complete: true },
+      { version: 3, representation: "lossless_shared_context", complete: false },
+      { version: 4, representation: "lossless_context_tables", complete: true },
+      { version: 4, representation: "lossless_context_tables", complete: true, context_table_reconstruction_verified: false }]) {
+      const payload = buildVisualReviewPromptPayload({ source, previous: { text: "Old complete text" },
+        capture: { text: "New complete text" }, diff: { candidate_scope: "scrapling_html_source", scrapling_semantics: semantics }, promptChars: 3 });
+      expect(payload).not.toHaveProperty("text_context_representation");
+      expect(payload.previous_text_excerpt).toBe("Old");
+      expect(payload.new_text_excerpt).toBe("New");
+    }
+  });
+  it("preserves complete lossless tables and their decoding instructions through serialization", () => {
+    const fixture = buildControlledAccuracyCases().find(item => item.id === "deadline");
+    for (const doc of [fixture.before, fixture.after]) {
+      doc.links = Array.from({ length: 150 }, () => ({ text: "Official application guide", raw_href: "/apply?route=us",
+        source_url: doc.source_url, base_hrefs: [], heading_path: [], list_path: [] }));
+    }
+    const input = accuracyReviewInput(fixture.before, fixture.after), result = buildScraplingReviewDiff(input);
+    expect(result.diff.scrapling_semantics).toMatchObject({ version: 4, representation: "lossless_context_tables" });
+    const payload = JSON.parse(JSON.stringify(buildVisualReviewPromptPayload({ ...input, diff: result.diff,
+      deterministic: result.deterministic, promptChars: 3 })));
+    expect(payload.deterministic_diff).toEqual(result.diff);
+    expect(payload.text_context_representation).toBe("lossless_context_tables");
+    expect(payload.previous_text_excerpt).toBe("");
+    expect(payload.new_text_excerpt).toBe("");
+    const prompt = buildVisualReviewPromptText(payload);
+    expect(prompt).toContain("COMPLETE readable current source text");
+    expect(prompt).toContain("every duplicate row");
+    expect(prompt).toContain("reject rather than guess");
+    expect(prompt).toContain(result.diff.removed_text[0]);
+    expect(prompt).toContain(JSON.stringify(result.diff.scrapling_semantics.current_source_prose));
+    expect(payload.deterministic_diff.scrapling_semantics.current_context_tables.links.rows).toHaveLength(150);
+  });
   it("preserves the standard enqueue policy for existing callers", () => {
     expect(visualReviewEnqueuePolicy()).toEqual({
       context: "capture_visual_snapshots",

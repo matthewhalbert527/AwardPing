@@ -16,7 +16,11 @@ import { GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s
 
 import { atomicWriteJson } from "./visual-baseline-lock.mjs";
 import { acquisitionDerivedCaptureMetadataFilename } from "./intake-artifact-retention.mjs";
-import { retainedCaptureArtifactProjectionSchema } from "./r2-capture-artifact-bindings.mjs";
+import {
+  assertRenderedHtmlArtifactIdentity,
+  retainedCaptureArtifactProjectionSchema,
+} from "./r2-capture-artifact-bindings.mjs";
+import { maxRenderedHtmlBytes } from "./rendered-html-capture.mjs";
 import {
   canonicalExpansionStateCaptureCoverage,
   conservativeExpansionStateCaptureCoverage,
@@ -45,6 +49,7 @@ const fixedSlots = {
   thumb: { fileName: "thumb.jpg", contentType: "image/jpeg" },
   pdf: { fileName: "document.pdf", contentType: "application/pdf" },
   text: { fileName: "text.txt", contentType: "text/plain" },
+  html: { fileName: "page.html.txt", contentType: "text/plain" },
   layout: { fileName: "layout.json", contentType: "application/json" },
   meta: { fileName: "meta.json", contentType: "application/json" },
 };
@@ -157,6 +162,7 @@ export async function restoreInitialOfficialDocumentCandidateArtifactsFromR2({
       baseline: identity.baseline,
       generation,
     });
+    validateDownloadedHtml({ rawMeta, baseline: identity.baseline, generation, artifactBySlot });
     for (const [role, target] of Object.entries(identity.targets.byRole)) {
       const body = artifactBySlot[role]?.body;
       if (
@@ -734,6 +740,12 @@ export async function rehydrateLocalBaselineFromR2({
       baseline: currentBaseline,
       generation,
     });
+    validateDownloadedHtml({
+      rawMeta,
+      baseline: currentBaseline,
+      generation,
+      artifactBySlot,
+    });
     validateDownloadedLengthBindings({
       meta: rawMeta,
       baseline: currentBaseline,
@@ -1163,7 +1175,7 @@ function validateObjectManifest({ sourceId, kind, objectKeys }) {
       refuse("r2_generation_incomplete", `The R2 generation is missing required slot ${slot}.`);
     }
   }
-  if (kind === "pdf" && entries.some((entry) => entry.slot === "page" || entry.slot === "thumb")) {
+  if (kind === "pdf" && entries.some((entry) => ["page", "thumb", "html"].includes(entry.slot))) {
     refuse("r2_generation_kind_ambiguous", "A PDF generation also contains webpage image slots.");
   }
   if (kind === "webpage" && entries.some((entry) => entry.slot === "pdf")) {
@@ -1383,14 +1395,25 @@ async function downloadAndValidateArtifact({ client, sendCommand, bucket, entry,
       () => new HeadObjectCommand({ Bucket: bucket, Key: entry.key }),
       `head ${entry.key}`,
     );
+    if (entry.slot === "html" && Number(head?.ContentLength) > maxRenderedHtmlBytes) {
+      refuse("r2_html_too_large", "The retained HTML exceeds the capture byte limit.");
+    }
+    if (entry.slot === "html"
+      && (!Number.isSafeInteger(head?.ContentLength) || head.ContentLength < 1)) {
+      refuse("r2_html_length_missing", "The retained HTML has no valid R2 byte length.");
+    }
     object = await send(
       () => new GetObjectCommand({ Bucket: bucket, Key: entry.key }),
       `get ${entry.key}`,
     );
   } catch (error) {
+    if (error?.rehydrationReason) throw error;
     refuse("r2_object_download_failed", `Could not download ${entry.slot}: ${cleanErrorMessage(error)}`);
   }
   const body = await bodyBuffer(object?.Body, entry.slot);
+  if (entry.slot === "html" && body.length > maxRenderedHtmlBytes) {
+    refuse("r2_html_too_large", "The retained HTML exceeds the capture byte limit.");
+  }
   validateObjectResponse({ head, object, body, entry });
   validateArtifactPayload({ body, entry, generation });
   return { entry, body };
@@ -1399,12 +1422,21 @@ async function downloadAndValidateArtifact({ client, sendCommand, bucket, entry,
 async function bodyBuffer(body, slot) {
   if (Buffer.isBuffer(body)) return body;
   if (body instanceof Uint8Array) return Buffer.from(body);
-  if (body && typeof body.transformToByteArray === "function") {
+  if (body && typeof body.transformToByteArray === "function"
+    && !(slot === "html" && typeof body[Symbol.asyncIterator] === "function")) {
     return Buffer.from(await body.transformToByteArray());
   }
   if (body && typeof body[Symbol.asyncIterator] === "function") {
     const chunks = [];
-    for await (const chunk of body) chunks.push(Buffer.from(chunk));
+    let total = 0;
+    for await (const chunk of body) {
+      const value = Buffer.from(chunk);
+      total += value.length;
+      if (slot === "html" && total > maxRenderedHtmlBytes) {
+        refuse("r2_html_too_large", "The retained HTML exceeds the capture byte limit.");
+      }
+      chunks.push(value);
+    }
     return Buffer.concat(chunks);
   }
   refuse("r2_object_body_missing", `The downloaded ${slot} object has no readable body.`);
@@ -1417,6 +1449,9 @@ function validateObjectResponse({ head, object, body, entry }) {
     }
   }
   const contentTypes = [head?.ContentType, object?.ContentType].filter(Boolean);
+  if (entry.slot === "html" && contentTypes.length !== 2) {
+    refuse("r2_object_content_type_mismatch", "The retained HTML must declare its plain-text content type.");
+  }
   for (const value of contentTypes) {
     if (String(value).split(";", 1)[0].trim().toLowerCase() !== entry.contentType) {
       refuse("r2_object_content_type_mismatch", `The downloaded ${entry.slot} content type is unexpected.`);
@@ -1502,6 +1537,39 @@ function validateDownloadedMeta({ meta, source, baseline, generation }) {
     if (baseline[field] && meta[field] && !sameHash(meta[field], baseline[field])) {
       refuse("r2_meta_core_hash_mismatch", `The downloaded metadata ${field} differs from the local baseline.`);
     }
+  }
+}
+
+function validateDownloadedHtml({ rawMeta, baseline, generation, artifactBySlot }) {
+  const artifact = artifactBySlot.html;
+  const artifacts = new Map();
+  if (artifact) {
+    artifacts.set("html", {
+      fileName: artifact.entry.fileName,
+      contentType: "text/plain; charset=utf-8",
+      body: artifact.body,
+      binding: objectValue(generation.metadata.artifact_bindings).html,
+    });
+  }
+  try {
+    assertRenderedHtmlArtifactIdentity({
+      capture: {
+        html_capture: generation.metadata.html_capture,
+        captured_at: generation.capturedAt,
+        final_url: generation.metadata.final_url,
+        files: { html: rawMeta.files?.html || null },
+      },
+      metadata: rawMeta,
+      artifacts,
+      kind: baseline.kind,
+      verifyLocalPath: false,
+    });
+    if (baseline.html_capture != null
+      && stableJson(baseline.html_capture) !== stableJson(generation.metadata.html_capture)) {
+      throw new Error("The local HTML identity differs from its R2 generation.");
+    }
+  } catch (error) {
+    refuse("r2_html_identity_mismatch", cleanErrorMessage(error));
   }
 }
 
@@ -2362,6 +2430,7 @@ function sanitizeDownloadedMeta({
     thumb: localPaths.bySlot.thumb || null,
     pdf: localPaths.bySlot.pdf || null,
     text: localPaths.bySlot.text || null,
+    html: localPaths.bySlot.html || null,
     expansion_text: null,
     sections_text: null,
     sections_json: null,
@@ -2611,6 +2680,7 @@ const explicitLocalFilesystemFields = new Set([
   "expansion_text_path",
   "file",
   "gemini_cli_path",
+  "html_path",
   "image_path",
   "image_ref",
   "layout_path",
@@ -2701,6 +2771,7 @@ function buildAuthoritativeBaselineFromR2({
       title: source.title || source.display_title || meta.source?.title || null,
     },
     captured_at: generation.capturedAt,
+    html_capture: meta.html_capture || null,
     final_url: cleanNullableString(metadata.final_url || meta.final_url || snapshotRecord.source_url),
     page_title: cleanNullableString(metadata.page_title || meta.page_title),
     text_hash: hashes.text_hash,
@@ -2790,6 +2861,8 @@ function buildRehydratedBaseline({
   });
   return {
     ...baseline,
+    html_capture: rawMeta.html_capture || null,
+    ...(rawMeta.html_capture ? { final_url: rawMeta.final_url } : {}),
     layout_hash: localizationRecovery.main_geometry_available
       ? layoutHashes.layout || baseline.layout_hash || null
       : null,
@@ -2807,6 +2880,7 @@ function buildRehydratedBaseline({
       thumb: localPaths.bySlot.thumb || null,
       pdf: localPaths.bySlot.pdf || null,
       text: localPaths.bySlot.text,
+      html: localPaths.bySlot.html || null,
       expansion_text: null,
       sections_text: null,
       sections_json: null,

@@ -2475,7 +2475,7 @@ async function finalizeReviewedRequest(
   { providerResultMode } = {},
 ) {
   const normalizedReview = normalizeGeminiIntakeResult(rawResult);
-  const validation = validateIntakeAiDecision(rawResult);
+  const validation = validateIntakeAiDecision(normalizedReview);
   const now = new Date().toISOString();
   const storedAiReview = objectValue(row.ai_review);
   let providerInputBinding;

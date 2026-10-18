@@ -91,12 +91,14 @@ import {
   readGeminiBillingBlock,
 } from "./lib/gemini-spend-guard.mjs";
 import {
+  assertVisualReviewCompletedResult,
   buildEscalationRequeue,
   geminiWorkerModel,
   partitionVisualReviewCandidatesByModel,
   visualReviewClaimedModel,
   visualReviewGenerationConfigForModel,
-  visualReviewInvalidJsonEscalationDecision,
+  visualReviewCompletionDecision,
+  visualReviewResponseEscalationDecision,
   visualReviewMaxOutputTokensForModel,
   visualReviewMaxRequestsPerBatchForModel,
 } from "./lib/gemini-worker-policy.mjs";
@@ -2081,8 +2083,17 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
       if (recoveringMissingResponse) report.recovered_missing_batch_responses += 1;
       const itemError = geminiInlineError(responseItem);
       if (itemError) {
+        const errorPayload = geminiInlineResponsePayload(responseItem);
+        usage = normalizeGeminiUsage(extractUsageMetadata(responseItem));
         await markCandidate(candidate.id, {
           status: "failed",
+          ai_result: {
+            provider_error: geminiInlineErrorMessage(itemError),
+            finish_reason: extractGeminiFinishReason(errorPayload),
+            requested_model: candidate.model || null,
+            provider_model_version: cleanNullable(errorPayload?.modelVersion || errorPayload?.model_version),
+          },
+          actual_usage: usage,
           rejection_reason: geminiInlineErrorMessage(itemError),
           completed_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -2096,25 +2107,42 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
       const responsePayload = geminiInlineResponsePayload(responseItem);
       const rawText = extractGeminiText(responsePayload);
       const finishReason = extractGeminiFinishReason(responsePayload);
+      const providerModelVersion = cleanNullable(
+        responsePayload?.modelVersion || responsePayload?.model_version,
+      );
+      const candidateCount = Array.isArray(responsePayload?.candidates) ? responsePayload.candidates.length : 0;
+      const completion = visualReviewCompletionDecision(finishReason, { candidateCount });
       try {
+        // Even syntactically complete JSON can be cut off by the provider.
+        // Never normalize or publish it without an explicit successful STOP.
+        if (!completion.allowed) {
+          throw new Error(
+            `Gemini visual review did not complete: ${completion.reason} (${finishReason || "missing"}).`,
+          );
+        }
         result = {
           ...normalizeVisualBatchResult(rawText, {
             candidate,
             source: sourcesById.get(candidate.shared_award_source_id),
           }),
           finish_reason: finishReason,
+          requested_model: candidate.model || null,
+          provider_model_version: providerModelVersion,
+          provider_candidate_count: candidateCount,
         };
       } catch (error) {
-        // A fleet verdict that did not parse gets one retry on the strong
-        // model before it fails; the row is still submitted/processing so
-        // this pending transition is outside the paid-retry approval guard.
-        const escalation = visualReviewInvalidJsonEscalationDecision(candidate);
+        // Only STOP-invalid JSON or MAX_TOKENS may use the existing one-time
+        // fleet escalation. Refusals and missing completion never auto-retry.
+        const escalation = visualReviewResponseEscalationDecision(candidate, finishReason, { candidateCount });
         if (escalation.escalate) {
           const requeue = buildEscalationRequeue(candidate, {
             usage,
             rawText,
-            parseError: errorMessage(error),
+            parseError: completion.allowed ? errorMessage(error) : null,
+            completionError: completion.allowed ? null : errorMessage(error),
             finishReason,
+            providerModelVersion,
+            reason: escalation.reason,
             model: candidate.model,
             batchName,
             now: new Date().toISOString(),
@@ -2134,7 +2162,7 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
             report.escalated_to_strong_model += 1;
             batchReport.escalated = (batchReport.escalated || 0) + 1;
             console.log(
-              `VISUAL_REVIEW_ESCALATED candidate=${candidate.id} from_model=${candidate.model || "unknown"} finish_reason=${finishReason || "unknown"} batch=${batchName} reason=invalid_ai_json`,
+              `VISUAL_REVIEW_ESCALATED candidate=${candidate.id} from_model=${candidate.model || "unknown"} finish_reason=${finishReason || "unknown"} batch=${batchName} reason=${escalation.reason}`,
             );
             continue;
           }
@@ -2143,12 +2171,16 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
           status: "failed",
           ai_result: {
             raw_text: rawText,
-            parse_error: errorMessage(error),
+            parse_error: completion.allowed ? errorMessage(error) : null,
+            completion_error: completion.allowed ? null : errorMessage(error),
             finish_reason: finishReason,
+            requested_model: candidate.model || null,
+            provider_model_version: providerModelVersion,
+            provider_candidate_count: candidateCount,
             usage,
             escalation_declined: escalation.reason,
           },
-          rejection_reason: `invalid_ai_json: ${errorMessage(error)}`,
+          rejection_reason: `${completion.allowed ? "invalid_ai_json" : completion.reason}: ${errorMessage(error)}`,
           actual_usage: usage,
           completed_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -2157,6 +2189,25 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
         batchReport.failed += 1;
         continue;
       }
+    }
+
+    // A previously stored, incomplete verdict must not publish or abort the
+    // rest of this batch's reconciliation. Preserve it for operator review;
+    // this hold does not authorize another provider request.
+    const publicationCompletion = visualReviewCompletionDecision(result?.finish_reason, {
+      candidateCount: result?.provider_candidate_count ?? 1,
+    });
+    if (!publicationCompletion.allowed) {
+      report.failed += 1;
+      batchReport.failed += 1;
+      report.errors.push({
+        candidate_id: candidate.id,
+        stage: "stored_result_completion_hold",
+        reason: publicationCompletion.reason,
+        finish_reason: publicationCompletion.finish_reason,
+        creates_api_charge: false,
+      });
+      continue;
     }
 
     let publicationClaim = null;
@@ -2212,6 +2263,9 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
 }
 
 async function claimCompletedCandidatePublication(candidate, result, usage) {
+  // Shared by live reconciliation and zero-charge stored-result recovery.
+  // Missing historical completion metadata is a hold, not an inferred STOP.
+  assertVisualReviewCompletedResult(result);
   const now = new Date().toISOString();
   return acquireVisualReviewPublicationClaim({
     candidate,
@@ -2265,6 +2319,7 @@ async function publishCandidateResultUnlocked({
   usage,
   publicationClaimToken,
 }) {
+  assertVisualReviewCompletedResult(result);
   const now = new Date().toISOString();
   if (!source) {
     await markPublicationCandidate(candidate, publicationClaimToken, {
@@ -3414,6 +3469,7 @@ function compactBaselinePromotionResult(value) {
 }
 
 async function markCandidateSucceededDryRun({ candidate, result, usage }) {
+  assertVisualReviewCompletedResult(result);
   const now = new Date().toISOString();
   await markCandidate(candidate.id, {
     status: "succeeded",

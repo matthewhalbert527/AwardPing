@@ -17,7 +17,7 @@ import { geminiPricePerMillion } from "./lib/gemini-batch-support.mjs";
 import { GEMINI_STRONG_WORKER_MODEL, GEMINI_WORKER_MODEL } from "./lib/gemini-worker-policy.mjs";
 
 const FLEET = "gemini-2.5-flash-lite";
-const STRONG = "gemini-3.7-flash";
+const STRONG = "gemini-3.8-flash";
 
 const worker = readFileSync(new URL("./backfill-baseline-facts.mjs", import.meta.url), "utf8");
 
@@ -67,7 +67,7 @@ describe("baseline facts model chooser", () => {
   });
 
   it("pins the tier models to the worker policy", () => {
-    expect(GEMINI_STRONG_WORKER_MODEL).toBe("gemini-3.7-flash");
+    expect(GEMINI_STRONG_WORKER_MODEL).toBe("gemini-3.8-flash");
     expect(GEMINI_WORKER_MODEL).toBe("gemini-2.5-flash-lite");
     expect(BASELINE_FACTS_STRONG_MODEL_FALLBACK).toBe(GEMINI_STRONG_WORKER_MODEL);
     expect(BASELINE_FACTS_STRONG_MODEL_MAX_BATCH_REQUESTS).toBe(25);

@@ -8,12 +8,17 @@ import {
   legacyExpansionStateCaptureCoverageFromMetadata,
   sameExpansionStateCaptureCoverage,
 } from "./expansion-state-descriptor-canonicalization.mjs";
+import {
+  renderedHtmlCaptureSchema,
+  maxRenderedHtmlBytes,
+} from "./rendered-html-capture.mjs";
 
 export const r2CaptureArtifactBindingsSchema =
   "awardping.r2.capture-artifact-bindings.v1";
 export const retainedCaptureArtifactProjectionSchema =
   "awardping.capture-retained-artifact-projection.v1";
 const retainedCaptureMaterializationProjectionCache = new WeakMap();
+const renderedHtmlContentType = "text/plain; charset=utf-8";
 
 export function isR2CaptureGeometryReady(capture) {
   const geometry = objectValue(capture?.text_geometry);
@@ -57,6 +62,7 @@ export function collectR2CaptureArtifactFiles(capture, { exists = () => true } =
   addIfPresent("thumb", "thumb.jpg", capture?.thumb_path, "image/jpeg");
   addIfPresent("pdf", "document.pdf", capture?.pdf_path, "application/pdf");
   addIfPresent("text", "text.txt", capture?.text_path, "text/plain; charset=utf-8");
+  addIfPresent("html", "page.html.txt", capture?.html_path, renderedHtmlContentType);
   if (projection.layoutRetained) {
     addIfPresent(
       "layout",
@@ -349,7 +355,7 @@ export function assertR2CaptureArtifactSlots(kind, artifactBindings, {
   const expansionPages = new Set();
   const expansionLayouts = new Set();
   for (const slot of slots) {
-    if (required.includes(slot) || slot === "layout") continue;
+    if (required.includes(slot) || slot === "layout" || slot === "html") continue;
     const page = slot.match(/^expansion_state_(0[1-9]|[1-9][0-9]+)$/);
     const layout = slot.match(/^expansion_state_(0[1-9]|[1-9][0-9]+)_layout$/);
     if (page) expansionPages.add(Number(page[1]));
@@ -466,6 +472,7 @@ export function assertR2CaptureArtifactIdentity(capture, prepared, { sourceId } 
   if (metadata.captured_at !== capture?.captured_at) {
     throw new Error("R2 metadata timestamp does not match the capture timestamp.");
   }
+  assertRenderedHtmlArtifactIdentity({ capture, metadata, artifacts, kind });
   assertRetainedArtifactProjectionParity({ capture, metadata, artifacts, kind });
   for (const field of ["text_hash", primaryHashField]) {
     assertSameSha256(metadata[field], capture?.[field], `metadata ${field} identity`);
@@ -613,6 +620,152 @@ export function assertR2CaptureArtifactIdentity(capture, prepared, { sourceId } 
       throw new Error(`R2 metadata expansion state ${suffix} references do not match.`);
     }
   }
+}
+
+/**
+ * Rendered HTML is optional evidence, never an exact screenshot-location claim.
+ * Legacy captures omit it entirely. Once declared, both metadata copies and the
+ * retained plain-text bytes must agree; missing evidence must not be normalized
+ * into an apparently successful capture.
+ */
+export function assertRenderedHtmlArtifactIdentity({
+  capture,
+  metadata,
+  artifacts,
+  kind,
+  verifyLocalPath = true,
+}) {
+  const artifact = artifacts.get("html");
+  const hasHtmlClaim = Boolean(
+    artifact
+    || capture?.html_capture != null
+    || metadata.html_capture != null
+    || capture?.html_path != null
+    || capture?.files?.html != null
+    || metadata.files?.html != null,
+  );
+  if (!hasHtmlClaim) return;
+  if (kind === "pdf") {
+    throw new Error("R2 PDF captures may not contain HTML evidence or capture metadata.");
+  }
+
+  const captureHtml = canonicalRenderedHtmlMetadata(capture?.html_capture);
+  const metadataHtml = canonicalRenderedHtmlMetadata(metadata.html_capture);
+  if (!captureHtml || !metadataHtml) {
+    throw new Error("R2 HTML capture metadata is missing or invalid.");
+  }
+  if (JSON.stringify(captureHtml) !== JSON.stringify(metadataHtml)) {
+    throw new Error("R2 raw metadata and capture HTML declarations do not match.");
+  }
+  if (
+    captureHtml.captured_at !== capture?.captured_at
+    || captureHtml.captured_at !== metadata.captured_at
+    || captureHtml.source_url !== capture?.final_url
+    || captureHtml.source_url !== metadata.final_url
+  ) {
+    throw new Error("R2 HTML source or timestamp does not match its capture.");
+  }
+
+  if (captureHtml.status === "unavailable") {
+    if (
+      artifact
+      || capture?.html_path != null
+      || capture?.files?.html != null
+      || metadata.files?.html != null
+    ) {
+      throw new Error("R2 unavailable HTML capture may not claim retained HTML evidence.");
+    }
+    return;
+  }
+
+  if (!artifact) throw new Error("R2 captured HTML artifact is missing.");
+  const reference = metadata.files?.html;
+  if (
+    typeof reference !== "string"
+    || !/^(?:[^\\\s?#:]+\/)*page\.html\.txt$/.test(reference)
+    || reference.split("/").some((part) => part === "." || part === "..")
+    || capture?.files?.html !== reference
+    || (verifyLocalPath && (!capture?.html_path || capture.html_path !== artifact.path))
+  ) {
+    throw new Error("R2 retained HTML references do not match.");
+  }
+  if (
+    artifact.fileName !== "page.html.txt"
+    || artifact.contentType !== renderedHtmlContentType
+    || artifact.binding?.content_type !== renderedHtmlContentType
+    || artifact.binding?.hash_mode !== "raw_sha256"
+  ) {
+    throw new Error("R2 HTML must be retained as a plain-text page.html.txt artifact.");
+  }
+  const body = artifact.body;
+  if (
+    !Buffer.isBuffer(body)
+    || body.length < 1
+    || body.length > captureHtml.max_bytes
+    || body.length !== captureHtml.byte_length
+    || body.length !== artifact.binding?.byte_length
+  ) {
+    throw new Error("R2 HTML byte length or size limit does not match.");
+  }
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(body);
+  } catch {
+    throw new Error("R2 HTML artifact is not valid UTF-8.");
+  }
+  const rawHash = crypto.createHash("sha256").update(body).digest("hex");
+  assertSameSha256(rawHash, artifact.binding?.sha256, "HTML artifact raw-byte hash");
+  assertSameSha256(rawHash, captureHtml.sha256, "HTML bytes and capture hash");
+}
+
+function canonicalRenderedHtmlMetadata(value) {
+  const html = objectValue(value);
+  if (
+    html.schema !== renderedHtmlCaptureSchema
+    || !["captured", "unavailable"].includes(html.status)
+    || html.representation !== "rendered_dom"
+    || html.screenshot_alignment !== "not_verified"
+    || typeof html.captured_at !== "string"
+    || !html.captured_at.trim()
+    || !Number.isFinite(Date.parse(html.captured_at))
+    || typeof html.source_url !== "string"
+    || !html.source_url.trim()
+    || !Number.isSafeInteger(html.max_bytes)
+    || html.max_bytes < 1
+    || html.max_bytes > maxRenderedHtmlBytes
+  ) return null;
+  try {
+    const url = new URL(html.source_url);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+  } catch {
+    return null;
+  }
+  if (html.status === "captured") {
+    if (
+      html.reason !== null
+      || typeof html.sha256 !== "string"
+      || !/^[0-9a-f]{64}$/.test(html.sha256)
+      || !Number.isSafeInteger(html.byte_length)
+      || html.byte_length < 1
+      || html.byte_length > html.max_bytes
+    ) return null;
+  } else if (
+    typeof html.reason !== "string"
+    || !/^[a-z][a-z0-9_]{0,99}$/.test(html.reason)
+    || html.sha256 !== null
+    || html.byte_length !== null
+  ) return null;
+  return {
+    schema: html.schema,
+    status: html.status,
+    reason: html.reason,
+    representation: html.representation,
+    captured_at: html.captured_at,
+    source_url: html.source_url,
+    max_bytes: html.max_bytes,
+    sha256: html.sha256,
+    byte_length: html.byte_length,
+    screenshot_alignment: html.screenshot_alignment,
+  };
 }
 
 function assertExpansionStateCaptureCoverageParity({

@@ -32,6 +32,7 @@ import {
   expansionStateCaptureCoverage,
   expansionStateCaptureCoverageLegacyMirrors,
 } from "./expansion-state-descriptor-canonicalization.mjs";
+import { maxRenderedHtmlBytes, renderedHtmlCaptureSchema } from "./rendered-html-capture.mjs";
 
 const temporaryRoots = [];
 
@@ -42,6 +43,190 @@ afterEach(() => {
 });
 
 describe("approved visual baseline promotion", () => {
+  it("retains optional rendered HTML through candidate reconstruction, local baseline and immutable R2 promotion", async () => {
+    const archiveRoot = temporaryArchive();
+    const capture = verifiedWebCapture({ archiveRoot, captureDir: join(archiveRoot, "html-capture"), withHtml: true });
+    const candidate = candidateFixture({
+      new_text_hash: capture.text_hash,
+      new_image_hash: capture.image_hash,
+      new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+    });
+    const source = { id: "source-1", shared_award_id: "award-1", url: capture.final_url };
+    const reconstructed = captureFromVisualReviewCandidate(candidate, archiveRoot);
+    expect(reconstructed.html_path).toBe(capture.html_path);
+    expect(reconstructed.html_capture).toEqual(capture.html_capture);
+    expect(reconstructed.artifact_bindings.html).toEqual(capture.artifact_bindings.html);
+    const local = promoteApprovedVisualBaselineLocal({ candidate, source, archiveRoot, approved: true });
+    expect(local.promoted).toBe(true);
+    expect(local.baseline.html_capture).toEqual(capture.html_capture);
+    expect(local.baseline.capture.html).toBe(archiveRelativeForTest(capture.html_path, archiveRoot));
+
+    const operations = [];
+    const database = r2DatabaseStub({ existing: null, operations });
+    const remote = await promoteApprovedVisualBaselineR2({
+      candidate, source, capture: reconstructed, approved: true,
+      supabase: database.client, s3Client: r2ClientStub({ operations }),
+      config: { enabled: true, bucket: "snapshots" },
+    });
+    expect(remote.promoted).toBe(true);
+    expect(database.current.latest_metadata.html_capture).toEqual(capture.html_capture);
+    expect(database.current.latest_object_keys.html).toMatch(/\/page\.html\.txt$/);
+    const uploadedHtml = operations.find((operation) => operation.key === database.current.latest_object_keys.html);
+    expect(uploadedHtml.content_type).toBe("text/plain; charset=utf-8");
+    expect(uploadedHtml.body).toEqual(readFileSync(capture.html_path));
+    assertPointerBindingsMatchUploads(database.current, operations);
+  });
+
+  it("preserves unavailable HTML capture status without inventing an artifact", () => {
+    const archiveRoot = temporaryArchive();
+    const capture = verifiedWebCapture({ archiveRoot, captureDir: join(archiveRoot, "html-unavailable") });
+    const rawMeta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+    rawMeta.html_capture = {
+      schema: renderedHtmlCaptureSchema, status: "unavailable", reason: "html_too_large",
+      representation: "rendered_dom", captured_at: capture.captured_at, source_url: capture.final_url,
+      max_bytes: maxRenderedHtmlBytes, sha256: null, byte_length: null, screenshot_alignment: "not_verified",
+    };
+    writeFileSync(capture.meta_path, JSON.stringify(rawMeta));
+    const candidate = candidateFixture({
+      new_text_hash: capture.text_hash, new_image_hash: capture.image_hash,
+      new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+    });
+    const result = promoteApprovedVisualBaselineLocal({
+      candidate, archiveRoot, source: { id: "source-1", url: capture.final_url }, approved: true,
+    });
+    expect(result.promoted).toBe(true);
+    expect(result.baseline.html_capture).toEqual(rawMeta.html_capture);
+    expect(result.baseline.capture).not.toHaveProperty("html");
+  });
+
+  it("recognizes an exact approved HTML pointer without uploads or CAS while leaving the Stage-1 contract closed", async () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "11111111-1111-4111-8111-111111111111";
+    const capture = verifiedWebCapture({ archiveRoot, captureDir: join(archiveRoot, "html-current"), sourceId, withHtml: true });
+    const operations = [];
+    const database = r2DatabaseStub({ existing: null, operations });
+    const args = {
+      candidate: candidateFixture(), source: { id: sourceId, shared_award_id: "award-1", url: capture.final_url },
+      capture, approved: true, supabase: database.client, s3Client: r2ClientStub({ operations }),
+      config: { enabled: true, bucket: "snapshots" },
+    };
+    expect((await promoteApprovedVisualBaselineR2(args)).promoted).toBe(true);
+    const pointerBefore = structuredClone(database.current);
+    expect(inspectStage1ImmutableR2CaptureBinding(database.current)).toMatchObject({ valid: false });
+    expect(inspectStage1ImmutableR2CaptureBinding(database.current).errors).toContain("object_key_unknown_slot:html");
+    const operationCount = operations.length;
+    expect(await promoteApprovedVisualBaselineR2(args)).toMatchObject({
+      promoted: false, already_current: true, reason: "approved_r2_snapshot_already_current",
+    });
+    expect(operations).toHaveLength(operationCount);
+    expect(database.upserts).toHaveLength(1);
+    expect(database.current).toEqual(pointerBefore);
+  });
+
+  it.each([
+    ["HTML metadata hash", (pointer) => { pointer.latest_metadata.html_capture.sha256 = "b".repeat(64); }],
+    ["HTML metadata URL", (pointer) => { pointer.latest_metadata.html_capture.source_url = "https://other.example/"; }],
+    ["HTML metadata timestamp", (pointer) => { pointer.latest_metadata.html_capture.captured_at = "2026-07-13T20:00:00.000Z"; }],
+    ["HTML binding hash", (pointer) => { pointer.latest_metadata.artifact_bindings.html.sha256 = "b".repeat(64); }],
+    ["HTML binding bytes", (pointer) => { pointer.latest_metadata.artifact_bindings.html.byte_length += 1; }],
+    ["HTML binding content type", (pointer) => { pointer.latest_metadata.artifact_bindings.html.content_type = "text/html"; }],
+    ["HTML object filename", (pointer) => { pointer.latest_object_keys.html = pointer.latest_object_keys.html.replace("page.html.txt", "page.html"); }],
+    ["HTML object generation", (pointer) => { pointer.latest_object_keys.html = pointer.latest_object_keys.html.replace(/\/captures\/[a-f0-9]{32}\//, `/captures/${"f".repeat(32)}/`); }],
+    ["unknown supplemental slot", (pointer) => {
+      pointer.latest_object_keys.unknown = pointer.latest_object_keys.html.replace("page.html.txt", "unknown.bin");
+      pointer.latest_metadata.artifact_bindings.unknown = structuredClone(pointer.latest_metadata.artifact_bindings.html);
+    }],
+  ])("does not skip approval publication when the current pointer has invalid %s", async (_, corrupt) => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "11111111-1111-4111-8111-111111111111";
+    const capture = verifiedWebCapture({ archiveRoot, captureDir: join(archiveRoot, "html-pointer-invalid"), sourceId, withHtml: true });
+    const operations = [];
+    const database = r2DatabaseStub({ existing: null, operations });
+    const args = {
+      candidate: candidateFixture(), source: { id: sourceId, shared_award_id: "award-1", url: capture.final_url },
+      capture, approved: true, supabase: database.client, s3Client: r2ClientStub({ operations }),
+      config: { enabled: true, bucket: "snapshots" },
+    };
+    expect((await promoteApprovedVisualBaselineR2(args)).promoted).toBe(true);
+    corrupt(database.current);
+    const operationCount = operations.length;
+    expect((await promoteApprovedVisualBaselineR2(args)).promoted).toBe(true);
+    expect(operations.length).toBeGreaterThan(operationCount);
+    expect(database.upserts).toHaveLength(2);
+    assertPointerBindingsMatchUploads(database.current, operations);
+  });
+
+  it("rejects HTML bytes tampered after candidate creation instead of silently omitting them", () => {
+    const archiveRoot = temporaryArchive();
+    const capture = verifiedWebCapture({ archiveRoot, captureDir: join(archiveRoot, "html-tamper"), withHtml: true });
+    const candidate = candidateFixture({ new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot) });
+    writeFileSync(capture.html_path, "tampered HTML");
+    expect(() => promoteApprovedVisualBaselineLocal({
+      candidate, archiveRoot, source: { id: "source-1" }, approved: true,
+    })).toThrow(/artifact verification failed for html/);
+  });
+
+  it("requires the immutable candidate metadata binding that seals supplemental HTML", () => {
+    const archiveRoot = temporaryArchive();
+    const capture = verifiedWebCapture({ archiveRoot, captureDir: join(archiveRoot, "html-unbound"), withHtml: true });
+    const ref = snapshotRefForCapture(capture, archiveRoot);
+    expect(ref.local_paths).not.toHaveProperty("html");
+    delete ref.local_paths.meta.sha256;
+    expect(() => promoteApprovedVisualBaselineLocal({
+      candidate: candidateFixture({ new_snapshot_ref: ref }), archiveRoot, source: { id: "source-1" }, approved: true,
+    })).toThrow(/artifact verification failed for meta/);
+  });
+
+  it("rejects coordinated HTML and raw metadata tampering against the sealed candidate meta hash before any upload", async () => {
+    const archiveRoot = temporaryArchive();
+    const capture = verifiedWebCapture({ archiveRoot, captureDir: join(archiveRoot, "html-meta-tamper"), withHtml: true });
+    const candidate = candidateFixture({
+      new_text_hash: capture.text_hash, new_image_hash: capture.image_hash,
+      new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+    });
+    const rawMeta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+    writeFileSync(capture.html_path, "<!DOCTYPE html><html><body>Altered award details</body></html>");
+    rawMeta.html_capture.sha256 = sha256ForTest(readFileSync(capture.html_path));
+    rawMeta.html_capture.byte_length = readFileSync(capture.html_path).length;
+    writeFileSync(capture.meta_path, JSON.stringify(rawMeta));
+    const source = { id: "source-1", shared_award_id: "award-1", url: capture.final_url };
+    expect(() => promoteApprovedVisualBaselineLocal({ candidate, archiveRoot, source, approved: true }))
+      .toThrow(/artifact verification failed for meta/);
+    const operations = [];
+    await expect(promoteApprovedVisualBaselineR2({
+      candidate, source, capture: captureFromVisualReviewCandidate(candidate, archiveRoot), approved: true,
+      supabase: r2DatabaseStub({ existing: null, operations }).client, s3Client: r2ClientStub({ operations }),
+      config: { enabled: true, bucket: "snapshots" },
+    })).rejects.toThrow(/artifact verification failed for meta/);
+    expect(operations).toHaveLength(0);
+  });
+
+  it("reports missing retained HTML rather than promoting a partial artifact set", () => {
+    const archiveRoot = temporaryArchive();
+    const capture = verifiedWebCapture({ archiveRoot, captureDir: join(archiveRoot, "html-missing"), withHtml: true });
+    const candidate = candidateFixture({ new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot) });
+    rmSync(capture.html_path);
+    const result = promoteApprovedVisualBaselineLocal({ candidate, archiveRoot, source: { id: "source-1" }, approved: true });
+    expect(result.promoted).toBe(false);
+    expect(result.reason).toBe("approved_snapshot_files_missing");
+    expect(result.missing_paths).toContain(capture.html_path);
+  });
+
+  it("validates retained HTML against raw capture metadata as well as its candidate binding", () => {
+    const archiveRoot = temporaryArchive();
+    const capture = verifiedWebCapture({ archiveRoot, captureDir: join(archiveRoot, "html-wrong-identity"), withHtml: true });
+    const rawMeta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+    rawMeta.html_capture.sha256 = "b".repeat(64);
+    writeFileSync(capture.meta_path, JSON.stringify(rawMeta));
+    expect(() => promoteApprovedVisualBaselineLocal({
+      candidate: candidateFixture({
+        new_text_hash: capture.text_hash, new_image_hash: capture.image_hash,
+        new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+      }),
+      archiveRoot, source: { id: "source-1" }, approved: true,
+    })).toThrow(/HTML|html/);
+  });
+
   it("never promotes rejected evidence but allows an approved section's enclosing capture", () => {
     const candidate = candidateFixture({
       deterministic_diff: { candidate_scope: "expandable_section" },
@@ -1475,6 +1660,7 @@ function verifiedWebCapture({
   captureDir,
   text = "Application deadline: March 15, 2027",
   withExpansion = false,
+  withHtml = false,
   sourceId = "source-1",
 } = {}) {
   mkdirSync(captureDir, { recursive: true });
@@ -1484,10 +1670,12 @@ function verifiedWebCapture({
     text_path: join(captureDir, "text.txt"),
     layout_path: join(captureDir, "layout.json"),
     meta_path: join(captureDir, "meta.json"),
+    ...(withHtml ? { html_path: join(captureDir, "page.html.txt") } : {}),
   };
   writeFileSync(paths.page_path, "verified main screenshot bytes");
   writeFileSync(paths.thumb_path, "verified thumbnail bytes");
   writeFileSync(paths.text_path, `${text}\n`);
+  if (withHtml) writeFileSync(paths.html_path, `<!DOCTYPE html>\n<html><body><p>${text}</p></body></html>`);
   const imageHash = sha256ForTest(readFileSync(paths.page_path));
   const textHash = sha256ForTest(Buffer.from(text, "utf8"));
   const mainGeometry = geometryFixture({
@@ -1556,6 +1744,18 @@ function verifiedWebCapture({
     source: { id: sourceId, shared_award_id: "award-1" },
     captured_at: "2026-07-14T20:00:00.000Z",
     final_url: "https://example.edu/award",
+    ...(withHtml ? { html_capture: {
+      schema: renderedHtmlCaptureSchema,
+      status: "captured",
+      reason: null,
+      representation: "rendered_dom",
+      captured_at: "2026-07-14T20:00:00.000Z",
+      source_url: "https://example.edu/award",
+      max_bytes: maxRenderedHtmlBytes,
+      sha256: sha256ForTest(readFileSync(paths.html_path)),
+      byte_length: readFileSync(paths.html_path).length,
+      screenshot_alignment: "not_verified",
+    } } : {}),
     page_title: "Example Award",
     text_hash: textHash,
     image_hash: imageHash,
@@ -1587,6 +1787,7 @@ function verifiedWebCapture({
       page: archiveRelativeForTest(paths.page_path, archiveRoot),
       thumb: archiveRelativeForTest(paths.thumb_path, archiveRoot),
       text: archiveRelativeForTest(paths.text_path, archiveRoot),
+      ...(withHtml ? { html: archiveRelativeForTest(paths.html_path, archiveRoot) } : {}),
       layout: archiveRelativeForTest(paths.layout_path, archiveRoot),
       meta: archiveRelativeForTest(paths.meta_path, archiveRoot),
       expansion_states: expansionStates.map((state) => ({
@@ -1823,6 +2024,7 @@ function artifactBindingsForCapture(capture, archiveRoot) {
     page: artifactBindingForTest(capture.page_path, archiveRoot),
     thumb: artifactBindingForTest(capture.thumb_path, archiveRoot),
     text: artifactBindingForTest(capture.text_path, archiveRoot),
+    ...(capture.html_path ? { html: artifactBindingForTest(capture.html_path, archiveRoot) } : {}),
     layout: artifactBindingForTest(capture.layout_path, archiveRoot),
     meta: artifactBindingForTest(capture.meta_path, archiveRoot),
   };

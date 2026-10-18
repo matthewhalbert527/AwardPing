@@ -4,18 +4,21 @@ import {
   GEMINI_STRONG_WORKER_MODEL,
   GEMINI_WORKER_MODEL,
   VISUAL_REVIEW_STRONG_MODEL_MAX_REQUESTS_PER_BATCH,
+  assertVisualReviewCompletedResult,
   buildEscalationRequeue,
   geminiModelFamily,
   isGeminiStrongWorkerModel,
   modelForCandidate,
   partitionVisualReviewCandidatesByModel,
   visualReviewClaimedModel,
+  visualReviewCompletionDecision,
   visualReviewEscalation,
   visualReviewGenerationConfigForModel,
   visualReviewInvalidJsonEscalationDecision,
   visualReviewMaxOutputTokensForModel,
   visualReviewMaxRequestsPerBatchForModel,
   visualReviewModelSelectionReason,
+  visualReviewResponseEscalationDecision,
 } from "./lib/gemini-worker-policy.mjs";
 import {
   estimateGeminiMaximumBatchRequestsCostUsd,
@@ -80,9 +83,10 @@ function candidate(overrides = {}) {
 describe("visual review model tiering", () => {
   it("keeps the fleet and strong model names in one place", () => {
     expect(GEMINI_WORKER_MODEL).toBe("gemini-2.5-flash-lite");
-    expect(GEMINI_STRONG_WORKER_MODEL).toBe("gemini-3.7-flash");
+    expect(GEMINI_STRONG_WORKER_MODEL).toBe("gemini-3.8-flash");
     expect(geminiModelFamily("gemini-2.5-flash-lite")).toBe("flash-lite");
     expect(geminiModelFamily("models/gemini-3.7-flash")).toBe("gemini-3-flash");
+    expect(geminiModelFamily("models/gemini-3.8-flash")).toBe("gemini-3-flash");
     expect(geminiModelFamily("gemini-3.1-flash-lite")).toBe("flash-lite");
     expect(geminiModelFamily("gemini-2.5-flash")).toBeNull();
     expect(isGeminiStrongWorkerModel(GEMINI_STRONG_WORKER_MODEL)).toBe(true);
@@ -295,6 +299,13 @@ describe("visual review model tiering", () => {
     expect(visualReviewClaimedModel(candidate({
       worker_metadata: { review_model: GEMINI_STRONG_WORKER_MODEL },
     }))).toBe(GEMINI_STRONG_WORKER_MODEL);
+    // Do not rewrite an in-flight requested model when its alias redirects.
+    expect(visualReviewClaimedModel(candidate({
+      worker_metadata: { review_model: "gemini-3.7-flash" },
+    }))).toBe("gemini-3.7-flash");
+    expect(visualReviewGenerationConfigForModel("gemini-3.7-flash")).toEqual(
+      visualReviewGenerationConfigForModel("gemini-3.8-flash"),
+    );
     expect(() => visualReviewClaimedModel(candidate({ worker_metadata: {} }))).toThrow(
       /claimed without a bound review model/,
     );
@@ -366,8 +377,10 @@ describe("visual review model tiering", () => {
           from_model: GEMINI_WORKER_MODEL,
           from_batch_name: "batches/fleet-1",
           finish_reason: "MAX_TOKENS",
+          provider_model_version: null,
           prior_raw_text: "{".repeat(4_000),
           prior_parse_error: "Gemini visual review returned invalid JSON.",
+          prior_completion_error: null,
           escalated_at: "2026-09-03T12:00:00.000Z",
         },
       },
@@ -453,18 +466,127 @@ describe("visual review model tiering", () => {
     );
     expect(reconcile).toContain("const finishReason = extractGeminiFinishReason(responsePayload)");
     expect(reconcile).toContain("finish_reason: finishReason,");
-    expect(reconcile).toContain("visualReviewInvalidJsonEscalationDecision(candidate)");
+    expect(reconcile).toContain("visualReviewResponseEscalationDecision(candidate, finishReason, { candidateCount })");
     expect(reconcile).toContain("buildEscalationRequeue(candidate, {");
     expect(reconcile).toContain("VISUAL_REVIEW_ESCALATED candidate=");
-    expect(reconcile).toContain("rejection_reason: `invalid_ai_json: ${errorMessage(error)}`");
+    expect(reconcile).toContain('rejection_reason: `${completion.allowed ? "invalid_ai_json" : completion.reason}: ${errorMessage(error)}`');
     expect(reconcile.indexOf("if (escalation.escalate) {")).toBeLessThan(
       reconcile.indexOf('status: "failed",\n          ai_result: {\n            raw_text: rawText,'),
     );
     const failureWrite = reconcile.slice(
       reconcile.indexOf('status: "failed",\n          ai_result: {\n            raw_text: rawText,'),
-      reconcile.indexOf("rejection_reason: `invalid_ai_json:"),
+      reconcile.indexOf('rejection_reason: `${completion.allowed ? "invalid_ai_json"'),
     );
     expect(failureWrite).toContain("finish_reason: finishReason,");
     expect(failureWrite).toContain("usage,");
+  });
+
+  it("requires explicit STOP even when truncated output is valid JSON", () => {
+    const verdict = JSON.parse('{"is_true_change":true,"summary":"Deadline moved."}');
+    expect(visualReviewCompletionDecision("STOP")).toEqual({
+      allowed: true, reason: "completed", finish_reason: "STOP",
+    });
+    expect(() => assertVisualReviewCompletedResult({ ...verdict, finish_reason: "STOP" }))
+      .not.toThrow();
+    for (const finish of ["MAX_TOKENS", "SAFETY", "RECITATION", "OTHER", "MALFORMED_FUNCTION_CALL", "FINISH_REASON_UNSPECIFIED", "stop", "", null, undefined]) {
+      expect(visualReviewCompletionDecision(finish).allowed).toBe(false);
+      expect(() => assertVisualReviewCompletedResult({ ...verdict, finish_reason: finish }))
+        .toThrow(/publication held/);
+    }
+    // A historical succeeded state is not proof of provider completion.
+    expect(() => assertVisualReviewCompletedResult({ ...verdict, status: "succeeded" }))
+      .toThrow(/missing_ai_finish_reason/);
+    for (const candidateCount of [0, 2]) {
+      expect(visualReviewCompletionDecision("STOP", { candidateCount }).allowed).toBe(false);
+      expect(visualReviewResponseEscalationDecision(candidate(), "STOP", { candidateCount }))
+        .toEqual({ escalate: false, reason: "provider_candidate_count_not_one" });
+      expect(() => assertVisualReviewCompletedResult({
+        ...verdict, finish_reason: "STOP", provider_candidate_count: candidateCount,
+      })).toThrow(/provider_candidate_count_not_one/);
+    }
+  });
+
+  it("allows only actual truncation or completed invalid JSON through the one-time escalation", () => {
+    expect(visualReviewResponseEscalationDecision(candidate(), "STOP"))
+      .toEqual({ escalate: true, reason: "invalid_ai_json" });
+    expect(visualReviewResponseEscalationDecision(candidate(), "MAX_TOKENS"))
+      .toEqual({ escalate: true, reason: "max_tokens" });
+    for (const finish of ["SAFETY", "RECITATION", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "", null, undefined]) {
+      expect(visualReviewResponseEscalationDecision(candidate(), finish))
+        .toEqual({ escalate: false, reason: "finish_reason_not_retryable" });
+    }
+    for (const row of [
+      candidate({ model: "gemini-3.7-flash" }),
+      candidate({ model: GEMINI_STRONG_WORKER_MODEL }),
+      candidate({ worker_metadata: { escalation: { attempt: 1 } } }),
+      candidate({ status: "failed" }),
+      candidate({ status: "succeeded" }),
+      candidate({ worker_metadata: { paid_retry_approval_id: "approval-1" } }),
+      candidate({ worker_metadata: { failure_retry_count: 1 } }),
+    ]) {
+      expect(visualReviewResponseEscalationDecision(row, "MAX_TOKENS").escalate).toBe(false);
+    }
+  });
+
+  it("retains separate requested and returned model identities in truncation receipts", () => {
+    const patch = buildEscalationRequeue(candidate(), {
+      reason: "max_tokens",
+      finishReason: "MAX_TOKENS",
+      model: "gemini-3.7-flash",
+      providerModelVersion: "gemini-3.8-flash",
+      completionError: "Generation did not complete.",
+    });
+    expect(patch.worker_metadata.escalation).toMatchObject({
+      reason: "max_tokens",
+      from_model: "gemini-3.7-flash",
+      provider_model_version: "gemini-3.8-flash",
+      finish_reason: "MAX_TOKENS",
+      prior_parse_error: null,
+      prior_completion_error: "Generation did not complete.",
+    });
+  });
+
+  it("guards fresh normalization, stored recovery, publication and dry-run success", () => {
+    const reconcile = functionBody(
+      "async function reconcileCompletedBatch",
+      "async function claimCompletedCandidatePublication",
+    );
+    expect(reconcile.indexOf("if (!completion.allowed)")).toBeLessThan(
+      reconcile.indexOf("...normalizeVisualBatchResult(rawText"),
+    );
+    expect(reconcile).toContain("provider_model_version: providerModelVersion,");
+    expect(reconcile).toContain("requested_model: candidate.model || null,");
+    expect(reconcile).toContain("visualReviewCompletionDecision(finishReason, { candidateCount })");
+    expect(reconcile).toContain("provider_candidate_count: candidateCount,");
+    expect(reconcile.indexOf("if (!publicationCompletion.allowed)")).toBeLessThan(
+      reconcile.indexOf("await claimCompletedCandidatePublication"),
+    );
+    expect(reconcile).toContain('stage: "stored_result_completion_hold"');
+    const claim = functionBody(
+      "async function claimCompletedCandidatePublication",
+      "async function publishCandidateResult",
+    );
+    expect(claim.indexOf("assertVisualReviewCompletedResult(result)")).toBeLessThan(
+      claim.indexOf("acquireVisualReviewPublicationClaim"),
+    );
+    const stored = functionBody(
+      "async function reconcileStoredSucceededCandidates",
+      "async function submitPendingCandidates",
+    );
+    expect(stored).toContain("await claimCompletedCandidatePublication(candidate, result, usage)");
+    const publish = functionBody(
+      "async function publishCandidateResultUnlocked",
+      "async function publishInitialOfficialDocumentCandidate",
+    );
+    expect(publish.indexOf("assertVisualReviewCompletedResult(result)")).toBeLessThan(
+      publish.indexOf("await markPublicationCandidate"),
+    );
+    const dry = functionBody(
+      "async function markCandidateSucceededDryRun",
+      "function geminiBatchRequestForCandidate",
+    );
+    expect(dry.indexOf("assertVisualReviewCompletedResult(result)")).toBeLessThan(
+      dry.indexOf("await markCandidate"),
+    );
   });
 });

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertR2CaptureArtifactIdentity,
   assertR2CaptureArtifactSlots,
+  assertRenderedHtmlArtifactIdentity,
   collectR2CaptureArtifactFiles,
   prepareR2CaptureArtifacts,
   projectRetainedCaptureArtifacts,
@@ -779,6 +780,226 @@ describe("R2 capture artifact bindings", () => {
       .toThrow("main layout binding is invalid");
   });
 });
+
+describe("retained rendered HTML evidence", () => {
+  it("collects optional HTML as plain text without changing geometry projection", () => {
+    const { capture } = htmlEvidenceFixture();
+    const before = projectRetainedCaptureArtifacts({ ...capture, html_path: null });
+    const html = collectR2CaptureArtifactFiles(capture).find((file) => file.name === "html");
+    expect(html).toEqual({
+      name: "html",
+      fileName: "page.html.txt",
+      path: "C:/capture/page.html.txt",
+      contentType: "text/plain; charset=utf-8",
+    });
+    expect(projectRetainedCaptureArtifacts(capture)).toEqual(before);
+    expect(collectR2CaptureArtifactFiles(capture, {
+      exists: (path) => path !== capture.html_path,
+    }).some((file) => file.name === "html")).toBe(false);
+  });
+
+  it("retains exact UTF-8 bytes and accepts the optional webpage slot", () => {
+    const { capture, prepared } = htmlEvidenceFixture();
+    expect(() => assertR2CaptureArtifactSlots("webpage", prepared.artifactBindings)).not.toThrow();
+    expect(() => assertR2CaptureArtifactIdentity(capture, prepared)).not.toThrow();
+    const artifact = prepared.artifacts.find(({ name }) => name === "html");
+    expect(artifact.body.toString("utf8")).toContain("Café — 奨学金");
+    expect(artifact.body.length).toBe(capture.html_capture.byte_length);
+    expect(artifact.body.length).toBeGreaterThan(artifact.body.toString("utf8").length);
+  });
+
+  it("accepts legacy captures and explicit unavailable HTML without inventing bytes", () => {
+    for (const options of [{ status: "legacy" }, { status: "unavailable" }, { kind: "pdf", status: "legacy" }]) {
+      const { capture, prepared } = htmlEvidenceFixture(options);
+      expect(() => assertR2CaptureArtifactSlots(capture.kind, prepared.artifactBindings)).not.toThrow();
+      expect(() => assertR2CaptureArtifactIdentity(capture, prepared)).not.toThrow();
+    }
+  });
+
+  it("rejects all PDF HTML claims, including declarations without retained bytes", () => {
+    for (const status of ["captured", "unavailable"]) {
+      const { capture, prepared } = htmlEvidenceFixture({ kind: "pdf", status });
+      expect(() => assertR2CaptureArtifactIdentity(capture, prepared)).toThrow("PDF captures may not contain HTML");
+      if (status === "captured") {
+        expect(() => assertR2CaptureArtifactSlots("pdf", prepared.artifactBindings)).toThrow("only pdf, text, and meta");
+      }
+    }
+  });
+
+  it("rejects missing HTML, orphaned bytes, and unavailable captures that claim files", () => {
+    const { capture, prepared } = htmlEvidenceFixture();
+    const withoutHtml = { ...prepared, artifacts: prepared.artifacts.filter(({ name }) => name !== "html") };
+    expect(() => assertR2CaptureArtifactIdentity(capture, withoutHtml)).toThrow("captured HTML artifact is missing");
+    const orphaned = mutatePreparedMeta(prepared, (metadata) => { delete metadata.html_capture; });
+    expect(() => assertR2CaptureArtifactIdentity({ ...capture, html_capture: undefined }, orphaned)).toThrow("HTML capture metadata is missing or invalid");
+
+    const unavailable = htmlEvidenceFixture({ status: "unavailable" });
+    expect(() => assertR2CaptureArtifactIdentity({
+      ...unavailable.capture, html_path: "C:/capture/page.html.txt",
+    }, unavailable.prepared)).toThrow("unavailable HTML capture may not claim");
+    const unavailableWithArtifact = {
+      ...unavailable.prepared,
+      artifacts: [...unavailable.prepared.artifacts, prepared.artifacts.find(({ name }) => name === "html")],
+    };
+    expect(() => assertR2CaptureArtifactIdentity(unavailable.capture, unavailableWithArtifact)).toThrow("unavailable HTML capture may not claim");
+  });
+
+  it.each([
+    ["schema", "unknown"], ["status", "complete"], ["reason", "not_null"],
+    ["representation", "raw_response"], ["screenshot_alignment", "verified"],
+    ["sha256", "f".repeat(63)], ["sha256", "F".repeat(64)],
+    ["byte_length", 0], ["byte_length", 1.5], ["byte_length", "10"],
+    ["max_bytes", 0], ["max_bytes", 5242881], ["max_bytes", 1.5],
+    ["captured_at", "invalid"], ["source_url", "file:///page.html"],
+    ["source_url", "https://user:secret@example.org/award"],
+  ])("rejects invalid HTML declaration %s=%s", (field, value) => {
+    const { capture, prepared } = htmlEvidenceFixture();
+    capture.html_capture[field] = value;
+    const mutated = mutatePreparedMeta(prepared, (metadata) => { metadata.html_capture[field] = value; });
+    expect(() => assertR2CaptureArtifactIdentity(capture, mutated)).toThrow("HTML capture metadata is missing or invalid");
+  });
+
+  it.each([
+    ["reason", null], ["reason", "Human readable error"], ["sha256", "a".repeat(64)], ["byte_length", 1],
+  ])("rejects invalid unavailable declaration %s", (field, value) => {
+    const { capture, prepared } = htmlEvidenceFixture({ status: "unavailable" });
+    capture.html_capture[field] = value;
+    const mutated = mutatePreparedMeta(prepared, (metadata) => { metadata.html_capture[field] = value; });
+    expect(() => assertR2CaptureArtifactIdentity(capture, mutated)).toThrow("HTML capture metadata is missing or invalid");
+  });
+
+  it("requires raw metadata parity and the parent capture source and time", () => {
+    for (const [field, value] of [
+      ["source_url", "https://example.org/another-award"],
+      ["captured_at", "2026-09-26T12:00:00.000Z"],
+      ["max_bytes", 4000000],
+    ]) {
+      const { capture, prepared } = htmlEvidenceFixture();
+      const changedRaw = mutatePreparedMeta(prepared, (metadata) => { metadata.html_capture[field] = value; });
+      expect(() => assertR2CaptureArtifactIdentity(capture, changedRaw)).toThrow("HTML declarations do not match");
+      if (field !== "max_bytes") {
+        capture.html_capture[field] = value;
+        expect(() => assertR2CaptureArtifactIdentity(capture, changedRaw)).toThrow("HTML source or timestamp does not match");
+      }
+    }
+  });
+
+  it("rejects changed bytes, invalid UTF-8, character-count lengths, and exceeded limits", () => {
+    const { capture, prepared } = htmlEvidenceFixture();
+    const changedBytes = htmlEvidenceFixture({ body: Buffer.from("different HTML") }).prepared.artifacts.find(({ name }) => name === "html");
+    const changedPrepared = {
+      ...prepared,
+      artifacts: prepared.artifacts.map((artifact) => artifact.name === "html" ? changedBytes : artifact),
+    };
+    expect(() => assertR2CaptureArtifactIdentity(capture, changedPrepared)).toThrow("HTML byte length or size limit");
+    const raw = prepared.artifacts.find(({ name }) => name === "html");
+    const tampered = { ...raw, body: Buffer.from(raw.body) };
+    tampered.body[0] = 33;
+    expect(() => assertR2CaptureArtifactIdentity(capture, {
+      ...prepared, artifacts: prepared.artifacts.map((artifact) => artifact.name === "html" ? tampered : artifact),
+    })).toThrow("HTML artifact raw-byte hash");
+    const invalid = htmlEvidenceFixture({ body: Buffer.from([0xc3, 0x28]) });
+    expect(() => assertR2CaptureArtifactIdentity(invalid.capture, invalid.prepared)).toThrow("not valid UTF-8");
+    const wrongLength = raw.body.toString("utf8").length;
+    capture.html_capture.byte_length = wrongLength;
+    const charLength = mutatePreparedMeta(prepared, (metadata) => { metadata.html_capture.byte_length = wrongLength; });
+    expect(() => assertR2CaptureArtifactIdentity(capture, charLength)).toThrow("HTML byte length or size limit");
+    const oversized = htmlEvidenceFixture({ body: Buffer.alloc(5242881, "a") });
+    expect(() => assertR2CaptureArtifactIdentity(oversized.capture, oversized.prepared)).toThrow("HTML capture metadata is missing or invalid");
+  });
+
+  it("rejects stale raw hash declarations even when prepared bindings are internally valid", () => {
+    const { capture, prepared } = htmlEvidenceFixture();
+    capture.html_capture.sha256 = "0".repeat(64);
+    const changedRaw = mutatePreparedMeta(prepared, (metadata) => { metadata.html_capture.sha256 = "0".repeat(64); });
+    expect(() => assertR2CaptureArtifactIdentity(capture, changedRaw)).toThrow("HTML bytes and capture hash");
+  });
+
+  it("requires matching retained references and a non-executable filename/content type", () => {
+    for (const reference of [null, "other.html", "../page.html.txt", "a/../page.html.txt", "C:/page.html.txt", "a\\page.html.txt", "page.html.txt?download", "page.html.txt#fragment"]) {
+      const { capture, prepared } = htmlEvidenceFixture();
+      capture.files.html = reference;
+      const changedRaw = mutatePreparedMeta(prepared, (metadata) => { metadata.files.html = reference; });
+      expect(() => assertR2CaptureArtifactIdentity(capture, changedRaw)).toThrow("retained HTML references do not match");
+    }
+    const { capture, prepared } = htmlEvidenceFixture();
+    expect(() => assertR2CaptureArtifactIdentity({ ...capture, html_path: "other-path" }, prepared)).toThrow("retained HTML references do not match");
+    const mismatch = mutatePreparedMeta(prepared, (metadata) => { metadata.files.html = "another/page.html.txt"; });
+    expect(() => assertR2CaptureArtifactIdentity(capture, mismatch)).toThrow("retained HTML references do not match");
+    for (const replacement of [{ fileName: "page.html" }, { contentType: "text/html" }, { binding: { content_type: "text/html" } }]) {
+      const changed = {
+        ...prepared,
+        artifacts: prepared.artifacts.map((artifact) => artifact.name === "html" ? { ...artifact, ...replacement } : artifact),
+      };
+      expect(() => assertR2CaptureArtifactIdentity(capture, changed)).toThrow("plain-text page.html.txt");
+    }
+  });
+
+  it("reuses the same evidence checks for remote restore without a local path", () => {
+    const { capture, prepared } = htmlEvidenceFixture();
+    const metadata = JSON.parse(prepared.artifacts.find(({ name }) => name === "meta").body);
+    const artifacts = new Map(prepared.artifacts.map((artifact) => [artifact.name, artifact]));
+    delete capture.html_path;
+    expect(() => assertRenderedHtmlArtifactIdentity({ capture, metadata, artifacts, kind: "webpage", verifyLocalPath: false })).not.toThrow();
+    metadata.html_capture.sha256 = "0".repeat(64);
+    expect(() => assertRenderedHtmlArtifactIdentity({ capture, metadata, artifacts, kind: "webpage", verifyLocalPath: false })).toThrow("HTML declarations do not match");
+  });
+});
+
+function htmlEvidenceFixture({
+  status = "captured",
+  kind = "webpage",
+  body = Buffer.from("<!doctype html><html><body>Café — 奨学金</body></html>"),
+} = {}) {
+  const capturedAt = "2026-09-25T12:00:00.000Z";
+  const finalUrl = "https://example.org/award";
+  const primary = Buffer.from(kind === "pdf" ? "pdf bytes" : "page bytes");
+  const text = "Award text";
+  const reference = status === "captured" ? "sources/source/captures/capture/page.html.txt" : null;
+  const htmlCapture = status === "legacy" ? undefined : {
+    schema: "awardping.rendered-html.v1",
+    status,
+    reason: status === "captured" ? null : "html_capture_failed",
+    representation: "rendered_dom",
+    captured_at: capturedAt,
+    source_url: finalUrl,
+    max_bytes: 5242880,
+    sha256: status === "captured" ? sha256(body) : null,
+    byte_length: status === "captured" ? body.length : null,
+    screenshot_alignment: "not_verified",
+  };
+  const metadata = {
+    kind,
+    captured_at: capturedAt,
+    final_url: finalUrl,
+    text_hash: sha256(Buffer.from(text)),
+    text_length: text.length,
+    retained_artifact_projection: retainedProjection({ kind }),
+    html_capture: htmlCapture,
+    files: { html: reference, layout: null, expansion_states: [] },
+    ...(kind === "pdf" ? { file_hash: sha256(primary), file_bytes: primary.length } : {
+      image_hash: sha256(primary), page_bytes: primary.length, thumb_bytes: 5,
+      text_geometry: unavailableGeometry(), localization: unavailableLocalization(),
+      expansion_state_count: 0, expansion_state_screenshots: [],
+      expansion_state_capture_coverage: completeCoverage(0),
+    }),
+  };
+  const capture = {
+    ...metadata,
+    html_capture: htmlCapture && { ...htmlCapture },
+    files: { ...metadata.files },
+    html_path: status === "captured" ? "C:/capture/page.html.txt" : null,
+  };
+  const prepared = prepareFromBodies({
+    ...(kind === "pdf" ? { pdf: ["document.pdf", "application/pdf", primary] } : {
+      page: ["page.jpg", "image/jpeg", primary], thumb: ["thumb.jpg", "image/jpeg", Buffer.from("thumb")],
+    }),
+    text: ["text.txt", "text/plain; charset=utf-8", Buffer.from(`${text}\n`)],
+    meta: ["meta.json", "application/json; charset=utf-8", Buffer.from(JSON.stringify(metadata))],
+    ...(status === "captured" ? { html: ["page.html.txt", "text/plain; charset=utf-8", body] } : {}),
+  });
+  return { capture, prepared };
+}
 
 function readyGeometry(imageHash, stateId) {
   const source = {

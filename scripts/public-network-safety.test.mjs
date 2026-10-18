@@ -764,6 +764,9 @@ describe("visual worker public network safety", () => {
     const contextLifecycle = functionSource("restartCaptureContext", "restartBrowser");
     const launch = functionSource("launchBrowser", "createBrowserContext");
     const context = functionSource("createBrowserContext", "findInstalledBrowserExecutable");
+    // Scope the legacy pending-metadata barrier to its capture function. The
+    // separate Scrapling adapter closes its old context before starting capture.
+    const legacyCapture = functionSource("captureSource", "expandPageForSnapshot");
 
     expect(pdf).toContain("fetchPublicHttpBuffer");
     expect(pdf).not.toContain('redirect: "follow"');
@@ -794,10 +797,11 @@ describe("visual worker public network safety", () => {
     expect(context).toContain("isBrowserTransportSecurityFailure(errorText)");
     expect(context).toContain("recordBrowserPolicyViolation");
     expect(workerSource).toContain("await finalizeCaptureNetworkBoundary({");
-    expect(workerSource.indexOf("writeFileSync(pendingMetaPath"))
-      .toBeLessThan(workerSource.indexOf("await finalizeCaptureNetworkBoundary({"));
-    expect(workerSource.indexOf("await finalizeCaptureNetworkBoundary({"))
-      .toBeLessThan(workerSource.indexOf("renameSync(pendingMetaPath, metaPath)"));
+    expect(legacyCapture.indexOf("writeFileSync(pendingMetaPath")).toBeGreaterThan(-1);
+    expect(legacyCapture.indexOf("writeFileSync(pendingMetaPath"))
+      .toBeLessThan(legacyCapture.indexOf("await finalizeCaptureNetworkBoundary({"));
+    expect(legacyCapture.indexOf("await finalizeCaptureNetworkBoundary({"))
+      .toBeLessThan(legacyCapture.indexOf("renameSync(pendingMetaPath, metaPath)"));
     expect(workerSource).toContain("const captureUrl = normalizePublicHttpUrl(source.url).toString();");
     expect(workerSource).toContain("response = await page.goto(captureUrl");
     expect(context).toContain("source-scoped pinned proxy");

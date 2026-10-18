@@ -37,6 +37,7 @@ const r2Slots = [
   { name: "thumb", fileName: "thumb.jpg", contentType: "image/jpeg" },
   { name: "pdf", fileName: "document.pdf", contentType: "application/pdf" },
   { name: "text", fileName: "text.txt", contentType: "text/plain; charset=utf-8" },
+  { name: "html", fileName: "page.html.txt", contentType: "text/plain; charset=utf-8" },
   { name: "layout", fileName: "layout.json", contentType: "application/json; charset=utf-8" },
   { name: "meta", fileName: "meta.json", contentType: "application/json; charset=utf-8" },
 ];
@@ -466,6 +467,12 @@ export function captureFromVisualReviewCandidate(candidate, archiveRoot) {
     thumb: artifactBinding(paths.thumb),
     pdf: artifactBinding(paths.pdf),
     text: artifactBinding(paths.text),
+    // Supplemental HTML is sealed transitively by the existing immutable meta
+    // artifact. It is not a new role in the closed v1 candidate manifest. Raw
+    // metadata must pass its candidate SHA/byte binding before any promotion.
+    ...(meta.html_capture?.status === "captured"
+      ? { html: artifactBinding(meta.html_capture) }
+      : {}),
     layout: artifactBinding(paths.layout || mainStatePaths.layout),
     meta: artifactBinding(paths.meta),
   };
@@ -494,6 +501,7 @@ export function captureFromVisualReviewCandidate(candidate, archiveRoot) {
     thumb_path: resolvePathRef(paths.thumb, safeArchiveRoot),
     pdf_path: resolvePathRef(paths.pdf, safeArchiveRoot),
     text_path: resolvePathRef(paths.text, safeArchiveRoot),
+    html_path: resolveArchiveFile(metaFiles.html, safeArchiveRoot),
     layout_path: layoutPath,
     meta_path: metaPath,
     expansion_text_path: resolveArchiveFile(metaFiles.expansion_text, safeArchiveRoot),
@@ -656,12 +664,14 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
     expandable_sections: Array.isArray(capture.expandable_sections) ? capture.expandable_sections : [],
     dimensions: capture.dimensions || null,
     hidden_noise_counts: capture.hidden_noise_counts || null,
+    ...(capture.html_capture ? { html_capture: capture.html_capture } : {}),
     capture: {
       dir: archiveRelative(capture.dir, archiveRoot),
       page: archiveRelative(capture.page_path, archiveRoot),
       thumb: archiveRelative(capture.thumb_path, archiveRoot),
       pdf: archiveRelative(capture.pdf_path, archiveRoot),
       text: archiveRelative(capture.text_path, archiveRoot),
+      ...(capture.html_path ? { html: archiveRelative(capture.html_path, archiveRoot) } : {}),
       layout: mainLayoutRetained ? archiveRelative(capture.layout_path, archiveRoot) : null,
       expansion_text: archiveRelative(capture.expansion_text_path, archiveRoot),
       sections_text: archiveRelative(capture.sections_text_path, archiveRoot),
@@ -945,6 +955,7 @@ function requiredCapturePaths(capture) {
     capture.page_path,
     capture.thumb_path,
     capture.text_path,
+    ...(approvedHtmlClaimed(capture) ? [capture.html_path] : []),
     ...(approvedMainLayoutClaimed(capture) ? [capture.layout_path] : []),
     capture.meta_path,
     ...approvedExpansionStateValues(capture).flatMap((state) => [state.page_path, state.layout_path]),
@@ -957,6 +968,7 @@ function requiredR2Slots(capture) {
     "page",
     "thumb",
     "text",
+    ...(approvedHtmlClaimed(capture) ? ["html"] : []),
     ...(approvedMainLayoutClaimed(capture) ? ["layout"] : []),
     "meta",
     ...approvedExpansionStateValues(capture).flatMap((_, index) => {
@@ -964,6 +976,13 @@ function requiredR2Slots(capture) {
       return [`expansion_state_${suffix}`, `expansion_state_${suffix}_layout`];
     }),
   ];
+}
+
+function approvedHtmlClaimed(capture) {
+  return Boolean(
+    capture.html_path || capture.files?.html || capture.artifact_bindings?.html ||
+    capture.html_capture?.status === "captured",
+  );
 }
 
 function missingApprovedGeometryMetadata(capture) {
@@ -1012,6 +1031,7 @@ function captureFiles(capture) {
         thumb: capture.thumb_path,
         pdf: capture.pdf_path,
         text: capture.text_path,
+        html: capture.html_path,
         layout: capture.layout_path,
         meta: capture.meta_path,
       }[slot.name],
@@ -1454,6 +1474,7 @@ function captureMetadata(capture, artifactBindings) {
     retained_artifact_projection: capture.retained_artifact_projection || null,
     capture_profile: capture.capture_profile || null,
     final_url: capture.final_url || null,
+    ...(capture.html_capture ? { html_capture: capture.html_capture } : {}),
     page_title: capture.page_title || null,
     status_code: capture.status_code || null,
     status_text: capture.status_text || null,
@@ -1630,7 +1651,12 @@ function exactApprovedR2PointerMatches({
   expected,
   prepared,
 }) {
-  if (!inspectStage1ImmutableR2CaptureBinding(existing).valid) return false;
+  // This is an idempotence check, not a Stage-1 readiness decision. Validate the
+  // legacy core with its closed slot contract; exact supplemental HTML identity
+  // is checked against the ORIGINAL pointer and byte-verified prepared artifacts
+  // below. No Stage-1 caller gains permission to ignore an unknown artifact.
+  const legacyCore = legacyCorePointerForApprovedHtmlIdempotence(existing, prepared);
+  if (!inspectStage1ImmutableR2CaptureBinding(legacyCore).valid) return false;
   if (
     cleanText(existing?.shared_award_source_id).toLowerCase()
       !== cleanText(expected?.sourceId).toLowerCase()
@@ -1684,6 +1710,22 @@ function exactApprovedR2PointerMatches({
   return true;
 }
 
+function legacyCorePointerForApprovedHtmlIdempotence(existing, prepared) {
+  if (!prepared.artifacts.some((artifact) => artifact.name === "html")) return existing;
+  const metadata = objectValue(existing?.latest_metadata);
+  const objectKeys = { ...objectValue(existing?.latest_object_keys) };
+  const artifactBindings = { ...objectValue(metadata.artifact_bindings) };
+  // Only the known supplemental role is omitted from this local compatibility
+  // projection. Unexpected roles still fail the closed legacy core validator.
+  delete objectKeys.html;
+  delete artifactBindings.html;
+  return {
+    ...existing,
+    latest_object_keys: objectKeys,
+    latest_metadata: { ...metadata, artifact_bindings: artifactBindings },
+  };
+}
+
 function approvedR2ReadinessHashes(value) {
   const hashes = objectValue(value);
   return {
@@ -1699,6 +1741,7 @@ function approvedR2ReadinessMetadata(kindValue, value) {
   const kind = kindValue === "pdf" ? "pdf" : "webpage";
   const metadata = objectValue(value);
   const identity = {
+    ...(metadata.html_capture ? { html_capture: metadata.html_capture } : {}),
     text_length: metadata.text_length,
     text_object_bytes: metadata.text_object_bytes,
     expansion_state_capture_coverage:

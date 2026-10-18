@@ -21,6 +21,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { PDFParse } from "pdf-parse";
+import { assessPdfTextCoverage, pdfTextComparisonHoldReason } from "./lib/pdf-text-coverage.mjs";
 import { chromium } from "playwright-core";
 import sharp from "sharp";
 import { deterministicNoiseBaselineDisposition } from "./lib/deterministic-noise-disposition.mjs";
@@ -93,6 +94,17 @@ import {
   verifyVisualScreenshotLayoutCapture,
 } from "./lib/visual-event-localization.mjs";
 import { captureVisibleTextGeometry } from "./lib/visible-text-geometry.mjs";
+import { captureRenderedHtml } from "./lib/rendered-html-capture.mjs";
+import { compareRetainedHtmlCaptures } from "./lib/rendered-html-comparison.mjs";
+import {
+  SCRAPLING_WORKER_PROFILE,
+  loadScraplingSourceManifest,
+  selectScraplingSource,
+  assertScraplingBaselineCompatibility,
+  captureScraplingWorkerSource,
+} from "./lib/scrapling-worker.mjs";
+import { buildScraplingReviewDiff } from "./lib/scrapling-review-diff.mjs";
+import { verifyScraplingRuntimeBinding } from "./lib/scrapling-runtime-binding.mjs";
 import {
   discoverExpansionStateDescriptors,
   verifyExpansionStateIsolation,
@@ -375,6 +387,14 @@ const visualSourceCheckMinutes = positiveInt(
   24 * 60,
 );
 const baselineRefresh = boolArg(args["baseline-refresh"], false);
+// Empty is deliberately off. Rollout is an exact reviewed source UUID+URL list,
+// not a public-page fallback or an implicit replacement of every monitored award.
+const scraplingManifestPath = cleanText(args["scrapling-manifest"] || env.AWARDPING_SCRAPLING_MANIFEST);
+const scraplingPythonPath = cleanText(args["scrapling-python"] || env.AWARDPING_SCRAPLING_PYTHON);
+// Verify the installed manifest and pinned interpreter before any collection or
+// source/baseline mutation. Command-line overrides cannot bypass this binding.
+verifyScraplingRuntimeBinding({ appDir: root, manifestPath: scraplingManifestPath, pythonPath: scraplingPythonPath });
+const scraplingManifest = loadScraplingSourceManifest(scraplingManifestPath);
 const promote = stage1EvidenceSchemaUpgrade ? false : boolArg(args.promote, true);
 const pdfOnly = boolArg(args["pdf-only"], false);
 const webOnly = boolArg(args["web-only"], false);
@@ -1196,6 +1216,22 @@ async function runOnce() {
       backfill_baseline_info: backfillBaselineInfo,
     },
     checked: 0,
+    scrapling: {
+      enabled: Boolean(scraplingManifest),
+      profile: SCRAPLING_WORKER_PROFILE,
+      reviewed_source_count: scraplingManifest?.sources.length || 0,
+      checked: 0, unchanged: 0, changed_needs_review: 0, manual_review_required: 0, unavailable: 0,
+      reasons: {},
+    },
+    html_comparison: {
+      mode: "shadow",
+      checked: 0,
+      changed: 0,
+      unchanged: 0,
+      first_observation: 0,
+      unavailable: 0,
+      reasons: {},
+    },
     baselined: 0,
     unchanged: 0,
     candidate_changes: 0,
@@ -3714,11 +3750,23 @@ async function processSourceUnlocked(
   }
   const pdfSource = isPdfSource(source);
   const pendingStage1Activation = isStage1PendingBaselineActivationSource(source);
+  const scraplingSource = pdfSource ? null : selectScraplingSource(source, scraplingManifest);
+  if (!pdfSource) assertScraplingBaselineCompatibility(baseline, {
+    useScrapling: Boolean(scraplingSource), baselineRefresh,
+  });
+  if (scraplingSource && pendingStage1Activation) {
+    throw new Error("Scrapling rollout cannot replace the separate reviewed Stage 1 baseline activation protocol.");
+  }
+  if (scraplingSource && (localizationRepair || extractBaselineInfo || backfillBaselineInfo || discoverHtmlSubpages || stage1EvidenceSchemaUpgrade)) {
+    throw new Error("Scrapling does not support legacy localization, fact extraction, HTML discovery or Stage 1 maintenance; disable these explicitly.");
+  }
   let capture;
   try {
     capture = pdfSource
       ? await capturePdfSourceForBaseline(source, baseline, report, pdfFetchOptions)
-      : await captureSource(source, context, browserMeta, report, {
+      : scraplingSource
+        ? await captureConfiguredScraplingSource(source, context, browserMeta, report, { networkProxy, sourceDeadline })
+        : await captureSource(source, context, browserMeta, report, {
           baseline,
           suppressDiscovery: pendingStage1Activation,
           networkProxy,
@@ -3734,6 +3782,7 @@ async function processSourceUnlocked(
       },
     );
   }
+  attachHtmlComparisonDiagnostic(source, baseline, capture, report);
   materializeRetainedCaptureAuthority(source, capture);
   report.checked += 1;
   if (capture.kind === "pdf") {
@@ -3913,6 +3962,13 @@ async function processSourceUnlocked(
       await markSharedSourceVisualCheckSucceeded(source, capture, report);
     }
     console.log(`BASELINE ${capture.kind === "pdf" ? "PDF " : ""}${sourceLabel(source)}`);
+    return;
+  }
+
+  // Never pass full HTML context through the legacy sentence/noise filter.
+  // It drops long, duplicate and link-only evidence and can advance a baseline.
+  if (scraplingSource) {
+    await processScraplingComparison(source, baseline, previous, capture, report);
     return;
   }
 
@@ -5842,6 +5898,57 @@ async function processLocalizationRepairSource(source, baseline, capture, report
   console.log(`LOCALIZATION_REPAIR synced ${sourceLabel(source)}`);
 }
 
+async function processScraplingComparison(source, baseline, previous, capture, report) {
+  const comparison = buildScraplingReviewDiff({ source, baseline, previous, capture });
+  report.scrapling.checked += 1;
+  report.scrapling[comparison.status] += 1;
+  incrementCounterObject(report.scrapling.reasons, comparison.reason);
+  if (comparison.status === "unchanged") {
+    report.unchanged += 1;
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`UNCHANGED html_source_semantics_only ${sourceLabel(source)}`);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    return;
+  }
+  const deterministic = {
+    ...(comparison.deterministic || {}),
+    classification: comparison.deterministic?.classification || comparison.status,
+    reason: comparison.reason,
+    screenshot_changed: baseline.image_hash !== capture.image_hash,
+    text_only: baseline.image_hash === capture.image_hash,
+    comparison_basis: "html-source-main-document",
+    visibility_verified: false,
+    baseline_advance_allowed: false,
+  };
+  report.candidate_changes += 1;
+  const hold = async (reason) => {
+    const reviewPath = saveReviewRecord({ source, baseline, previous, capture,
+      diff: comparison.diff || { scrapling_comparison: comparison }, deterministic, reason,
+      aiReview: { provider: "none", model: null, result: null, error: null },
+    });
+    report.review += 1;
+    report.review_paths.push(toArchiveRelative(reviewPath));
+    // Both complete source captures remain retained. A review hold is neither a
+    // rejected change nor permission to rotate local/R2 baseline pointers.
+    if (comparison.status === "unavailable") throw new Error(`Scrapling comparison unavailable: ${comparison.reason}`);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`REVIEW scrapling ${reason} ${sourceLabel(source)}`);
+  };
+  if (comparison.status !== "changed_needs_review") return hold(comparison.reason);
+  const gate = gateVisualReviewCandidateForAi({ source, baseline, previous, capture,
+    diff: comparison.diff, deterministic, report,
+  });
+  // A legacy relevance/noise gate cannot discard newly detected HTML semantics.
+  if (!gate.allowed) return hold(`scrapling_gate_hold:${gate.decision.reason || gate.decision.label || "review_required"}`);
+  if (!interpretVisualChanges || visualReviewMode !== "batch") return hold("scrapling_batch_review_required");
+  const result = await enqueueVisualReviewCandidate({ source, baseline, previous, capture,
+    diff: comparison.diff, deterministic: { ...gate.deterministic, ...deterministic }, report,
+  });
+  await markSharedSourceVisualCheckSucceeded(source, capture, report);
+  // Even a rejection-ledger match must not advance a Scrapling baseline here.
+  console.log(`${result?.absorbed ? "ABSORBED" : result?.existing ? "EXISTING" : "QUEUED"} scrapling_review ${sourceLabel(source)}`);
+}
+
 async function processTextOnlyComparison(source, baseline, previous, capture, report) {
   const diff = buildDiffSummary(previous.text || "", capture.text || "", source);
   const deterministic = {
@@ -6719,6 +6826,8 @@ async function enqueueVisualReviewCandidate({
   report,
   enqueuePolicy = null,
 }) {
+  const candidateCaptureBehaviorVersion = capture?.capture_behavior_version ?? captureBehaviorVersion;
+  const candidateCaptureBehaviorName = capture?.capture_behavior_name || captureBehaviorName;
   const stage1MutationAccounting = enqueuePolicy?.context
     === visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade
     ? {
@@ -6741,8 +6850,8 @@ async function enqueueVisualReviewCandidate({
       diff,
       deterministic,
       promptChars,
-      behaviorVersion: captureBehaviorVersion,
-      behaviorName: captureBehaviorName,
+      behaviorVersion: candidateCaptureBehaviorVersion,
+      behaviorName: candidateCaptureBehaviorName,
       archiveRelative: toArchiveRelative,
     });
     const previousSnapshotRef = promptPayload.previous_snapshot_ref || null;
@@ -6755,7 +6864,7 @@ async function enqueueVisualReviewCandidate({
       newSnapshotRef,
       diff,
       deterministic,
-      behaviorVersion: captureBehaviorVersion,
+      behaviorVersion: candidateCaptureBehaviorVersion,
     });
     if (!effectiveEnqueuePolicy.bypassRejectionLedger) {
       try {
@@ -6792,7 +6901,7 @@ async function enqueueVisualReviewCandidate({
       newSnapshotRef,
       diff,
       deterministic,
-      behaviorVersion: captureBehaviorVersion,
+      behaviorVersion: candidateCaptureBehaviorVersion,
     });
     if (stage1MutationAccounting) {
       stage1MutationAccounting.candidate_signature = candidateSignature;
@@ -6826,8 +6935,9 @@ async function enqueueVisualReviewCandidate({
         queued_by: "capture-visual-snapshots",
         queued_at: new Date().toISOString(),
         worker_run_id: report.worker_run_id,
-        capture_behavior_version: captureBehaviorVersion,
-        capture_behavior_name: captureBehaviorName,
+        capture_behavior_version: candidateCaptureBehaviorVersion,
+        capture_behavior_name: candidateCaptureBehaviorName,
+        capture_profile: capture?.capture_profile || null,
         visual_review_mode: visualReviewMode,
         monitoring_policy: monitoringPolicy,
         monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
@@ -7152,40 +7262,28 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   report.candidate_changes += 1;
   report.pdf_changed += 1;
 
+  const pdfHold = pdfTextComparisonHoldReason({ previous: previous.meta, capture, textChanged });
+  if (pdfHold) {
+    const reviewPath = saveReviewRecord({ source, baseline, previous, capture, diff,
+      deterministic: { ...deterministic, classification: "manual_review_required", reason: pdfHold,
+        baseline_advance_allowed: false, native_text_completeness: "not_established",
+        previous_pdf_text_coverage: previous.meta?.pdf_text_coverage || null,
+        current_pdf_text_coverage: capture.pdf_text_coverage || null },
+      reason: pdfHold, aiReview: { provider: "none", model: null, result: null, error: null } });
+    report.review += 1;
+    report.review_paths.push(toArchiveRelative(reviewPath));
+    // Keep both original PDFs. Matching extracted text cannot rule out image,
+    // diagram or unextracted-page changes; a hold never rotates the baseline.
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`REVIEW ${pdfHold} ${sourceLabel(source)}`);
+    return;
+  }
+
   if (!interpretVisualChanges) {
     await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "pdf_visual_interpretation_disabled" });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
     console.log(`SKIP visual_interpretation_disabled_pdf ${sourceLabel(source)}`);
-    return;
-  }
-
-  if (!textChanged) {
-    report.deterministic_noise += 1;
-    report.deterministic_noise_rejected += 1;
-    let baselinePromoted = false;
-    if (promote) {
-      baselinePromoted = writeBaseline(source, capture, {
-        reason: "pdf_file_hash_changed_text_match_ignored",
-        previous_baseline_capture: baseline.capture || null,
-        baseline_facts: capture.baseline_facts || null,
-        baseline_facts_metadata: capture.baseline_facts_metadata || null,
-      });
-      if (baselinePromoted) {
-        await requireR2SnapshotForBaseline({
-          source,
-          capture,
-          report,
-          previousBaseline: baseline,
-          reason: "pdf_file_hash_changed_text_match_ignored",
-          unchanged: true,
-        });
-        report.promoted += 1;
-      }
-    }
-    await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    console.log(`NOISE pdf_file_hash_changed_text_match_ignored ${sourceLabel(source)}`);
-    if (!keepUnchanged && !baselinePromoted) removeGeneratedCaptureDir(capture.dir);
     return;
   }
 
@@ -7610,6 +7708,7 @@ async function capturePdfSource(source, pdfFetchOptions = null) {
     page_title: source.title || null,
     page_count: extracted.pageCount,
     pdf_text_error: extracted.error,
+    pdf_text_coverage: extracted.coverage,
     files: {
       pdf: toArchiveRelative(pdfPath),
       text: toArchiveRelative(textPath),
@@ -7799,6 +7898,7 @@ async function extractPdfText(buffer) {
       text: result.text || "",
       pageCount: result.total || null,
       error: null,
+      coverage: assessPdfTextCoverage(result, hashBuffer(buffer)),
     };
   } catch (error) {
     primaryError = error;
@@ -7832,6 +7932,29 @@ async function extractPdfText(buffer) {
   }
 }
 
+async function captureConfiguredScraplingSource(source, context, browserMeta, report, { networkProxy, sourceDeadline }) {
+  // Dispose the unused legacy context before starting the isolated collector.
+  // Scrapling then enforces its own public-network shutdown barrier before returning evidence.
+  await finalizeCaptureNetworkBoundary({ context, networkProxy, checkpoint: networkProxy?.policyCheckpoint?.(),
+    maxBytes: maxBrowserResponseBytes, shutdownTimeoutMs: 5000 });
+  const capture = await captureScraplingWorkerSource(source, {
+    archiveRoot, pythonPath: scraplingPythonPath, executablePath: browserMeta.executable_path,
+    timeoutMs: Math.min(sourceTimeoutMs, 90000),
+  });
+  if (sourceDeadline?.expired?.()) throw new Error("Scrapling capture exceeded the source deadline; no baseline or discovery mutation allowed.");
+  if (discoveryMode && discoverPdfSubpages) {
+    const discovery = pdfDiscoveryFromObservedLinks({ links: capture.scrapling_discovered_links, truncated: false }, source);
+    // Passive HTML includes closed markup but does not prove click/scroll-loaded
+    // content was discovered. Do not advance the historical discovery watermark.
+    discovery.scanComplete = false;
+    discovery.incompleteReasons = ["scrapling_passive_main_document_only"];
+    report.discovery_pdf_incomplete_scans += 1;
+    incrementCounterObject(report.discovery_pdf_incomplete_reasons, discovery.incompleteReasons[0]);
+    await maybeRecordDiscoveredPdfSources(source, discovery, { profile: SCRAPLING_WORKER_PROFILE }, report);
+  }
+  return capture;
+}
+
 async function captureSource(
   source,
   context,
@@ -7853,6 +7976,7 @@ async function captureSource(
   const pagePath = join(captureDir, "page.jpg");
   const thumbPath = join(captureDir, "thumb.jpg");
   const textPath = join(captureDir, "text.txt");
+  const htmlPath = join(captureDir, "page.html.txt");
   const expansionTextPath = join(captureDir, "expansion-text.txt");
   const sectionsTextPath = join(captureDir, "sections.txt");
   const sectionsJsonPath = join(captureDir, "sections.json");
@@ -8115,6 +8239,18 @@ async function captureSource(
       imageRef: toArchiveRelative(pagePath),
       screenshot: screenshotBinding,
     });
+    // Preserve the rendered main-document DOM before section extraction can
+    // change the page again. This is separate, untrusted evidence: HTML hashes
+    // do not drive updates, and this capture does not claim pixel alignment.
+    const renderedHtml = await captureRenderedHtml(page, {
+      capturedAt,
+      sourceUrl: finalUrl,
+    });
+    if (renderedHtml.metadata.status === "captured") {
+      // Plain-text filename and MIME type prevent an executable HTML replay.
+      // No framing newline: the hash describes exactly the retained UTF-8 bytes.
+      writeFileSync(htmlPath, renderedHtml.html, "utf8");
+    }
     writeFileSync(pagePath, pageBuffer);
     writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
     const thumbnail = await createThumbnail(context, pageBuffer);
@@ -8184,6 +8320,7 @@ async function captureSource(
       page_readiness: pageReadiness,
       scroll_activation: scrollActivation,
       page_settle: pageSettle,
+      html_capture: renderedHtml.metadata,
       text_geometry: textGeometryReference(textGeometry, layoutPath),
       localization: captureLocalizationMetadata({
         kind: "webpage",
@@ -8237,6 +8374,7 @@ async function captureSource(
         page: toArchiveRelative(pagePath),
         thumb: toArchiveRelative(thumbPath),
         text: toArchiveRelative(textPath),
+        html: renderedHtml.metadata.status === "captured" ? toArchiveRelative(htmlPath) : null,
         expansion_text: textBlocks.expansion_text ? toArchiveRelative(expansionTextPath) : null,
         sections_text: sectionsText ? toArchiveRelative(sectionsTextPath) : null,
         sections_json: toArchiveRelative(sectionsJsonPath),
@@ -8268,6 +8406,7 @@ async function captureSource(
       page_path: pagePath,
       thumb_path: thumbPath,
       text_path: textPath,
+      html_path: renderedHtml.metadata.status === "captured" ? htmlPath : null,
       expansion_text_path: textBlocks.expansion_text ? expansionTextPath : null,
       layout_path: layoutPath,
       layout_hash: textGeometry.geometry_hash,
@@ -10323,6 +10462,10 @@ async function discoverPdfLinksOnPage(page, source) {
       error: errorMessage(error),
     }));
 
+  return pdfDiscoveryFromObservedLinks(rawDiscovery, source);
+}
+
+function pdfDiscoveryFromObservedLinks(rawDiscovery, source) {
   const seen = new Set();
   const provenanceLinks = [];
   const queueCandidates = [];
@@ -11735,7 +11878,7 @@ async function markSharedSourceVisualCheckSucceeded(
     return false;
   }
 
-  if (!preserveReviewedUrl) {
+  if (!preserveReviewedUrl && capture.capture_profile !== SCRAPLING_WORKER_PROFILE) {
     await maybeUpdateSafeRedirectUrl(source, capture, now, report);
   }
   return true;
@@ -13090,6 +13233,42 @@ function rewriteMatchingBaselineRetainedProjection(source, capture, projection) 
   return true;
 }
 
+function attachHtmlComparisonDiagnostic(source, baseline, capture, report) {
+  const previousFiles = baseline?.capture || {};
+  const previous = baseline ? {
+    ...baseline,
+    files: previousFiles,
+    html_path: previousFiles.html ? fromArchiveRelative(previousFiles.html) : null,
+    text_path: previousFiles.text ? fromArchiveRelative(previousFiles.text) : null,
+    meta_path: previousFiles.meta ? fromArchiveRelative(previousFiles.meta) : null,
+  } : null;
+  const diagnostic = capture.capture_profile === "scrapling-evidence-v1"
+    ? { status: "unavailable", reason: "separate_scrapling_semantic_review", publishable: false }
+    : compareRetainedHtmlCaptures({
+    previous,
+    current: capture,
+    sourceId: source.id,
+    archiveRoot,
+    baselineRefresh,
+  });
+  // Observation is sealed with the NEW capture, before any prepared artifact,
+  // candidate, or upload exists. Never rewrite a previous capture's metadata.
+  // PDF intake may return previously sealed first-observation artifacts. This
+  // HTML-only feature must never rewrite that immutable evidence.
+  if (capture.kind === "webpage" && capture.meta_path !== previous?.meta_path) {
+    const metadata = readJsonIfExists(capture.meta_path);
+    if (!metadata || metadata.captured_at !== capture.captured_at || metadata.source?.id !== source.id) {
+      throw new Error("Capture identity changed before HTML diagnostics were recorded.");
+    }
+    atomicWriteJson(capture.meta_path, { ...metadata, html_comparison: diagnostic });
+  }
+  capture.html_comparison = diagnostic;
+  const summary = report.html_comparison;
+  summary.checked += 1;
+  summary[diagnostic.status] += 1;
+  if (diagnostic.reason) incrementCounterObject(summary.reasons, diagnostic.reason);
+}
+
 function captureR2Files(capture) {
   return collectR2CaptureArtifactFiles(capture, { exists: existsSync });
 }
@@ -13344,6 +13523,8 @@ function r2CaptureMetadata(capture, artifactBindings) {
     // then apply that single, explicit normalization before checking text_hash.
     text_object_bytes:
       artifactBindings?.text?.byte_length || null,
+    // Kept out of r2CaptureHashes: markup-only changes are not award updates.
+    html_capture: capture.html_capture || null,
     body_text_length: capture.body_text_length || 0,
     main_content_text_length: capture.main_content_text_length || 0,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || 0,
@@ -14193,6 +14374,8 @@ function copyEvidenceFiles(targetDir, previous, capture) {
   copyIfPresent("new_pdf", capture.pdf_path, "new-document.pdf");
   copyIfPresent("previous_text", previous.textPath, "previous-text.txt");
   copyIfPresent("new_text", capture.text_path, "new-text.txt");
+  copyIfPresent("previous_html", previous.htmlPath, "previous-page.html.txt");
+  copyIfPresent("new_html", capture.html_path, "new-page.html.txt");
   copyIfPresent("previous_sections_text", previous.sectionsTextPath, "previous-sections.txt");
   copyIfPresent("new_sections_text", capture.sections_text_path, "new-sections.txt");
   copyIfPresent("previous_sections_json", previous.sectionsJsonPath, "previous-sections.json");
@@ -14249,8 +14432,8 @@ function writeBaseline(source, capture, details, options = {}) {
   const baseline = {
     version: 1,
     kind: capture.kind || "webpage",
-    capture_behavior_version: capture.kind === "pdf" ? null : captureBehaviorVersion,
-    capture_behavior_name: capture.kind === "pdf" ? null : captureBehaviorName,
+    capture_behavior_version: capture.kind === "pdf" ? null : capture.capture_behavior_version || captureBehaviorVersion,
+    capture_behavior_name: capture.kind === "pdf" ? null : capture.capture_behavior_name || captureBehaviorName,
     capture_profile: capture.capture_profile || captureProfile,
     section_extraction_profile: capture.section_extraction_profile || sectionExtractionProfile,
     source: sourceMetadata(source),
@@ -14281,12 +14464,14 @@ function writeBaseline(source, capture, details, options = {}) {
     expandable_sections: Array.isArray(capture.expandable_sections) ? capture.expandable_sections : [],
     dimensions: capture.dimensions,
     hidden_noise_counts: capture.hidden_noise_counts,
+    ...(capture.html_capture ? { html_capture: capture.html_capture } : {}),
     capture: {
       dir: toArchiveRelative(capture.dir),
       page: capture.page_path ? toArchiveRelative(capture.page_path) : null,
       thumb: capture.thumb_path ? toArchiveRelative(capture.thumb_path) : null,
       pdf: capture.pdf_path ? toArchiveRelative(capture.pdf_path) : null,
       text: toArchiveRelative(capture.text_path),
+      html: capture.html_path ? toArchiveRelative(capture.html_path) : null,
       expansion_text: capture.expansion_text_path ? toArchiveRelative(capture.expansion_text_path) : null,
       sections_text: capture.sections_text_path ? toArchiveRelative(capture.sections_text_path) : null,
       sections_json: capture.sections_json_path ? toArchiveRelative(capture.sections_json_path) : null,
@@ -14433,6 +14618,7 @@ function baselineEvidenceStatus(baseline) {
     thumbPath: capture.thumb ? fromArchiveRelative(capture.thumb) : null,
     pdfPath: capture.pdf ? fromArchiveRelative(capture.pdf) : null,
     textPath: fromArchiveRelative(capture.text),
+    htmlPath: capture.html ? fromArchiveRelative(capture.html) : null,
     expansionTextPath: capture.expansion_text ? fromArchiveRelative(capture.expansion_text) : null,
     sectionsTextPath: capture.sections_text ? fromArchiveRelative(capture.sections_text) : null,
     sectionsJsonPath: capture.sections_json ? fromArchiveRelative(capture.sections_json) : null,
@@ -14465,6 +14651,12 @@ function baselineEvidenceStatus(baseline) {
   const meta = paths.metaPath && existsSync(paths.metaPath)
     ? readJsonIfExists(paths.metaPath)
     : null;
+  // Old captures legitimately lack HTML. A new capture that declares retained
+  // HTML may not silently lose it when a local baseline is reused.
+  if (meta?.html_capture?.status === "captured" || paths.htmlPath) {
+    if (kind === "pdf") missing.push("html_not_applicable_pdf");
+    if (!paths.htmlPath || !existsSync(paths.htmlPath)) missing.push("html");
+  }
   const capturedLocalizationStatus = String(
     meta?.localization?.status || baseline.localization?.status || "",
   ).trim();
@@ -14637,6 +14829,7 @@ function captureFromBaseline(baseline) {
     thumb_path: evidence.thumbPath,
     pdf_path: evidence.pdfPath,
     text_path: evidence.textPath,
+    html_path: evidence.htmlPath,
     expansion_text_path: evidence.expansionTextPath,
     sections_text_path: evidence.sectionsTextPath,
     sections_json_path: evidence.sectionsJsonPath,
@@ -15939,6 +16132,7 @@ function visualWorkerMetadata(report) {
         backfilled: report.baseline_facts_backfilled,
       },
       comparison: {
+        html_diagnostics: report.html_comparison,
         candidates: report.candidate_changes,
         text_only_candidates: report.text_only_candidates,
         deterministic_source_rejected: report.deterministic_source_rejected,

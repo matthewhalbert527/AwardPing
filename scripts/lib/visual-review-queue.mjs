@@ -14,6 +14,8 @@ import {
   initialOfficialDocumentApplicantEvidenceDecision,
 } from "./initial-official-document.mjs";
 import { sourceBaselineFacts, sourceQualityDecision } from "./source-quality.mjs";
+import { assertRenderedHtmlArtifactIdentity } from "./r2-capture-artifact-bindings.mjs";
+import { temporalContextAmbiguityDecision } from "./visual-review-temporal-context.mjs";
 
 export const visualReviewResponseSchema = {
   type: "object",
@@ -34,20 +36,7 @@ export const visualReviewResponseSchema = {
           removed_text: { type: "string", nullable: true },
           visual_evidence: { type: "string", nullable: true },
         },
-      },
-    },
-    changed_award_facts: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          fact: { type: "string" },
-          before: { type: "string", nullable: true },
-          after: { type: "string", nullable: true },
-          added_text: { type: "string", nullable: true },
-          removed_text: { type: "string", nullable: true },
-          visual_evidence: { type: "string", nullable: true },
-        },
+        required: ["fact", "before", "after", "added_text", "removed_text", "visual_evidence"],
       },
     },
     exact_before: { type: "string", nullable: true },
@@ -775,6 +764,14 @@ export function buildVisualReviewPromptPayload({
     diff,
     deterministic,
   });
+  const sharedScraplingContext = diff?.candidate_scope === "scrapling_html_source" &&
+    diff?.scrapling_semantics?.version === 3 && diff?.scrapling_semantics?.representation === "lossless_shared_context" &&
+    diff?.scrapling_semantics?.complete === true;
+  const tableScraplingContext = diff?.candidate_scope === "scrapling_html_source" &&
+    diff?.scrapling_semantics?.version === 4 && diff?.scrapling_semantics?.representation === "lossless_context_tables" &&
+    diff?.scrapling_semantics?.complete === true && diff?.scrapling_semantics?.context_table_reconstruction_verified === true &&
+    diff?.scrapling_semantics?.current_context_tables?.schema === "awardping.scrapling-context-tables.v1";
+  const contextRepresentation = tableScraplingContext ? "lossless_context_tables" : sharedScraplingContext ? "lossless_shared_context" : null;
 
   return {
     version: 1,
@@ -816,8 +813,11 @@ export function buildVisualReviewPromptPayload({
     deterministic_classification: deterministic || {},
     deterministic_diff: diff || {},
     include_images: includeImages,
-    previous_text_excerpt: String(previous?.text || "").slice(0, promptChars),
-    new_text_excerpt: String(capture?.text || "").slice(0, promptChars),
+    // Lossless diffs already carry complete context. Prefix excerpts would duplicate it,
+    // potentially clip JSON context, and misleadingly resemble the whole old page.
+    ...(contextRepresentation ? { text_context_representation: contextRepresentation } : {}),
+    previous_text_excerpt: contextRepresentation ? "" : String(previous?.text || "").slice(0, promptChars),
+    new_text_excerpt: contextRepresentation ? "" : String(capture?.text || "").slice(0, promptChars),
     text_evidence: {
       added_text: stringArray(diff?.added_text).slice(0, 16),
       removed_text: stringArray(diff?.removed_text).slice(0, 16),
@@ -845,6 +845,7 @@ export function buildVisualReviewPromptText(payload) {
     "Do not infer a change from a page title, layout movement, menu expansion/collapse, or generic page refresh.",
     "For an expandable-section addition or removal, reject unless deterministic evidence explicitly marks section_addition_confirmed or section_removal_confirmed true. A missing extraction is not proof that a section was removed.",
     "Every approved changed_facts item must include exact added_text or removed_text from the deterministic diff, or a specific visual_evidence phrase when the screenshot changed but text extraction did not capture the changed section.",
+    "Use only the canonical changed_facts array, never a second changed_award_facts array. Keep evidence short: copy exact directional snippets contained in the deterministic removed_text/added_text, without ellipses or surrounding invented text. For a replacement, include both sides from the SAME changed block; do not combine unrelated additions and removals. Use null only for a genuinely one-sided change. Never put current text into visual_evidence; use visual_evidence only for a supplied screenshot-only change, with text evidence fields null.",
     "exact_before and exact_after must be exact strings from deterministic diff evidence, or null only when the change is one-sided and the other side is genuinely absent.",
     "source_relevance must be primary or supporting only when this exact page is about the named award or a directly supporting official source for it.",
     "",
@@ -873,6 +874,17 @@ export function buildVisualReviewPromptText(payload) {
     stableJsonStringify(payload.deterministic_classification || {}),
     "",
     "Deterministic diff summary:",
+    ...(payload.text_context_representation === "lossless_shared_context" ? [
+      "Lossless shared context: current_source_prose and current_context contain the COMPLETE current source text and structured context, not selected excerpts.",
+      "Unchanged context is shared by both snapshots. All previous values are retained in removed_text, aligned with added_text and changed_block_indices; previous_prose_replacements also reconstruct the previous prose exactly. The complete previous page is not quoted separately.",
+      "Read all audience, award-cycle, exception and date-conflict context before describing a change. Source context may include hidden/stale text; only the separately corroborated changed blocks are eligible evidence. This representation does not establish screenshot coordinates or authorize publication.",
+    ] : []),
+    ...(payload.text_context_representation === "lossless_context_tables" ? [
+      "Lossless context tables: current_source_prose is the COMPLETE readable current source text. current_context_tables preserves ALL ordered source blocks, links, duplicate occurrences and exact relationships; it is not a selection or summary.",
+      "Follow context_table_decoding: rows begin with a field_orders index. Resolve text/raw_href/source_url through strings; heading_path through heading_paths (whose text values reference strings); list_path/table_row/details_path/base_hrefs through string_lists (whose entries reference strings). kind and table_cell remain literal. Preserve field order, optional-field presence and every duplicate row. Do not mistake numeric references for award facts.",
+      "All previous values remain in removed_text, aligned with added_text and changed_block_indices. Decode the complete current context before applying those block replacements; previous_prose_replacements reconstruct the complete previous prose. The previous page is not quoted separately. If you cannot interpret the complete context, reject rather than guess.",
+      "Read all audience, award-cycle, exception and date-conflict context before describing a change. HTML context may include hidden/stale text; only separately corroborated changed blocks are eligible evidence. This does not establish diagram relationships, screenshot coordinates, AI accuracy or publication authority.",
+    ] : []),
     stableJsonStringify(payload.deterministic_diff || {}),
     ...(payload.section_context
       ? [
@@ -898,6 +910,11 @@ export function normalizeVisualBatchResult(value, { candidate = null, source = n
   const isTrueChange = booleanValue(parsed.is_true_change);
   const isAlertWorthy = booleanValue(parsed.is_alert_worthy);
   const confidence = normalizeConfidence(parsed.confidence);
+  // A present canonical array is authoritative, even when empty or incomplete.
+  // Do not silently merge/repair it from a contradictory legacy alias.
+  const facts = normalizeChangedFacts(
+    Object.hasOwn(parsed, "changed_facts") ? parsed.changed_facts : parsed.changed_award_facts,
+  );
   const structuredDiff = normalizeStructuredDiff(
     parsed.structured_diff,
     candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {},
@@ -914,8 +931,8 @@ export function normalizeVisualBatchResult(value, { candidate = null, source = n
     is_alert_worthy: Boolean(isAlertWorthy),
     source_relevance: normalizeSourceRelevance(parsed.source_relevance),
     source_relevance_reason: cleanNullable(parsed.source_relevance_reason),
-    changed_facts: normalizeChangedFacts(parsed.changed_facts || parsed.changed_award_facts),
-    changed_award_facts: normalizeChangedFacts(parsed.changed_award_facts || parsed.changed_facts),
+    changed_facts: facts,
+    changed_award_facts: facts,
     exact_before: cleanNullable(parsed.exact_before ?? parsed.before),
     exact_after: cleanNullable(parsed.exact_after ?? parsed.after),
     evidence_location: cleanNullable(parsed.evidence_location),
@@ -1019,10 +1036,11 @@ export function validateVisualBatchReview({ candidate, source, result }) {
   const facts = normalizeChangedFacts(result.changed_facts || result.changed_award_facts);
   if (!facts.length) return reject("missing_changed_award_facts");
   if (!exactBeforeAfterSupportedByEvidence({ result, candidate })) return reject("exact_before_after_not_supported_by_evidence");
-  const unsupportedFact = facts.find((fact) => !changedFactHasEvidence({ fact, result, candidate }));
-  if (unsupportedFact) {
-    return reject("changed_facts_not_supported_by_evidence");
-  }
+  const evidenceFailure = facts.map((fact) => changedFactEvidenceDecision({ fact, candidate }))
+    .find((decision) => !decision.allowed);
+  if (evidenceFailure) return reject(evidenceFailure.reason);
+  const temporalContext = temporalContextAmbiguityDecision({ candidate, facts });
+  if (!temporalContext.allowed) return reject(temporalContext.reason);
 
   const combined = normalizeText([
     result.reader_summary,
@@ -1281,6 +1299,9 @@ function snapshotRef(captureLike, hashLike, archiveRelative) {
       page_count: captureLike?.page_count || null,
       dimensions: captureLike?.dimensions || null,
       hidden_noise_counts: captureLike?.hidden_noise_counts || null,
+      ...((captureLike?.html_capture || captureLike?.meta?.html_capture) ? {
+        html_capture: captureLike.html_capture || captureLike.meta.html_capture,
+      } : {}),
       text_geometry: visualSnapshotGeometryReference(
         captureLike?.text_geometry || captureLike?.meta?.text_geometry,
         captureLike?.layout_hash || hashLike?.layout_hash || mainState?.geometry_hash,
@@ -1289,6 +1310,7 @@ function snapshotRef(captureLike, hashLike, archiveRelative) {
     },
   };
   validateSnapshotArtifactSemantics(ref);
+  validateCapturedHtmlForReview(captureLike, ref, archiveRelative);
   const artifactManifest = visualSnapshotArtifactManifest(ref);
   ref.artifact_manifest = artifactManifest;
   ref.artifact_manifest_digest = artifactManifest.digest;
@@ -1447,6 +1469,46 @@ function validateSnapshotArtifactSemantics(snapshotRef) {
       imageHash: value.image_hash,
     });
   }
+}
+
+function validateCapturedHtmlForReview(captureLike, ref, archiveRelative) {
+  const paths = objectValue(ref.local_paths);
+  const declaration = ref.metadata?.html_capture;
+  const htmlPath = captureLike?.htmlPath || captureLike?.html_path;
+  if (!declaration && !htmlPath) return;
+  const metadata = JSON.parse(readFileSync(paths.meta?.path, "utf8"));
+  // The database-enforced v1 review manifest has a fixed role set. Bind this
+  // supplemental baseline artifact through the already sealed meta.json bytes
+  // (which contain its hash and length), not a new, incompatible manifest role.
+  // HTML is retained in the source-baseline plane, not permanent event assets.
+  const html = htmlPath ? pathRef(htmlPath, archiveRelative) : null;
+  const artifacts = new Map();
+  if (html) {
+    artifacts.set("html", {
+      path: html.path,
+      fileName: "page.html.txt",
+      contentType: "text/plain; charset=utf-8",
+      body: readFileSync(html.path),
+      binding: {
+        sha256: html.sha256,
+        byte_length: html.byte_length,
+        content_type: "text/plain; charset=utf-8",
+        hash_mode: "raw_sha256",
+      },
+    });
+  }
+  assertRenderedHtmlArtifactIdentity({
+    kind: ref.kind,
+    metadata,
+    artifacts,
+    capture: {
+      captured_at: ref.captured_at,
+      final_url: ref.final_url,
+      html_capture: declaration,
+      html_path: html?.path || null,
+      files: metadata.files,
+    },
+  });
 }
 
 function assertSemanticFileHash(role, semanticHash, artifactRef) {
@@ -1757,7 +1819,12 @@ function evidenceDerivedPublicClaims({ candidate, result, structuredDiff }) {
   const addedEvidence = directionalEvidenceValues(structuredDiff, "added");
   const removedEvidence = directionalEvidenceValues(structuredDiff, "removed");
   const rawFacts = normalizeChangedFacts(result?.changed_facts || result?.changed_award_facts);
-  const changedFacts = rawFacts
+  // Never manufacture a public replacement/removal from partially supported
+  // model fields, even if a caller has not yet run the publication validator.
+  const eligibleFacts = rawFacts.every((fact) => changedFactEvidenceDecision({ fact, candidate }).allowed) &&
+    temporalContextAmbiguityDecision({ candidate, facts: rawFacts }).allowed
+    ? rawFacts : [];
+  const changedFacts = eligibleFacts
     .map((fact) => {
       const addedText = supportedEvidenceValue(fact.added_text, addedEvidence);
       const removedText = supportedEvidenceValue(fact.removed_text, removedEvidence);
@@ -1786,24 +1853,6 @@ function evidenceDerivedPublicClaims({ candidate, result, structuredDiff }) {
     })
     .filter(Boolean);
 
-  if (!changedFacts.length && (addedEvidence.length || removedEvidence.length)) {
-    const before = supportedEvidenceValue(result?.exact_before || result?.before, removedEvidence) || removedEvidence[0] || null;
-    const after = supportedEvidenceValue(result?.exact_after || result?.after, addedEvidence) || addedEvidence[0] || null;
-    const changeType = evidenceChangeType({
-      addedText: [after],
-      removedText: [before],
-      structuredDiff,
-    });
-    changedFacts.push({
-      fact: evidenceFactLabel(changeType),
-      before,
-      after,
-      added_text: after,
-      removed_text: before,
-      visual_evidence: null,
-    });
-  }
-
   const primary = changedFacts[0] || null;
   const before =
     supportedEvidenceValue(result?.exact_before || result?.before, removedEvidence) ||
@@ -1823,7 +1872,7 @@ function evidenceDerivedPublicClaims({ candidate, result, structuredDiff }) {
   });
   const readerSummary = changedFacts.length
     ? changedFacts.slice(0, 3).map(evidenceFactSummary).join(" ")
-    : "An applicant-facing visual change was confirmed in the queued before-and-after screenshots.";
+    : "Change details require review.";
 
   return {
     reader_summary: readerSummary,
@@ -1933,25 +1982,56 @@ function exactBeforeAfterSupportedByEvidence({ result, candidate }) {
   return true;
 }
 
-function changedFactHasEvidence({ fact, result, candidate }) {
+function changedFactEvidenceDecision({ fact, candidate }) {
   const diff = candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {};
-  const addedText = [
-    ...stringArray(diff.added_text),
-    ...stringArray(diff.date_changes).filter((value) => cleanKey(value).startsWith("added")),
-    ...stringArray(diff.amount_changes).filter((value) => cleanKey(value).startsWith("added")),
-  ];
-  const removedText = [
-    ...stringArray(diff.removed_text),
-    ...stringArray(diff.date_changes).filter((value) => cleanKey(value).startsWith("removed")),
-    ...stringArray(diff.amount_changes).filter((value) => cleanKey(value).startsWith("removed")),
-  ];
-  if (fact.added_text && textContainsEvidence(addedText, fact.added_text)) return true;
-  if (fact.removed_text && textContainsEvidence(removedText, fact.removed_text)) return true;
-  if (fact.after && textContainsEvidence(addedText, fact.after)) return true;
-  if (fact.before && textContainsEvidence(removedText, fact.before)) return true;
+  const addedText = directionalEvidenceValues(diff, "added");
+  const removedText = directionalEvidenceValues(diff, "removed");
+  const before = [fact.before, fact.removed_text].map(cleanNullable).filter(Boolean);
+  const after = [fact.after, fact.added_text].map(cleanNullable).filter(Boolean);
+  const visual = cleanNullable(fact.visual_evidence);
+  const unsupported = { allowed: false, reason: "changed_facts_not_supported_by_evidence" };
+  // The sealed first-document builder historically repeats its exact text quote
+  // in this field. It may be redundant text, but never independent visual proof.
+  const redundantVisualQuote = visual && [...before, ...after].some((value) => normalizeText(value) === normalizeText(visual));
+  if (visual && !candidate?.prompt_payload?.include_images && !redundantVisualQuote) return unsupported;
+  if (!before.length && !after.length) {
+    return visual && candidate?.prompt_payload?.include_images && !addedText.length && !removedText.length
+      ? { allowed: true, reason: "reviewed_visual_only" } : unsupported;
+  }
+  if (before.some((value) => !textContainsEvidence(removedText, value)) ||
+      after.some((value) => !textContainsEvidence(addedText, value))) return unsupported;
+  if (!addedText.length || !removedText.length) return { allowed: true, reason: "one_sided_deterministic_change" };
+  if (!before.length || !after.length) {
+    return { allowed: false, reason: "changed_facts_incomplete_directional_evidence" };
+  }
+  if (before.some((value) => after.some((next) => normalizeText(value).toLowerCase() === normalizeText(next).toLowerCase()))) return unsupported;
 
-  const hasVisualEvidence = cleanNullable(fact.visual_evidence) || cleanNullable(result?.visual_evidence);
-  return Boolean(hasVisualEvidence && candidate?.prompt_payload?.include_images);
+  const rawAdded = stringArray(diff.added_text), rawRemoved = stringArray(diff.removed_text);
+  const semantics = diff.scrapling_semantics;
+  const indices = semantics?.changed_block_indices;
+  const alignedScrapling = diff.candidate_scope === "scrapling_html_source" &&
+    [2, 3, 4].includes(semantics?.version) && semantics?.complete === true &&
+    (semantics.version !== 4 || semantics.context_table_reconstruction_verified === true) &&
+    semantics?.visible_prose_corroborated === true && Array.isArray(indices) &&
+    indices.length === rawAdded.length && rawAdded.length === rawRemoved.length &&
+    indices.length > 0 && new Set(indices).size === indices.length &&
+    indices.every((index) => Number.isSafeInteger(index) && index >= 0);
+  // Legacy diffs retain their existing AI-pairing contract after strict checks
+  // of BOTH directions. They do not establish deterministic pair identity.
+  // Scrapling does promise aligned blocks; never fall back if that proof is bad.
+  if (diff.candidate_scope !== "scrapling_html_source") {
+    if (before.some((value) => textContainsEvidence(addedText, value)) ||
+        after.some((value) => textContainsEvidence(removedText, value))) return unsupported;
+    return { allowed: true, reason: "legacy_directional_evidence_ai_pairing" };
+  }
+  if (!alignedScrapling) return { allowed: false, reason: "changed_facts_directional_pairing_unverified" };
+  const pairs = rawAdded.map((value, index) => [rawRemoved[index], value]);
+  return pairs.some(([previous, current]) => before.every((value) => textContainsEvidence([previous], value)) &&
+    after.every((value) => textContainsEvidence([current], value)) &&
+    before.every((value) => !textContainsEvidence([current], value)) &&
+    after.every((value) => !textContainsEvidence([previous], value)))
+    ? { allowed: true, reason: "paired_deterministic_change" }
+    : { allowed: false, reason: "changed_facts_directional_pair_mismatch" };
 }
 
 function textContainsEvidence(haystackValues, needle) {
@@ -1960,7 +2040,7 @@ function textContainsEvidence(haystackValues, needle) {
   return haystackValues
     .map((value) => normalizeText(value).toLowerCase())
     .filter(Boolean)
-    .some((value) => value.includes(cleanNeedle) || cleanNeedle.includes(value));
+    .some((value) => value.includes(cleanNeedle));
 }
 
 function normalizeStructuredDiff(value, fallbackDiff = {}, source = null) {
@@ -2004,7 +2084,7 @@ function inferChangeType(parsed, structuredDiff = {}) {
 }
 
 function looksLikeRejectedNoise(value) {
-  return /\b(profile rotation|recipient profile|past recipient|featured fellow|news listing|search results?|job posting|career page|nav(?:igation)?|footer|sidebar|cookie|popup|captcha|security question|collapsed?|expanded?|layout|font|reflow|file size only|hash only)\b/i.test(
+  return /\b(profile rotation|recipient profile|past recipient|featured fellow|news listing|search results?|job posting|career page|nav(?:igation)?|footer|sidebar|cookie|popup|captcha|security question|(?:collapsed?|expanded?) (?:menu|panel|accordion|section|navigation)|(?:menu|panel|accordion|section|navigation) (?:was |is |has been )?(?:collapsed?|expanded?)|layout|font|reflow|file size only|hash only)\b/i.test(
     value,
   );
 }

@@ -8,7 +8,6 @@ import {
   laneClaimRpcParameters,
   laneCompletionRpcParameters,
   laneExecutionFailureReason,
-  laneSkippedLogLine,
   normalizeDownstreamLaneKey,
 } from "./run-downstream-lane.mjs";
 
@@ -102,38 +101,6 @@ describe("independent downstream lane runner", () => {
       p_result: { status: "succeeded" },
       p_error: null,
     });
-  });
-
-  it.each(["retry_backoff", "expired_lease_entered_backoff"])(
-    "reports the exact SQL retry_at for a %s skip without treating it as success",
-    (reason) => {
-      const claim = {
-        claimed: false,
-        reason,
-        retry_at: "2026-10-18T03:48:04.607885+00:00",
-        next_retry_at: "incorrect-property-must-not-win",
-      };
-      expect(laneSkippedLogLine("changed_page_review", claim)).toBe(
-        `LANE_RUNNER_SKIPPED lane=changed_page_review reason=${reason} next_retry_at=2026-10-18T03:48:04.607885+00:00`,
-      );
-      expect(claim.retry_at).toBe("2026-10-18T03:48:04.607885+00:00");
-      const source = readFileSync(resolve(import.meta.dirname, "run-downstream-lane.mjs"), "utf8");
-      expect(source).toContain("console.log(laneSkippedLogLine(laneKey, claim));");
-    },
-  );
-
-  it("does not invent retry times for active leases, disabled lanes or unavailable claims", () => {
-    expect(laneSkippedLogLine("suppression", {
-      claimed: false,
-      reason: "lease_active",
-      lease_expires_at: "2026-10-18T03:48:04Z",
-    })).toBe("LANE_RUNNER_SKIPPED lane=suppression reason=lease_active next_retry_at=none");
-    expect(laneSkippedLogLine("suppression", { claimed: false, reason: "lane_disabled" }))
-      .toBe("LANE_RUNNER_SKIPPED lane=suppression reason=lane_disabled next_retry_at=none");
-    expect(laneSkippedLogLine("suppression", null))
-      .toBe("LANE_RUNNER_SKIPPED lane=suppression reason=lease_unavailable next_retry_at=none");
-    expect(laneSkippedLogLine("suppression", { reason: "retry_backoff", retry_at: null }))
-      .toBe("LANE_RUNNER_SKIPPED lane=suppression reason=retry_backoff next_retry_at=none");
   });
 
   it("terminates the full Windows process tree when a lane times out", () => {

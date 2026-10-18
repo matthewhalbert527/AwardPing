@@ -11,7 +11,7 @@ import { isStage1ManifestSource } from "./stage1-manifest-sources.mjs";
 //
 // The worker imports GEMINI_STRONG_WORKER_MODEL from ./gemini-worker-policy.mjs
 // as the source of truth; this default only backs an emptied policy value.
-export const BASELINE_FACTS_STRONG_MODEL_FALLBACK = "gemini-3.7-flash";
+export const BASELINE_FACTS_STRONG_MODEL_FALLBACK = "gemini-3.8-flash";
 export const BASELINE_FACTS_STRONG_MODEL_MAX_OUTPUT_TOKENS = 4096;
 export const BASELINE_FACTS_STRONG_MODEL_MAX_BATCH_REQUESTS = 25;
 export const BASELINE_FACTS_STRONG_MODEL_THINKING_LEVEL = "low";

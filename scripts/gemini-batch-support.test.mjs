@@ -32,11 +32,12 @@ describe("Gemini batch support helpers", () => {
     expect(estimateGeminiCostUsd("gemini-2.5-flash", usage, "batch")).toBe(1.4);
   });
 
-  it("prices gemini-3.7-flash at the published strong-tier rates with thinking billed as output", () => {
+  it("prices explicit 3.8 and legacy in-flight 3.7 at unchanged strong-tier rates", () => {
     expect(geminiPricePerMillion("gemini-3.7-flash", "batch")).toEqual({ input: 0.375, output: 1.875 });
     expect(geminiPricePerMillion("gemini-3.7-flash", "standard")).toEqual({ input: 0.75, output: 3.75 });
     expect(geminiPricePerMillion("models/gemini-3.6-flash", "batch")).toEqual({ input: 0.375, output: 1.875 });
     expect(geminiPricePerMillion("gemini-3.8-flash", "standard")).toEqual({ input: 0.75, output: 3.75 });
+    expect(geminiPricePerMillion("gemini-3.8-flash", "batch")).toEqual({ input: 0.375, output: 1.875 });
     // Existing branches stay intact.
     expect(geminiPricePerMillion("gemini-3.1-flash-lite", "batch")).toEqual({ input: 0.125, output: 0.75 });
     expect(geminiPricePerMillion("gemini-3.1-flash", "standard")).toEqual({ input: 0.5, output: 3 });
@@ -45,6 +46,8 @@ describe("Gemini batch support helpers", () => {
     const usage = { prompt_tokens: 1_000_000, candidates_tokens: 500_000, thoughts_tokens: 500_000 };
     expect(estimateGeminiCostUsd("gemini-3.7-flash", usage, "batch")).toBe(2.25);
     expect(estimateGeminiCostUsd("gemini-3.7-flash", usage, "standard")).toBe(4.5);
+    expect(estimateGeminiCostUsd("gemini-3.8-flash", usage, "batch")).toBe(2.25);
+    expect(estimateGeminiCostUsd("gemini-3.8-flash", usage, "standard")).toBe(4.5);
   });
 
   it("reads the provider finish reason without changing the text extractor contract", () => {

@@ -91,11 +91,14 @@ describe("visual baseline evidence retention", () => {
     expect(sectionChange).toContain('reason: "unconfirmed_section_presence"');
   });
 
-  it("never deletes a PDF capture after promoting a text-equivalent file", () => {
+  it("holds text-equivalent changed PDF files without promoting or deleting evidence", () => {
     const body = functionBody("processPdfComparison", "capturePdfSource");
-
-    expect(body).toContain("baselinePromoted = writeBaseline");
-    expect(body).toContain("if (!keepUnchanged && !baselinePromoted)");
+    const hold = body.slice(body.indexOf("if (pdfHold)"), body.indexOf("if (!interpretVisualChanges)"));
+    expect(hold).toContain("saveReviewRecord");
+    expect(hold).toContain("baseline_advance_allowed: false");
+    expect(hold).not.toContain("writeBaseline");
+    expect(hold).not.toContain("removeGeneratedCaptureDir");
+    expect(body).not.toContain("pdf_file_hash_changed_text_match_ignored");
   });
 
   it("copies expandable-section evidence before an overflow capture can be cleaned up", () => {

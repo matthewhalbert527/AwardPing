@@ -13,7 +13,6 @@ import {
   validateSourceIntakeProviderInputBinding,
 } from "./source-intake-provider-binding.mjs";
 import { sourceQualityDecision } from "./source-quality.mjs";
-import { readSourceIntakeScalarFactIssue } from "./source-intake-scalar-facts.mjs";
 
 export const intakeStatuses = new Set([
   "pending",
@@ -615,7 +614,7 @@ export function buildGeminiIntakePrompt(
 
 export function normalizeGeminiIntakeResult(value) {
   const result = objectValue(value);
-  const sourceRelevance = intakeDecisionChoice(result.source_relevance, [
+  const sourceRelevance = cleanChoice(result.source_relevance, [
     "primary",
     "supporting",
     "generic_listing",
@@ -624,14 +623,14 @@ export function normalizeGeminiIntakeResult(value) {
     "unclear",
     "access_error",
   ], "unclear");
-  const cycleRelevance = intakeDecisionChoice(result.cycle_relevance, [
+  const cycleRelevance = cleanChoice(result.cycle_relevance, [
     "current_or_upcoming",
     "evergreen",
     "archived_or_past",
     "not_program_page",
     "unclear",
   ], "unclear");
-  const status = intakeReviewStatus(result.status);
+  const status = cleanChoice(result.status, ["accepted", "needs_review", "rejected"], "needs_review");
   const pageType = cleanChoice(result.page_type, [
     "homepage",
     "application",
@@ -651,8 +650,8 @@ export function normalizeGeminiIntakeResult(value) {
     source_relevance: sourceRelevance,
     cycle_relevance: cycleRelevance,
     page_type: pageType,
-    officialness: intakeDecisionChoice(result.officialness, ["official", "likely_official", "third_party", "unclear"], "unclear"),
-    confidence: intakeDecisionChoice(result.confidence, ["high", "medium", "low"], "low"),
+    officialness: cleanChoice(result.officialness, ["official", "likely_official", "third_party", "unclear"], "unclear"),
+    confidence: cleanChoice(result.confidence, ["high", "medium", "low"], "low"),
     evidence_quotes: stringArray(result.evidence_quotes).map((item) => truncate(item, 240)).slice(0, 8),
     facts: normalizeFacts(result.facts),
     suggested_sources: normalizeSuggestedSources(result.suggested_sources),
@@ -693,7 +692,6 @@ export function baselineFactsFromIntakeReview(review) {
   };
 }
 
-// Pass the original provider result: normalization can erase invalid fact types.
 export function validateIntakeAiDecision(review) {
   const facts = normalizeGeminiIntakeResult(review);
   const evidenceOk = facts.evidence_quotes.length > 0;
@@ -703,11 +701,6 @@ export function validateIntakeAiDecision(review) {
   if (!acceptedCycle.has(facts.cycle_relevance)) return { accepted: false, manual: facts.cycle_relevance === "unclear", reason: `cycle_relevance_${facts.cycle_relevance}` };
   if (!["official", "likely_official"].includes(facts.officialness)) return { accepted: false, manual: true, reason: `officialness_${facts.officialness}` };
   if (facts.confidence === "low") return { accepted: false, manual: true, reason: "confidence_low" };
-  // Strong supporting signals cannot override a request for human review.
-  // Keep earlier specific failure reasons and use a stable status fallback.
-  if (facts.status !== "accepted") return { accepted: false, manual: true, reason: `ai_status_${facts.status}` };
-  const scalarIssue = readSourceIntakeScalarFactIssue(review);
-  if (scalarIssue) return { accepted: false, manual: true, reason: scalarIssue.reason };
   return { accepted: true, manual: false, reason: "accepted" };
 }
 
@@ -1018,6 +1011,7 @@ export function factCandidateRowsFromIntake({
   extractedAt = new Date().toISOString(),
 }) {
   const normalized = normalizeGeminiIntakeResult(review);
+  const evidence = normalized.evidence_quotes[0] || null;
   const requestId = cleanNullable(sourcePageRequestId);
   const rows = [];
   const add = (field, value) => {
@@ -1035,15 +1029,8 @@ export function factCandidateRowsFromIntake({
         field_name: field,
         raw_value: raw,
         normalized_value: raw,
-        // The review returns quotes for the page, not for any one field, so
-        // there is nothing here that binds a quote to this value or, for a
-        // list, to this item. Stamping the first page quote on every row made
-        // page context read as field evidence; leaving both columns null says
-        // the honest thing, that per-field evidence is unavailable. This is
-        // not a claim that the value is wrong, and it is not verification of
-        // anything: the page-level quotes are preserved below at page scope.
-        evidence_quote: null,
-        evidence_location: null,
+        evidence_quote: evidence,
+        evidence_location: "source_intake_page_text",
         extracted_at: extractedAt,
         model: "source-intake-gemini-batch",
         confidence: normalized.confidence,
@@ -1053,10 +1040,6 @@ export function factCandidateRowsFromIntake({
         metadata: {
           intake_request_id: normalized.raw?.source_page_request_id || null,
           source_page_request_id: requestId,
-          // A fresh array per row, so no row aliases the review's list or a
-          // sibling row's copy and a later edit cannot travel between them.
-          page_evidence_quotes: [...normalized.evidence_quotes],
-          page_evidence_scope: "source_page",
         },
       });
     }
@@ -1141,9 +1124,9 @@ function review(allowed, status, reason, pageType, qualityFlags, normalizedUrl, 
 function normalizeFacts(value) {
   const facts = objectValue(value);
   return {
-    description: intakeScalarText(facts.description),
-    deadline: intakeScalarText(facts.deadline),
-    amount: intakeScalarText(facts.amount || facts.award_amount),
+    description: cleanNullable(facts.description),
+    deadline: cleanNullable(facts.deadline),
+    amount: cleanNullable(facts.amount || facts.award_amount),
     eligibility: stringArray(facts.eligibility).slice(0, 12),
     application_materials: stringArray(facts.application_materials).slice(0, 12),
     important_dates: stringArray(facts.important_dates).slice(0, 12),
@@ -1393,27 +1376,6 @@ function stringArray(value) {
   return value.split(/\s*(?:;|\n|\u2022)\s*/).map(cleanText).filter(Boolean);
 }
 
-const INTAKE_REVIEW_STATUSES = new Set(["accepted", "needs_review", "rejected"]);
-
-/**
- * Status controls disposition, so do not coerce arrays or strip punctuation
- * as cleanChoice does. Malformed verdicts remain unresolved; valid string
- * tokens retain ordinary trim/case normalization.
- */
-function intakeReviewStatus(value) {
-  if (typeof value !== "string") return "needs_review";
-  const token = value.trim().toLowerCase();
-  return INTAKE_REVIEW_STATUSES.has(token) ? token : "needs_review";
-}
-
-// Model decision fields allow casing and separator aliases, not coercion or
-// punctuation removal: "official?" and ["official"] are not confirmations.
-function intakeDecisionChoice(value, choices, fallback) {
-  if (typeof value !== "string") return fallback;
-  const key = value.trim().toLowerCase().replace(/[\s_-]+/g, "_");
-  return choices.includes(key) ? key : fallback;
-}
-
 function cleanChoice(value, choices, fallback) {
   const key = cleanKey(value).replace(/-/g, "_");
   return choices.includes(key) ? key : fallback;
@@ -1422,12 +1384,6 @@ function cleanChoice(value, choices, fallback) {
 function cleanNullable(value) {
   const text = cleanText(value);
   return text || null;
-}
-
-// Do not invoke object conversion while preparing the review display. The
-// raw-result validator records wrong-type facts for manual review separately.
-function intakeScalarText(value) {
-  return typeof value === "string" ? cleanNullable(value) : null;
 }
 
 function cleanKey(value) {

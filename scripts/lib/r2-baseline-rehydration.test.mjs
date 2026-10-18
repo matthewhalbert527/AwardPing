@@ -1683,6 +1683,155 @@ describe("exact R2 local-baseline rehydration", () => {
   });
 });
 
+describe("optional retained HTML rehydration", () => {
+  for (const missingBaseline of [false, true]) {
+    it(`restores exact plain-text HTML with ${missingBaseline ? "a cold cache" : "an existing baseline"}`, async () => {
+      const fixture = htmlRecoveryFixture();
+      if (!missingBaseline) writeBaselineFixture(fixture);
+      const result = await rehydrateLocalBaselineFromR2({
+        archiveRoot: fixture.archiveRoot,
+        source: fixture.source,
+        baseline: missingBaseline ? null : fixture.baseline,
+        snapshotRecord: fixture.snapshot,
+        bucket,
+        client: fakeR2Client(fixture.objects),
+      });
+      expect(result, JSON.stringify(result)).toMatchObject({ rehydrated: true });
+      expect(result.baseline.html_capture).toEqual(fixture.htmlCapture);
+      expect(result.baseline.capture.html).toBe(fixture.paths.html);
+      expect(readFileSync(join(fixture.archiveRoot, result.baseline.capture.html)))
+        .toEqual(fixture.htmlBody);
+      const meta = JSON.parse(readFileSync(join(fixture.archiveRoot, result.baseline.capture.meta), "utf8"));
+      expect(meta.files.html).toBe(fixture.paths.html);
+      expect(meta.html_capture).toEqual(fixture.htmlCapture);
+      expect(result.baseline.text_hash).toBe(fixture.baseline.text_hash);
+      expect(result.baseline.image_hash).toBe(fixture.baseline.image_hash);
+    });
+  }
+
+  it("preserves unavailable HTML without fabricating an artifact", async () => {
+    const fixture = htmlRecoveryFixture();
+    delete fixture.snapshot.latest_object_keys.html;
+    delete fixture.snapshot.latest_metadata.artifact_bindings.html;
+    const unavailable = {
+      ...fixture.htmlCapture,
+      status: "unavailable",
+      reason: "html_too_large",
+      sha256: null,
+      byte_length: null,
+    };
+    fixture.snapshot.latest_metadata.html_capture = unavailable;
+    rewriteFixtureMeta(fixture, (meta) => {
+      meta.files.html = null;
+      meta.html_capture = unavailable;
+    });
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot, source: fixture.source, baseline: null,
+      snapshotRecord: fixture.snapshot, bucket, client: fakeR2Client(fixture.objects),
+    });
+    expect(result, JSON.stringify(result)).toMatchObject({ rehydrated: true });
+    expect(result.baseline.capture.html).toBeNull();
+    expect(result.baseline.html_capture).toEqual(unavailable);
+    expect(existsSync(join(result.capture_dir, "page.html.txt"))).toBe(false);
+  });
+
+  const mismatchScenarios = [
+    ["pointer declaration", (fixture) => { fixture.snapshot.latest_metadata.html_capture.sha256 = "f".repeat(64); }],
+    ["missing pointer declaration", (fixture) => { delete fixture.snapshot.latest_metadata.html_capture; }],
+    ["missing raw declaration", (fixture) => rewriteFixtureMeta(fixture, (meta) => { delete meta.html_capture; })],
+    ["missing artifact", (fixture) => {
+      delete fixture.snapshot.latest_object_keys.html;
+      delete fixture.snapshot.latest_metadata.artifact_bindings.html;
+    }],
+    ["wrong final URL", (fixture) => { fixture.snapshot.latest_metadata.final_url = "https://example.edu/other"; }],
+    ["wrong capture timestamp", (fixture) => {
+      fixture.snapshot.latest_metadata.html_capture.captured_at = "2026-07-14T23:00:00.000Z";
+      rewriteFixtureMeta(fixture, (meta) => { meta.html_capture.captured_at = "2026-07-14T23:00:00.000Z"; });
+    }],
+    ["unsafe path", (fixture) => rewriteFixtureMeta(fixture, (meta) => { meta.files.html = "../page.html.txt"; })],
+    ["cross-capture path", (fixture) => rewriteFixtureMeta(fixture, (meta) => {
+      meta.files.html = `sources/${sourceId}/captures/other-capture/page.html.txt`;
+    })],
+    ["executable MIME", (fixture) => { fixture.objects[fixture.snapshot.latest_object_keys.html].contentType = "text/html"; }],
+    ["missing MIME", (fixture) => { delete fixture.objects[fixture.snapshot.latest_object_keys.html].contentType; }],
+    ["mutated bytes", (fixture) => {
+      const body = Buffer.from("<html><body>Changed evidence</body></html>");
+      fixture.objects[fixture.snapshot.latest_object_keys.html] = objectFixture(body, "text/plain; charset=utf-8");
+      fixture.snapshot.latest_metadata.artifact_bindings.html = rawArtifactBinding(body, "text/plain; charset=utf-8");
+    }],
+  ];
+  for (const [name, mutate] of mismatchScenarios) {
+    it(`refuses HTML ${name} without publishing local files`, async () => {
+      const fixture = htmlRecoveryFixture();
+      mutate(fixture);
+      const result = await rehydrateLocalBaselineFromR2({
+        archiveRoot: fixture.archiveRoot, source: fixture.source, baseline: null,
+        snapshotRecord: fixture.snapshot, bucket, client: fakeR2Client(fixture.objects),
+      });
+      expect(result, JSON.stringify(result)).toMatchObject({ rehydrated: false });
+      expect(existsSync(fixture.baselinePath)).toBe(false);
+      expect(existsSync(join(fixture.archiveRoot, fixture.paths.html))).toBe(false);
+    });
+  }
+
+  it("refuses HTML on PDF generations", async () => {
+    const fixture = pdfRecoveryFixture();
+    fixture.snapshot.latest_object_keys.html = fixture.snapshot.latest_object_keys.text.replace("text.txt", "page.html.txt");
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot, source: fixture.source, baseline: null,
+      snapshotRecord: fixture.snapshot, bucket, client: fakeR2Client(fixture.objects),
+    });
+    expect(result).toMatchObject({ rehydrated: false, reason: "r2_generation_kind_ambiguous" });
+    expect(existsSync(fixture.baselinePath)).toBe(false);
+  });
+
+  it("refuses a PDF HTML declaration even without an artifact", async () => {
+    const fixture = pdfRecoveryFixture();
+    fixture.snapshot.latest_metadata.html_capture = { status: "unavailable" };
+    rewriteFixtureMeta(fixture, (meta) => { meta.html_capture = { status: "unavailable" }; });
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot, source: fixture.source, baseline: null,
+      snapshotRecord: fixture.snapshot, bucket, client: fakeR2Client(fixture.objects),
+    });
+    expect(result).toMatchObject({ rehydrated: false, reason: "r2_html_identity_mismatch" });
+    expect(existsSync(fixture.baselinePath)).toBe(false);
+  });
+
+  it("does not overwrite a conflicting local HTML identity", async () => {
+    const fixture = htmlRecoveryFixture();
+    fixture.baseline.html_capture.sha256 = "f".repeat(64);
+    writeBaselineFixture(fixture);
+    const original = readFileSync(fixture.baselinePath);
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot, source: fixture.source, baseline: fixture.baseline,
+      snapshotRecord: fixture.snapshot, bucket, client: fakeR2Client(fixture.objects),
+    });
+    expect(result).toMatchObject({ rehydrated: false, reason: "r2_html_identity_mismatch" });
+    expect(readFileSync(fixture.baselinePath)).toEqual(original);
+  });
+
+  it("rejects an oversized HTML object before GET", async () => {
+    const fixture = htmlRecoveryFixture();
+    const base = fakeR2Client(fixture.objects);
+    let htmlGets = 0;
+    const client = { async send(command) {
+      if (command.input.Key === fixture.snapshot.latest_object_keys.html) {
+        if (command.constructor.name === "HeadObjectCommand") {
+          return { ...(await base.send(command)), ContentLength: 5 * 1024 * 1024 + 1 };
+        }
+        htmlGets += 1;
+      }
+      return base.send(command);
+    } };
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot, source: fixture.source, baseline: null,
+      snapshotRecord: fixture.snapshot, bucket, client,
+    });
+    expect(result).toMatchObject({ rehydrated: false, reason: "r2_html_too_large" });
+    expect(htmlGets).toBe(0);
+  });
+});
+
 describe("initial official document candidate artifact restore", () => {
   it("restores the exact immutable candidate paths from a hash-verified R2 generation", async () => {
     const fixture = initialDocumentRestoreFixture();
@@ -1896,6 +2045,38 @@ describe("initial official document candidate artifact restore", () => {
     }
   });
 });
+
+function htmlRecoveryFixture() {
+  const fixture = recoveryFixture();
+  const htmlBody = Buffer.from("<!DOCTYPE html>\n<html><body><h1>Award — 2027</h1><details open><p>March 15</p></details></body></html>", "utf8");
+  const htmlCapture = {
+    schema: "awardping.rendered-html.v1",
+    status: "captured",
+    reason: null,
+    representation: "rendered_dom",
+    captured_at: capturedAt,
+    source_url: fixture.source.url,
+    max_bytes: 5 * 1024 * 1024,
+    sha256: sha256(htmlBody),
+    byte_length: htmlBody.length,
+    screenshot_alignment: "not_verified",
+  };
+  fixture.paths.html = `${fixture.captureRelative}/page.html.txt`;
+  fixture.baseline.html_capture = structuredClone(htmlCapture);
+  fixture.baseline.capture.html = fixture.paths.html;
+  fixture.baseline.final_url = fixture.source.url;
+  fixture.snapshot.latest_object_keys.html = fixture.snapshot.latest_object_keys.text.replace("text.txt", "page.html.txt");
+  fixture.snapshot.latest_metadata.html_capture = structuredClone(htmlCapture);
+  fixture.snapshot.latest_metadata.final_url = fixture.source.url;
+  fixture.snapshot.latest_metadata.artifact_bindings.html = rawArtifactBinding(htmlBody, "text/plain; charset=utf-8");
+  fixture.objects[fixture.snapshot.latest_object_keys.html] = objectFixture(htmlBody, "text/plain; charset=utf-8");
+  rewriteFixtureMeta(fixture, (meta) => {
+    meta.final_url = fixture.source.url;
+    meta.html_capture = structuredClone(htmlCapture);
+    meta.files.html = fixture.paths.html;
+  });
+  return { ...fixture, htmlBody, htmlCapture };
+}
 
 function pdfRecoveryFixture() {
   const archiveRoot = mkdtempSync(join(tmpdir(), "awardping-r2-pdf-rehydration-"));

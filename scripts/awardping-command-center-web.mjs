@@ -152,7 +152,8 @@ function startAtomicTask(taskId) {
     : [
         ...(run.args || []),
         ...(run.applyArg ? ["--apply=true"] : []),
-        `--env=${envPath}`,
+        "--env",
+        envPath,
       ];
 
   if (!commandArgs.length) return { ok: false, error: "Task has no runnable command." };

@@ -12,10 +12,11 @@ const worker = readFileSync(
 // call site here.
 const CALL_SITE_MARKER = "writeBaseline(source, capture, {";
 
-// Structural floors for the current worker. They catch a marker rename or an
-// extraction failure that would otherwise make the pairing checks vacuous.
-const MIN_CALL_SITES = 11;
-const MIN_FACTS_BEARING_CALL_SITES = 8;
+// The reviewed PDF same-text/changed-bytes hold removes one unsafe baseline
+// promotion (which also carried facts). Pin the resulting census so a marker
+// rename, missing extraction or reintroduced write cannot pass vacuously.
+const EXPECTED_CALL_SITES = 10;
+const EXPECTED_FACTS_BEARING_CALL_SITES = 7;
 
 // Previous-baseline fallback reads. The \b after baseline_facts cannot match
 // baseline_facts_metadata because underscore is a word character.
@@ -67,13 +68,27 @@ function describeSite(site) {
 
 describe("writeBaseline baseline-facts fallback wiring", () => {
   it("enumerates the current direct writeBaseline call sites", () => {
-    expect(sites.length).toBeGreaterThanOrEqual(MIN_CALL_SITES);
+    expect(sites.length).toBe(EXPECTED_CALL_SITES);
     const factsBearing = sites.filter((site) => FACTS_KEY.test(site.text));
-    expect(factsBearing.length).toBeGreaterThanOrEqual(MIN_FACTS_BEARING_CALL_SITES);
+    expect(factsBearing.length).toBe(EXPECTED_FACTS_BEARING_CALL_SITES);
     for (const site of sites) {
       expect(site.text.startsWith("{"), describeSite(site)).toBe(true);
       expect(site.text.endsWith("}"), describeSite(site)).toBe(true);
     }
+  });
+
+  it("does not restore the unsafe same-text PDF baseline promotion", () => {
+    expect(worker).not.toContain("pdf_file_hash_changed_text_match_ignored");
+    const start = worker.indexOf("async function processPdfComparison(");
+    const hold = worker.indexOf("if (pdfHold)", start);
+    const end = worker.indexOf("if (!interpretVisualChanges)", hold);
+    expect(start).toBeGreaterThan(0);
+    expect(hold).toBeGreaterThan(start);
+    expect(end).toBeGreaterThan(hold);
+    const heldBranch = worker.slice(hold, end);
+    expect(heldBranch).toContain("saveReviewRecord");
+    expect(heldBranch).toContain("baseline_advance_allowed: false");
+    expect(heldBranch).not.toContain("writeBaseline");
   });
 
   it("never falls back to previous-baseline facts without the matching facts metadata", () => {

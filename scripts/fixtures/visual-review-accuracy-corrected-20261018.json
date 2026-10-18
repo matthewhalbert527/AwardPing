@@ -1,0 +1,1192 @@
+{
+  "schema": "awardping.corrected-accuracy-regression.v1",
+  "plan_sha256": "01dbb5e36e96e45718056295aaecf554d442e96f1a3be2139fb5751a2d1d2fce",
+  "limitations": "Frozen corrected provider outputs, not altered or re-submitted; historical legacy text and fictional v4 evidence; no publication or source approval.",
+  "cases": [
+    {
+      "id": "historical-gates-opening-date-and-cutoff-wording",
+      "source_id": "2c4669ac-4d83-4a35-898d-bc87c8de2509",
+      "award_id": "b6fc3596-4f9a-4cab-ba83-69b3e5387774",
+      "url": "https://www.gatescambridge.org/apply/timeline/",
+      "previous_text": "Skip to main content\nPROGRAMME\nAPPLY\nOUR SCHOLARS\nABOUT\nMEMBERS\nTimeline\n\nHome\nApply\nTimeline\n\nApplications for entry in the academic year 2026/7 are now closed. Applications will open again in September 2026 for entry in the academic year 2027/8. \n\nGates Cambridge manages two selection rounds each year; full details are below.\n\nIf, after reading the details below, you are not sure in which round you should apply please email info@gatescambridge.org with details.\n\nYou may be eligible for other funding offered by the University of Cambridge. See www.student-funding.cam.ac.uk for more details.\n\nUS citizens resident in the USA\nAll other eligible applicants\nUS citizens resident in the USA\n\nThis is the earlier round for applicants who are both US citizens and currently resident in the United States; it is specific to Gates Cambridge.\n\nStudents meeting these criteria must apply in October and submit all their documents by this date (including references). They are not eligible for the later round.\n\nUS citizens who are studying/working overseas at the time of application should apply in the later round (see below).\n\nWhat stage? Date\nApplications open* September 2026 (dates to be confirmed)\nApplication deadline Wednesday 14th October 2026 (Full application must be submitted by 11:59pm UK time on the date given)\nDepartmental ranking late October to November 2026\nAll applicants notified of application outcome by 11:59pm UK time on Monday 14th December 2026\nReview and selection by panels Friday 22nd and Saturday 23rd January 2027\nScholarships offered by early February 2027\nScholarships accepted 72 hours after offer\n Top\nAll other eligible applicants\n\nThe large majority of applicants will apply in this round, which is aligned with the University’s postgraduate funding competition. There are two possible application deadlines and these are based on the course to which you are applying.\n\nPlease apply by the Course Funding Deadline referenced in the University Course Directory (found in the column on the right of the web page). All application documents should be submitted by 12:00am (midnight) UK time on the stated date.\n\nWhat stage? Date\nApplications open* September 2026 (date to be confirmed)\nApplication deadline* Dependent on your course – either Tuesday 8th December 2026 or Wednesday 6th January 2027 (see Course Directory). (Full application must be submitted by 11:59pm UK time)\nDepartmental ranking December – February\nAll applicants notified of application outcome by 11:59pm UK time on Monday 8th March 2027\nReview and selection by panels Monday 22nd March and Tuesday 23rd March 2027\nScholarships offered by early April 2027\nScholarships accepted 72 hours after offer\n\n*These dates are set by the University of Cambridge postgraduate admissions office and may be subject to change. Please refer to the postgraduate admissions web pages for up-to-date details.\n\n Top\n\nProgramme\nThe Scholarship\nThe experience\nThe University\nApply\nEligibility\nCriteria\nTimeline\nHow to apply\nHow we select\nFrequently Asked Questions\nOur Scholars\nDirectory\nNews\nFilms and podcast\nPublications\nAbout\nThe Trust\nPeople\nOur values\nContact\n\n© 2026 Gates Cambridge Trust\n\nAccessibility\nData Protection\nDisclaimer\nModern Slavery\nPrivacy and cookies\nSitemap\nProgramme\nThe scholarship\nThe experience\nThe University\nApply\nEligibility\nCriteria\nTimeline\nHow to apply\nHow we select\nFrequently Asked Questions\nOur Scholars\nDirectory\nNews\nFilms and podcast\nPublications\nPublications\nAbout\nThe Trust\nPeople\nOur values\nContact\nMembers\nCurrent Scholars\nAlumni\n",
+      "current_text": "Skip to main content\nPROGRAMME\nAPPLY\nOUR SCHOLARS\nABOUT\nMEMBERS\nTimeline\n\nHome\nApply\nTimeline\n\nApplications for entry in the academic year 2026/7 are now closed. Applications will open again on 11th September 2026 for entry in the academic year 2027/8. \n\nGates Cambridge manages two selection rounds each year; full details are below.\n\nIf, after reading the details below, you are not sure in which round you should apply please email info@gatescambridge.org with details.\n\nYou may be eligible for other funding offered by the University of Cambridge. See www.student-funding.cam.ac.uk for more details.\n\nUS citizens resident in the USA\nAll other eligible applicants\nUS citizens resident in the USA\n\nThis is the earlier round for applicants who are both US citizens and currently resident in the United States; it is specific to Gates Cambridge.\n\nStudents meeting these criteria must apply in October and submit all their documents by this date (including references). They are not eligible for the later round.\n\nUS citizens who are studying/working overseas at the time of application should apply in the later round (see below).\n\nWhat stage? Date\nApplications open* 11th September 2026\nApplication deadline Wednesday 14th October 2026 (Full application must be submitted by 11:59pm UK time on the date given)\nDepartmental ranking late October to November 2026\nAll applicants notified of application outcome by 11:59pm UK time on Monday 14th December 2026\nReview and selection by panels Friday 22nd and Saturday 23rd January 2027\nScholarships offered by early February 2027\nScholarships accepted 72 hours after offer\n Top\nAll other eligible applicants\n\nThe large majority of applicants will apply in this round, which is aligned with the University’s postgraduate funding competition. There are two possible application deadlines and these are based on the course to which you are applying.\n\nPlease apply by the Course Funding Deadline referenced in the University Course Directory (found in the column on the right of the web page). All application documents should be submitted by 11:59pm UK time on the stated date.\n\nWhat stage? Date\nApplications open* 11th September 2026\nApplication deadline* Dependent on your course – either Tuesday 8th December 2026 or Wednesday 6th January 2027 (see Course Directory). (Full application must be submitted by 11:59pm UK time)\nDepartmental ranking December – February\nAll applicants notified of application outcome by 11:59pm UK time on Monday 8th March 2027\nReview and selection by panels Monday 22nd March and Tuesday 23rd March 2027\nScholarships offered by early April 2027\nScholarships accepted 72 hours after offer\n\n*These dates are set by the University of Cambridge postgraduate admissions office and may be subject to change. Please refer to the postgraduate admissions web pages for up-to-date details.\n\n Top\n\nProgramme\nThe Scholarship\nThe experience\nThe University\nApply\nEligibility\nCriteria\nTimeline\nHow to apply\nHow we select\nFrequently Asked Questions\nOur Scholars\nDirectory\nNews\nFilms and podcast\nPublications\nAbout\nThe Trust\nPeople\nOur values\nContact\n\n© 2026 Gates Cambridge Trust\n\nAccessibility\nData Protection\nDisclaimer\nModern Slavery\nPrivacy and cookies\nSitemap\nProgramme\nThe scholarship\nThe experience\nThe University\nApply\nEligibility\nCriteria\nTimeline\nHow to apply\nHow we select\nFrequently Asked Questions\nOur Scholars\nDirectory\nNews\nFilms and podcast\nPublications\nPublications\nAbout\nThe Trust\nPeople\nOur values\nContact\nMembers\nCurrent Scholars\nAlumni\n",
+      "diff": {
+        "added_text": [
+          "Applications will open again on 11th September 2026",
+          "Applications open* 11th September 2026",
+          "Applications open* 11th September 2026",
+          "11:59pm UK time"
+        ],
+        "removed_text": [
+          "Applications will open again in September 2026",
+          "Applications open* September 2026 (dates to be confirmed)",
+          "Applications open* September 2026 (date to be confirmed)",
+          "12:00am (midnight) UK time"
+        ]
+      },
+      "strong": {
+        "model": "gemini-3.8-flash",
+        "finish": "STOP",
+        "sha256": "dee2e203f3748f98407ffba689051579bbbc76d2e98761cdd0e5b40f5c698499",
+        "output": "{\n  \"is_true_change\": true,\n  \"is_alert_worthy\": true,\n  \"source_relevance\": \"primary\",\n  \"source_relevance_reason\": \"This is the official timeline page for the Gates Cambridge Scholarship.\",\n  \"changed_facts\": [\n    {\n      \"fact\": \"Application opening date for the 2027/8 academic year has been confirmed as September 11, 2026.\",\n      \"before\": \"Applications will open again in September 2026\",\n      \"after\": \"Applications will open again on 11th September 2026\",\n      \"added_text\": \"Applications will open again on 11th September 2026\",\n      \"removed_text\": \"Applications will open again in September 2026\",\n      \"visual_evidence\": null\n    },\n    {\n      \"fact\": \"Document submission deadline time for all other eligible applicants changed from 12:00am (midnight) UK time to 11:59pm UK time.\",\n      \"before\": \"12:00am (midnight) UK time\",\n      \"after\": \"11:59pm UK time\",\n      \"added_text\": \"11:59pm UK time\",\n      \"removed_text\": \"12:00am (midnight) UK time\",\n      \"visual_evidence\": null\n    }\n  ],\n  \"exact_before\": \"Applications will open again in September 2026\",\n  \"exact_after\": \"Applications will open again on 11th September 2026\",\n  \"evidence_location\": \"Timeline\",\n  \"before\": \"Applications will open again in September 2026 for entry in the academic year 2027/8.\",\n  \"after\": \"Applications will open again on 11th September 2026 for entry in the academic year 2027/8.\",\n  \"section\": \"Timeline\",\n  \"change_type\": \"date_change\",\n  \"confidence\": \"high\",\n  \"noise_flags\": [],\n  \"rejection_reason\": null,\n  \"advisor_impact\": \"Advisors should inform applicants for the 2027/8 entry cycle that applications will officially open on September 11, 2026, and that course funding submissions are due by 11:59pm UK time.\",\n  \"reader_summary\": \"Gates Cambridge confirmed that applications for the 2027/8 entry cycle open on September 11, 2026 (previously listed as September 2026 unconfirmed). Additionally, the document submission deadline time for general international applicants was adjusted to 11:59pm UK time.\",\n  \"structured_diff\": {\n    \"added_text\": [\n      \"Applications will open again on 11th September 2026\",\n      \"Applications open* 11th September 2026\",\n      \"11:59pm UK time\"\n    ],\n    \"amount_changes\": [],\n    \"date_changes\": [\n      \"Applications open: September 11, 2026\"\n    ],\n    \"likely_section\": \"Timeline\",\n    \"noise_flags\": [],\n    \"page_type\": \"timeline\",\n    \"removed_text\": [\n      \"Applications will open again in September 2026\",\n      \"Applications open* September 2026 (dates to be confirmed)\",\n      \"Applications open* September 2026 (date to be confirmed)\",\n      \"12:00am (midnight) UK time\"\n    ]\n  }\n}"
+      },
+      "fleet": {
+        "model": "gemini-2.5-flash-lite",
+        "finish": "STOP",
+        "sha256": "9029543e516e43a5c7e017272a4d06e23dead2c1e9ba7bac9c0afce4a1e7b5eb",
+        "output": "{\n  \"is_true_change\": true,\n  \"is_alert_worthy\": true,\n  \"source_relevance\": \"primary\",\n  \"source_relevance_reason\": \"The page is the official timeline for the Gates Cambridge Scholarship.\",\n  \"changed_facts\": [\n    {\n      \"fact\": \"Application opening date for US citizens resident in the USA\",\n      \"before\": \"Applications open* September 2026 (dates to be confirmed)\",\n      \"after\": \"Applications open* 11th September 2026\",\n      \"added_text\": \"Applications open* 11th September 2026\",\n      \"removed_text\": \"Applications open* September 2026 (dates to be confirmed)\",\n      \"visual_evidence\": null\n    },\n    {\n      \"fact\": \"Application opening date for all other eligible applicants\",\n      \"before\": \"Applications open* September 2026 (date to be confirmed)\",\n      \"after\": \"Applications open* 11th September 2026\",\n      \"added_text\": \"Applications open* 11th September 2026\",\n      \"removed_text\": \"Applications open* September 2026 (date to be confirmed)\",\n      \"visual_evidence\": null\n    },\n    {\n      \"fact\": \"Application opening date for entry in the academic year 2027/8\",\n      \"before\": \"Applications will open again in September 2026 for entry in the academic year 2027/8.\",\n      \"after\": \"Applications will open again on 11th September 2026 for entry in the academic year 2027/8.\",\n      \"added_text\": \"Applications will open again on 11th September 2026\",\n      \"removed_text\": \"Applications will open again in September 2026\",\n      \"visual_evidence\": null\n    },\n    {\n      \"fact\": \"Application deadline time for US citizens resident in the USA\",\n      \"before\": \"(Full application must be submitted by 11:59pm UK time on the date given)\",\n      \"after\": \"(Full application must be submitted by 11:59pm UK time on the date given)\",\n      \"added_text\": null,\n      \"removed_text\": null,\n      \"visual_evidence\": null\n    },\n    {\n      \"fact\": \"Application deadline time for all other eligible applicants\",\n      \"before\": \"All application documents should be submitted by 12:00am (midnight) UK time on the stated date.\",\n      \"after\": \"All application documents should be submitted by 11:59pm UK time on the stated date.\",\n      \"added_text\": \"11:59pm UK time\",\n      \"removed_text\": \"12:00am (midnight) UK time\",\n      \"visual_evidence\": null\n    }\n  ],\n  \"exact_before\": \"Applications open* September 2026 (dates to be confirmed)\\nApplication deadline Wednesday 14th October 2026 (Full application must be submitted by 11:59pm UK time on the date given)\\nDepartmental ranking late October to November 2026\\nAll applicants notified of application outcome by 11:59pm UK time on Monday 14th December 2026\\nReview and selection by panels Friday 22nd and Saturday 23rd January 2027\\nScholarships offered by early February 2027\\nScholarships accepted 72 hours after offer\\n Top\\nAll other eligible applicants\\n\\nThe large majority of applicants will apply in this round, which is aligned with the University’s postgraduate funding competition. There are two possible application deadlines and these are based on the course to which you are applying.\\n\\nPlease apply by the Course Funding Deadline referenced in the University Course Directory (found in the column on the right of the web page). All application documents should be submitted by 12:00am (midnight) UK time on the stated date.\\n\\nWhat stage? Date\\nApplications open* September 2026 (date to be confirmed)\\nApplication deadline* Dependent on your course – either Tuesday 8th December 2026 or Wednesday 6th January 2027 (see Course Directory). (Full application must be submitted by 11:59pm UK time)\\nDepartmental ranking December – February\\nAll applicants notified of application outcome by 11:59pm UK time on Monday 8th March 2027\\nReview and selection by panels Monday 22nd March and Tuesday 23rd March 2027\\nScholarships offered by early April 2027\\nScholarships accepted 72 hours after offer\",\n  \"exact_after\": \"Applications open* 11th September 2026\\nApplication deadline Wednesday 14th October 2026 (Full application must be submitted by 11:59pm UK time on the date given)\\nDepartmental ranking late October to November 2026\\nAll applicants notified of application outcome by 11:59pm UK time on Monday 14th December 2026\\nReview and selection by panels Friday 22nd and Saturday 23rd January 2027\\nScholarships offered by early February 2027\\nScholarships accepted 72 hours after offer\\n Top\\nAll other eligible applicants\\n\\nThe large majority of applicants will apply in this round, which is aligned with the University’s postgraduate funding competition. There are two possible application deadlines and these are based on the course to which you are applying.\\n\\nPlease apply by the Course Funding Deadline referenced in the University Course Directory (found in the column on the right of the web page). All application documents should be submitted by 11:59pm UK time on the stated date.\\n\\nWhat stage? Date\\nApplications open* 11th September 2026\\nApplication deadline* Dependent on your course – either Tuesday 8th December 2026 or Wednesday 6th January 2027 (see Course Directory). (Full application must be submitted by 11:59pm UK time)\\nDepartmental ranking December – February\\nAll applicants notified of application outcome by 11:59pm UK time on Monday 8th March 2027\\nReview and selection by panels Monday 22nd March and Tuesday 23rd March 2027\\nScholarships offered by early April 2027\\nScholarships accepted 72 hours after offer\",\n  \"evidence_location\": \"Timeline page\",\n  \"before\": \"Applications will open again in September 2026 for entry in the academic year 2027/8.\",\n  \"after\": \"Applications will open again on 11th September 2026 for entry in the academic year 2027/8.\",\n  \"section\": \"Timeline\",\n  \"change_type\": \"deadline_change\",\n  \"confidence\": \"high\",\n  \"noise_flags\": [],\n  \"rejection_reason\": null,\n  \"reader_summary\": \"The application opening date has been updated from September 2026 (dates to be confirmed) to 11th September 2026 for the 2027/8 academic year. The application deadline time for 'All other eligible applicants' has also been updated from 12:00am (midnight) UK time to 11:59pm UK time.\",\n  \"structured_diff\": {\n    \"added_text\": [\n      \"Applications will open again on 11th September 2026\",\n      \"Applications open* 11th September 2026\",\n      \"Applications open* 11th September 2026\",\n      \"11:59pm UK time\"\n    ],\n    \"removed_text\": [\n      \"Applications will open again in September 2026\",\n      \"Applications open* September 2026 (dates to be confirmed)\",\n      \"Applications open* September 2026 (date to be confirmed)\",\n      \"12:00am (midnight) UK time\"\n    ]\n  }\n}"
+      }
+    },
+    {
+      "id": "historical-beinecke-eligibility-cycle",
+      "source_id": "1db65d53-12c6-4fad-9990-5082e1e5d757",
+      "award_id": "26b5b55f-57e9-42a7-ae4c-37d389c5e70c",
+      "url": "https://beineckescholarship.org/beinecke-scholarship/eligibility-requirements/",
+      "previous_text": "Skip to content\nABOUT\nTHE BEINECKE SCHOLARSHIP\nCONTACT\nPORTAL LOGIN\nBeinecke Scholarship Eligibility\nLearn who qualifies for the Beinecke Scholarship.\n2026 Eligibility Requirements\nTo qualify, a student must:\nDemonstrate superior standards of intellectual ability, scholastic achievement, and personal promise during their undergraduate career.\nAttend a Beinecke Scholarship participating institution.\nBe a college junior pursuing a bachelor’s degree during the 2025-2026 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2026 and August 2027.\nPlan to enter a research- or creative-focused master’s or doctoral program in the arts, humanities, or social sciences. NOTE: Students in the social sciences who plan to pursue graduate study in neuroscience or clinical psychology should not apply for a Beinecke Scholarship.\nBe a U.S. citizen or U.S. national from American Samoa or the Commonwealth of the Northern Mariana Islands.\nHave a documented history of being eligible to receive need-based financial aid during their undergraduate years. Evidence of meeting this criterion includes a student’s history of receiving need-based institutional, state, or federal grants-in-aid. The nominated student will be required to complete and submit a Financial Aid Data Sheet outlining how the student meets this criterion. During the selection process, the amount of financial need will be one of the factors considered.\nREVIEW SUBMISSION MATERIALS\n©2026 The Sperry Fund / The Beinecke Scholarship. All rights reserved.\n",
+      "current_text": "Skip to content\nABOUT\nTHE BEINECKE SCHOLARSHIP\nCONTACT\nPORTAL LOGIN\nBeinecke Scholarship Eligibility\nLearn who qualifies for the Beinecke Scholarship.\n2027 Eligibility Requirements\nTo qualify, a student must:\nDemonstrate superior standards of intellectual ability, scholastic achievement, and personal promise during their undergraduate career.\nAttend a Beinecke Scholarship participating institution.\nBe a college junior pursuing a bachelor’s degree during the 2026-2027 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2027 and August 2028.\nPlan to enter a research- or creative-focused master’s or doctoral program in the arts, humanities, or social sciences. NOTE: Students in the social sciences who plan to pursue graduate study in neuroscience or clinical psychology should not apply for a Beinecke Scholarship.\nBe a U.S. citizen or U.S. national from American Samoa or the Commonwealth of the Northern Mariana Islands.\nHave a documented history of being eligible to receive need-based financial aid during their undergraduate years. Evidence of meeting this criterion includes a student’s history of receiving need-based institutional, state, or federal grants-in-aid. The nominated student will be required to complete and submit a Financial Aid Data Sheet outlining how the student meets this criterion. During the selection process, the amount of financial need will be one of the factors considered.\nREVIEW SUBMISSION MATERIALS\n©2026 The Sperry Fund / The Beinecke Scholarship. All rights reserved.\n",
+      "diff": {
+        "added_text": [
+          "2027 Eligibility Requirements",
+          "2026-2027 academic year",
+          "between December 2027 and August 2028."
+        ],
+        "removed_text": [
+          "2026 Eligibility Requirements",
+          "2025-2026 academic year",
+          "between December 2026 and August 2027."
+        ]
+      },
+      "strong": {
+        "model": "gemini-3.8-flash",
+        "finish": "STOP",
+        "sha256": "3c79c2daed2b8544a434549b9143d992ead82bd6be983b002dd9950b68195c44",
+        "output": "{\n  \"is_true_change\": true,\n  \"is_alert_worthy\": true,\n  \"source_relevance\": \"primary\",\n  \"source_relevance_reason\": \"This is the official eligibility requirements page for the Beinecke Scholarship.\",\n  \"changed_facts\": [\n    {\n      \"fact\": \"The scholarship eligibility cycle and eligible junior graduation dates updated for the 2027 cohort.\",\n      \"before\": \"Be a college junior pursuing a bachelor’s degree during the 2025-2026 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2026 and August 2027.\",\n      \"after\": \"Be a college junior pursuing a bachelor’s degree during the 2026-2027 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2027 and August 2028.\",\n      \"added_text\": \"2026-2027 academic year\",\n      \"removed_text\": \"2025-2026 academic year\",\n      \"visual_evidence\": null\n    }\n  ],\n  \"exact_before\": \"2026 Eligibility Requirements\",\n  \"exact_after\": \"2027 Eligibility Requirements\",\n  \"evidence_location\": \"2027 Eligibility Requirements\",\n  \"before\": \"2026 Eligibility Requirements\\nTo qualify, a student must:\\nDemonstrate superior standards of intellectual ability, scholastic achievement, and personal promise during their undergraduate career.\\nAttend a Beinecke Scholarship participating institution.\\nBe a college junior pursuing a bachelor’s degree during the 2025-2026 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2026 and August 2027.\",\n  \"after\": \"2027 Eligibility Requirements\\nTo qualify, a student must:\\nDemonstrate superior standards of intellectual ability, scholastic achievement, and personal promise during their undergraduate career.\\nAttend a Beinecke Scholarship participating institution.\\nBe a college junior pursuing a bachelor’s degree during the 2026-2027 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2027 and August 2028.\",\n  \"section\": \"Eligibility Requirements\",\n  \"change_type\": \"eligibility\",\n  \"confidence\": \"high\",\n  \"noise_flags\": [],\n  \"rejection_reason\": null,\n  \"advisor_impact\": \"Advisors should target students who are juniors in the 2026-2027 academic year with expected graduation dates between December 2027 and August 2028.\",\n  \"reader_summary\": \"The Beinecke Scholarship updated its eligibility criteria for the 2027 competition. Eligible applicants must now be college juniors pursuing a bachelor’s degree during the 2026-2027 academic year with expected graduation between December 2027 and August 2028.\",\n  \"structured_diff\": {\n    \"added_text\": [\n      \"2027 Eligibility Requirements\",\n      \"2026-2027 academic year\",\n      \"between December 2027 and August 2028.\"\n    ],\n    \"amount_changes\": [],\n    \"date_changes\": [\n      \"2026-2027 academic year\",\n      \"between December 2027 and August 2028.\"\n    ],\n    \"likely_section\": \"Eligibility Requirements\",\n    \"noise_flags\": [],\n    \"page_type\": \"eligibility\",\n    \"removed_text\": [\n      \"2026 Eligibility Requirements\",\n      \"2025-2026 academic year\",\n      \"between December 2026 and August 2027.\"\n    ]\n  }\n}"
+      },
+      "fleet": {
+        "model": "gemini-2.5-flash-lite",
+        "finish": "STOP",
+        "sha256": "51f8afa988d0dc84b49f923f95f8940d140da243b17e1fc5ab5f576f55c3a8c2",
+        "output": "{\n  \"is_true_change\": true,\n  \"is_alert_worthy\": true,\n  \"source_relevance\": \"primary\",\n  \"source_relevance_reason\": \"The page directly details the eligibility requirements for the Beinecke Scholarship.\",\n  \"changed_facts\": [\n    {\n      \"fact\": \"Eligibility requirements academic year and degree completion timeframe\",\n      \"before\": \"2026 Eligibility Requirements\\nTo qualify, a student must:\\n...\\nBe a college junior pursuing a bachelor’s degree during the 2025-2026 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2026 and August 2027.\",\n      \"after\": \"2027 Eligibility Requirements\\nTo qualify, a student must:\\n...\\nBe a college junior pursuing a bachelor’s degree during the 2026-2027 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2027 and August 2028.\",\n      \"added_text\": \"2027 Eligibility Requirements\\n...\\n2026-2027 academic year.\\n...\\nbetween December 2027 and August 2028.\",\n      \"removed_text\": \"2026 Eligibility Requirements\\n...\\n2025-2026 academic year.\\n...\\nbetween December 2026 and August 2027.\",\n      \"visual_evidence\": null\n    }\n  ],\n  \"exact_before\": \"2026 Eligibility Requirements\\nTo qualify, a student must:\\nDemonstrate superior standards of intellectual ability, scholastic achievement, and personal promise during their undergraduate career.\\nAttend a Beinecke Scholarship participating institution.\\nBe a college junior pursuing a bachelor’s degree during the 2025-2026 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2026 and August 2027.\\nPlan to enter a research- or creative-focused master’s or doctoral program in the arts, humanities, or social sciences. NOTE: Students in the social sciences who plan to pursue graduate study in neuroscience or clinical psychology should not apply for a Beinecke Scholarship.\\nBe a U.S. citizen or U.S. national from American Samoa or the Commonwealth of the Northern Mariana Islands.\\nHave a documented history of being eligible to receive need-based financial aid during their undergraduate years. Evidence of meeting this criterion includes a student’s history of receiving need-based institutional, state, or federal grants-in-aid. The nominated student will be required to complete and submit a Financial Aid Data Sheet outlining how the student meets this criterion. During the selection process, the amount of financial need will be one of the factors considered.\",\n  \"exact_after\": \"2027 Eligibility Requirements\\nTo qualify, a student must:\\nDemonstrate superior standards of intellectual ability, scholastic achievement, and personal promise during their undergraduate career.\\nAttend a Beinecke Scholarship participating institution.\\nBe a college junior pursuing a bachelor’s degree during the 2026-2027 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2027 and August 2028.\\nPlan to enter a research- or creative-focused master’s or doctoral program in the arts, humanities, or social sciences. NOTE: Students in the social sciences who plan to pursue graduate study in neuroscience or clinical psychology should not apply for a Beinecke Scholarship.\\nBe a U.S. citizen or U.S. national from American Samoa or the Commonwealth of the Northern Mariana Islands.\\nHave a documented history of being eligible to receive need-based financial aid during their undergraduate years. Evidence of meeting this criterion includes a student’s history of receiving need-based institutional, state, or federal grants-in-aid. The nominated student will be required to complete and submit a Financial Aid Data Sheet outlining how the student meets this criterion. During the selection process, the amount of financial need will be one of the factors considered.\",\n  \"evidence_location\": \"Eligibility Requirements section\",\n  \"before\": \"2026 Eligibility Requirements\\nTo qualify, a student must:\\nDemonstrate superior standards of intellectual ability, scholastic achievement, and personal promise during their undergraduate career.\\nAttend a Beinecke Scholarship participating institution.\\nBe a college junior pursuing a bachelor’s degree during the 2025-2026 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2026 and August 2027.\\nPlan to enter a research- or creative-focused master’s or doctoral program in the arts, humanities, or social sciences. NOTE: Students in the social sciences who plan to pursue graduate study in neuroscience or clinical psychology should not apply for a Beinecke Scholarship.\\nBe a U.S. citizen or U.S. national from American Samoa or the Commonwealth of the Northern Mariana Islands.\\nHave a documented history of being eligible to receive need-based financial aid during their undergraduate years. Evidence of meeting this criterion includes a student’s history of receiving need-based institutional, state, or federal grants-in-aid. The nominated student will be required to complete and submit a Financial Aid Data Sheet outlining how the student meets this criterion. During the selection process, the amount of financial need will be one of the factors considered.\\nREVIEW SUBMISSION MATERIALS\\n©2026 The Sperry Fund / The Beinecke Scholarship. All rights reserved.\",\n  \"after\": \"2027 Eligibility Requirements\\nTo qualify, a student must:\\nDemonstrate superior standards of intellectual ability, scholastic achievement, and personal promise during their undergraduate career.\\nAttend a Beinecke Scholarship participating institution.\\nBe a college junior pursuing a bachelor’s degree during the 2026-2027 academic year. “Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2027 and August 2028.\\nPlan to enter a research- or creative-focused master’s or doctoral program in the arts, humanities, or social sciences. NOTE: Students in the social sciences who plan to pursue graduate study in neuroscience or clinical psychology should not apply for a Beinecke Scholarship.\\nBe a U.S. citizen or U.S. national from American Samoa or the Commonwealth of the Northern Mariana Islands.\\nHave a documented history of being eligible to receive need-based financial aid during their undergraduate years. Evidence of meeting this criterion includes a student’s history of receiving need-based institutional, state, or federal grants-in-aid. The nominated student will be required to complete and submit a Financial Aid Data Sheet outlining how the student meets this criterion. During the selection process, the amount of financial need will be one of the factors considered.\\nREVIEW SUBMISSION MATERIALS\\n©2026 The Sperry Fund / The Beinecke Scholarship. All rights reserved.\",\n  \"section\": \"Eligibility Requirements\",\n  \"change_type\": \"deadline_or_eligibility_change\",\n  \"confidence\": \"high\",\n  \"noise_flags\": [],\n  \"rejection_reason\": null,\n  \"reader_summary\": \"The Beinecke Scholarship has updated its eligibility requirements for the 2027 cycle, shifting the academic year and degree completion timeframe.\",\n  \"structured_diff\": {\n    \"added_text\": [\n      \"2027 Eligibility Requirements\",\n      \"2026-2027 academic year\",\n      \"between December 2027 and August 2028.\"\n    ],\n    \"removed_text\": [\n      \"2026 Eligibility Requirements\",\n      \"2025-2026 academic year\",\n      \"between December 2026 and August 2027.\"\n    ]\n  }\n}"
+      }
+    },
+    {
+      "id": "synthetic-v4-deadline-and-audience",
+      "source_id": "11111111-1111-4111-8111-111111111111",
+      "award_id": "22222222-2222-4222-8222-222222222222",
+      "url": "https://example.org/synthetic-award",
+      "previous_text": "For the 2027 award cycle, these requirements apply only to U.S. citizens enrolled full time; international applicants must use their separate application route, and institutional nomination dates may be earlier. U.S. applicants must apply by October 31, 2027. Only seniors may apply. Supporting condition 0 remains unchanged for all applicants. Supporting condition 1 remains unchanged for all applicants. Supporting condition 2 remains unchanged for all applicants. Supporting condition 3 remains unchanged for all applicants. Supporting condition 4 remains unchanged for all applicants. Supporting condition 5 remains unchanged for all applicants. Supporting condition 6 remains unchanged for all applicants. Supporting condition 7 remains unchanged for all applicants. Supporting condition 8 remains unchanged for all applicants. Supporting condition 9 remains unchanged for all applicants. Supporting condition 10 remains unchanged for all applicants. Supporting condition 11 remains unchanged for all applicants. Supporting condition 12 remains unchanged for all applicants. Supporting condition 13 remains unchanged for all applicants. Supporting condition 14 remains unchanged for all applicants. Supporting condition 15 remains unchanged for all applicants. Supporting condition 16 remains unchanged for all applicants. Supporting condition 17 remains unchanged for all applicants. Supporting condition 18 remains unchanged for all applicants. Supporting condition 19 remains unchanged for all applicants. Supporting condition 20 remains unchanged for all applicants. Supporting condition 21 remains unchanged for all applicants. Supporting condition 22 remains unchanged for all applicants. Supporting condition 23 remains unchanged for all applicants. Supporting condition 24 remains unchanged for all applicants. Supporting condition 25 remains unchanged for all applicants. Supporting condition 26 remains unchanged for all applicants. Supporting condition 27 remains unchanged for all applicants. Supporting condition 28 remains unchanged for all applicants. Supporting condition 29 remains unchanged for all applicants. Supporting condition 30 remains unchanged for all applicants. Supporting condition 31 remains unchanged for all applicants. Supporting condition 32 remains unchanged for all applicants. Supporting condition 33 remains unchanged for all applicants. Supporting condition 34 remains unchanged for all applicants. Supporting condition 35 remains unchanged for all applicants. Supporting condition 36 remains unchanged for all applicants. Supporting condition 37 remains unchanged for all applicants. Supporting condition 38 remains unchanged for all applicants. Supporting condition 39 remains unchanged for all applicants. Supporting condition 40 remains unchanged for all applicants. Supporting condition 41 remains unchanged for all applicants. Supporting condition 42 remains unchanged for all applicants. Supporting condition 43 remains unchanged for all applicants. Supporting condition 44 remains unchanged for all applicants. Supporting condition 45 remains unchanged for all applicants. Supporting condition 46 remains unchanged for all applicants. Supporting condition 47 remains unchanged for all applicants. Supporting condition 48 remains unchanged for all applicants. Supporting condition 49 remains unchanged for all applicants. Supporting condition 50 remains unchanged for all applicants. Supporting condition 51 remains unchanged for all applicants. Supporting condition 52 remains unchanged for all applicants. Supporting condition 53 remains unchanged for all applicants. Supporting condition 54 remains unchanged for all applicants. Supporting condition 55 remains unchanged for all applicants. Supporting condition 56 remains unchanged for all applicants. Supporting condition 57 remains unchanged for all applicants. Supporting condition 58 remains unchanged for all applicants. Supporting condition 59 remains unchanged for all applicants. Supporting condition 60 remains unchanged for all applicants. Supporting condition 61 remains unchanged for all applicants. Supporting condition 62 remains unchanged for all applicants. Supporting condition 63 remains unchanged for all applicants. Supporting condition 64 remains unchanged for all applicants.",
+      "current_text": "For the 2027 award cycle, these requirements apply only to U.S. citizens enrolled full time; international applicants must use their separate application route, and institutional nomination dates may be earlier. U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply. Supporting condition 0 remains unchanged for all applicants. Supporting condition 1 remains unchanged for all applicants. Supporting condition 2 remains unchanged for all applicants. Supporting condition 3 remains unchanged for all applicants. Supporting condition 4 remains unchanged for all applicants. Supporting condition 5 remains unchanged for all applicants. Supporting condition 6 remains unchanged for all applicants. Supporting condition 7 remains unchanged for all applicants. Supporting condition 8 remains unchanged for all applicants. Supporting condition 9 remains unchanged for all applicants. Supporting condition 10 remains unchanged for all applicants. Supporting condition 11 remains unchanged for all applicants. Supporting condition 12 remains unchanged for all applicants. Supporting condition 13 remains unchanged for all applicants. Supporting condition 14 remains unchanged for all applicants. Supporting condition 15 remains unchanged for all applicants. Supporting condition 16 remains unchanged for all applicants. Supporting condition 17 remains unchanged for all applicants. Supporting condition 18 remains unchanged for all applicants. Supporting condition 19 remains unchanged for all applicants. Supporting condition 20 remains unchanged for all applicants. Supporting condition 21 remains unchanged for all applicants. Supporting condition 22 remains unchanged for all applicants. Supporting condition 23 remains unchanged for all applicants. Supporting condition 24 remains unchanged for all applicants. Supporting condition 25 remains unchanged for all applicants. Supporting condition 26 remains unchanged for all applicants. Supporting condition 27 remains unchanged for all applicants. Supporting condition 28 remains unchanged for all applicants. Supporting condition 29 remains unchanged for all applicants. Supporting condition 30 remains unchanged for all applicants. Supporting condition 31 remains unchanged for all applicants. Supporting condition 32 remains unchanged for all applicants. Supporting condition 33 remains unchanged for all applicants. Supporting condition 34 remains unchanged for all applicants. Supporting condition 35 remains unchanged for all applicants. Supporting condition 36 remains unchanged for all applicants. Supporting condition 37 remains unchanged for all applicants. Supporting condition 38 remains unchanged for all applicants. Supporting condition 39 remains unchanged for all applicants. Supporting condition 40 remains unchanged for all applicants. Supporting condition 41 remains unchanged for all applicants. Supporting condition 42 remains unchanged for all applicants. Supporting condition 43 remains unchanged for all applicants. Supporting condition 44 remains unchanged for all applicants. Supporting condition 45 remains unchanged for all applicants. Supporting condition 46 remains unchanged for all applicants. Supporting condition 47 remains unchanged for all applicants. Supporting condition 48 remains unchanged for all applicants. Supporting condition 49 remains unchanged for all applicants. Supporting condition 50 remains unchanged for all applicants. Supporting condition 51 remains unchanged for all applicants. Supporting condition 52 remains unchanged for all applicants. Supporting condition 53 remains unchanged for all applicants. Supporting condition 54 remains unchanged for all applicants. Supporting condition 55 remains unchanged for all applicants. Supporting condition 56 remains unchanged for all applicants. Supporting condition 57 remains unchanged for all applicants. Supporting condition 58 remains unchanged for all applicants. Supporting condition 59 remains unchanged for all applicants. Supporting condition 60 remains unchanged for all applicants. Supporting condition 61 remains unchanged for all applicants. Supporting condition 62 remains unchanged for all applicants. Supporting condition 63 remains unchanged for all applicants. Supporting condition 64 remains unchanged for all applicants.",
+      "diff": {
+        "added_text": [
+          "U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply."
+        ],
+        "amount_changes": [],
+        "candidate_scope": "scrapling_html_source",
+        "changed_text_excerpt": "Complete changed blocks are listed. Full current source prose/context is included once; all previous values can be reconstructed from exact replacements. Original before/current artifacts remain retained.",
+        "date_changes": [],
+        "likely_section": "Award source content",
+        "new_text_length": 4333,
+        "previous_text_length": 4325,
+        "removed_text": [
+          "U.S. applicants must apply by October 31, 2027. Only seniors may apply."
+        ],
+        "scrapling_semantics": {
+          "caution": "Only the complete changed blocks are uniquely corroborated in native visible text with ordered context. Other full HTML source context may be hidden or stale. This is not proof of current award facts or screenshot coordinates. Review the named award, audience and cycle; structural context is not a source quotation.",
+          "change_accounting_complete": true,
+          "changed_block_indices": [
+            1
+          ],
+          "complete": true,
+          "context_table_decoding": "All indices are zero-based. Each blocks/links row starts with its field_orders index; remaining values follow those named fields. kind and table_cell are literal. text, raw_href and source_url index strings. heading_path indexes heading_paths, whose heading text indexes strings. list_path, table_row, details_path and base_hrefs index string_lists, whose entries index strings. context_fields preserves root property order; field_orders preserves row property order and optional-field presence. Rows and path items remain ordered and duplicates are retained. No text was omitted or shortened.",
+          "context_table_reconstruction_verified": true,
+          "current_context_sha256": "7d039fb95fa79c7e063b5465a6876574b672314b1b1faf8029942a52c98e011f",
+          "current_context_tables": {
+            "base_hrefs": 0,
+            "blocks": {
+              "field_orders": [
+                [
+                  "kind",
+                  "text",
+                  "heading_path",
+                  "list_path",
+                  "table_row"
+                ]
+              ],
+              "rows": [
+                [
+                  0,
+                  "heading",
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  1,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  2,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  3,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  4,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  5,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  6,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  7,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  8,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  9,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  10,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  11,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  12,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  13,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  14,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  15,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  16,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  17,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  18,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  19,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  20,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  21,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  22,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  23,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  24,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  25,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  26,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  27,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  28,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  29,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  30,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  31,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  32,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  33,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  34,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  35,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  36,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  37,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  38,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  39,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  40,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  41,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  42,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  43,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  44,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  45,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  46,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  47,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  48,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  49,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  50,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  51,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  52,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  53,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  54,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  55,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  56,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  57,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  58,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  59,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  60,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  61,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  62,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  63,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  64,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  65,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  "p",
+                  66,
+                  0,
+                  0,
+                  0
+                ]
+              ]
+            },
+            "context_fields": [
+              "blocks",
+              "links",
+              "base_hrefs"
+            ],
+            "heading_paths": [
+              [
+                {
+                  "level": 2,
+                  "text": 0
+                }
+              ]
+            ],
+            "links": {
+              "field_orders": [
+                [
+                  "text",
+                  "raw_href",
+                  "source_url",
+                  "base_hrefs",
+                  "heading_path",
+                  "list_path"
+                ]
+              ],
+              "rows": [
+                [
+                  0,
+                  67,
+                  68,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  70,
+                  71,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  72,
+                  73,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  74,
+                  75,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  76,
+                  77,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  67,
+                  78,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  70,
+                  79,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  72,
+                  68,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  74,
+                  71,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  76,
+                  73,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  67,
+                  75,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  70,
+                  77,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  72,
+                  78,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  74,
+                  79,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  76,
+                  68,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  67,
+                  71,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  70,
+                  73,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  72,
+                  75,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  74,
+                  77,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  76,
+                  78,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  67,
+                  79,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  70,
+                  68,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  72,
+                  71,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  74,
+                  73,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  76,
+                  75,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  67,
+                  77,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  70,
+                  78,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  72,
+                  79,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  74,
+                  68,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  76,
+                  71,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  67,
+                  73,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  70,
+                  75,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  72,
+                  77,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  74,
+                  78,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  76,
+                  79,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  67,
+                  68,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  70,
+                  71,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  72,
+                  73,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  74,
+                  75,
+                  69,
+                  0,
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  76,
+                  77,
+                  69,
+                  0,
+                  0,
+                  0
+                ]
+              ]
+            },
+            "schema": "awardping.scrapling-context-tables.v1",
+            "string_lists": [
+              []
+            ],
+            "strings": [
+              "For the 2027 award cycle, these requirements apply only to U.S. citizens enrolled full time; international applicants must use their separate application route, and institutional nomination dates may be earlier.",
+              "U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.",
+              "Supporting condition 0 remains unchanged for all applicants.",
+              "Supporting condition 1 remains unchanged for all applicants.",
+              "Supporting condition 2 remains unchanged for all applicants.",
+              "Supporting condition 3 remains unchanged for all applicants.",
+              "Supporting condition 4 remains unchanged for all applicants.",
+              "Supporting condition 5 remains unchanged for all applicants.",
+              "Supporting condition 6 remains unchanged for all applicants.",
+              "Supporting condition 7 remains unchanged for all applicants.",
+              "Supporting condition 8 remains unchanged for all applicants.",
+              "Supporting condition 9 remains unchanged for all applicants.",
+              "Supporting condition 10 remains unchanged for all applicants.",
+              "Supporting condition 11 remains unchanged for all applicants.",
+              "Supporting condition 12 remains unchanged for all applicants.",
+              "Supporting condition 13 remains unchanged for all applicants.",
+              "Supporting condition 14 remains unchanged for all applicants.",
+              "Supporting condition 15 remains unchanged for all applicants.",
+              "Supporting condition 16 remains unchanged for all applicants.",
+              "Supporting condition 17 remains unchanged for all applicants.",
+              "Supporting condition 18 remains unchanged for all applicants.",
+              "Supporting condition 19 remains unchanged for all applicants.",
+              "Supporting condition 20 remains unchanged for all applicants.",
+              "Supporting condition 21 remains unchanged for all applicants.",
+              "Supporting condition 22 remains unchanged for all applicants.",
+              "Supporting condition 23 remains unchanged for all applicants.",
+              "Supporting condition 24 remains unchanged for all applicants.",
+              "Supporting condition 25 remains unchanged for all applicants.",
+              "Supporting condition 26 remains unchanged for all applicants.",
+              "Supporting condition 27 remains unchanged for all applicants.",
+              "Supporting condition 28 remains unchanged for all applicants.",
+              "Supporting condition 29 remains unchanged for all applicants.",
+              "Supporting condition 30 remains unchanged for all applicants.",
+              "Supporting condition 31 remains unchanged for all applicants.",
+              "Supporting condition 32 remains unchanged for all applicants.",
+              "Supporting condition 33 remains unchanged for all applicants.",
+              "Supporting condition 34 remains unchanged for all applicants.",
+              "Supporting condition 35 remains unchanged for all applicants.",
+              "Supporting condition 36 remains unchanged for all applicants.",
+              "Supporting condition 37 remains unchanged for all applicants.",
+              "Supporting condition 38 remains unchanged for all applicants.",
+              "Supporting condition 39 remains unchanged for all applicants.",
+              "Supporting condition 40 remains unchanged for all applicants.",
+              "Supporting condition 41 remains unchanged for all applicants.",
+              "Supporting condition 42 remains unchanged for all applicants.",
+              "Supporting condition 43 remains unchanged for all applicants.",
+              "Supporting condition 44 remains unchanged for all applicants.",
+              "Supporting condition 45 remains unchanged for all applicants.",
+              "Supporting condition 46 remains unchanged for all applicants.",
+              "Supporting condition 47 remains unchanged for all applicants.",
+              "Supporting condition 48 remains unchanged for all applicants.",
+              "Supporting condition 49 remains unchanged for all applicants.",
+              "Supporting condition 50 remains unchanged for all applicants.",
+              "Supporting condition 51 remains unchanged for all applicants.",
+              "Supporting condition 52 remains unchanged for all applicants.",
+              "Supporting condition 53 remains unchanged for all applicants.",
+              "Supporting condition 54 remains unchanged for all applicants.",
+              "Supporting condition 55 remains unchanged for all applicants.",
+              "Supporting condition 56 remains unchanged for all applicants.",
+              "Supporting condition 57 remains unchanged for all applicants.",
+              "Supporting condition 58 remains unchanged for all applicants.",
+              "Supporting condition 59 remains unchanged for all applicants.",
+              "Supporting condition 60 remains unchanged for all applicants.",
+              "Supporting condition 61 remains unchanged for all applicants.",
+              "Supporting condition 62 remains unchanged for all applicants.",
+              "Supporting condition 63 remains unchanged for all applicants.",
+              "Supporting condition 64 remains unchanged for all applicants.",
+              "Application guide 0",
+              "/apply.pdf?track=0&literal=%20%20",
+              "https://example.org/synthetic-award",
+              "Application guide 1",
+              "/apply.pdf?track=1&literal=%20%20",
+              "Application guide 2",
+              "/apply.pdf?track=2&literal=%20%20",
+              "Application guide 3",
+              "/apply.pdf?track=3&literal=%20%20",
+              "Application guide 4",
+              "/apply.pdf?track=4&literal=%20%20",
+              "/apply.pdf?track=5&literal=%20%20",
+              "/apply.pdf?track=6&literal=%20%20"
+            ]
+          },
+          "current_source_prose": "Fictional Test Award\n\nFor the 2027 award cycle, these requirements apply only to U.S. citizens enrolled full time; international applicants must use their separate application route, and institutional nomination dates may be earlier. U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply. Supporting condition 0 remains unchanged for all applicants. Supporting condition 1 remains unchanged for all applicants. Supporting condition 2 remains unchanged for all applicants. Supporting condition 3 remains unchanged for all applicants. Supporting condition 4 remains unchanged for all applicants. Supporting condition 5 remains unchanged for all applicants. Supporting condition 6 remains unchanged for all applicants. Supporting condition 7 remains unchanged for all applicants. Supporting condition 8 remains unchanged for all applicants. Supporting condition 9 remains unchanged for all applicants. Supporting condition 10 remains unchanged for all applicants. Supporting condition 11 remains unchanged for all applicants. Supporting condition 12 remains unchanged for all applicants. Supporting condition 13 remains unchanged for all applicants. Supporting condition 14 remains unchanged for all applicants. Supporting condition 15 remains unchanged for all applicants. Supporting condition 16 remains unchanged for all applicants. Supporting condition 17 remains unchanged for all applicants. Supporting condition 18 remains unchanged for all applicants. Supporting condition 19 remains unchanged for all applicants. Supporting condition 20 remains unchanged for all applicants. Supporting condition 21 remains unchanged for all applicants. Supporting condition 22 remains unchanged for all applicants. Supporting condition 23 remains unchanged for all applicants. Supporting condition 24 remains unchanged for all applicants. Supporting condition 25 remains unchanged for all applicants. Supporting condition 26 remains unchanged for all applicants. Supporting condition 27 remains unchanged for all applicants. Supporting condition 28 remains unchanged for all applicants. Supporting condition 29 remains unchanged for all applicants. Supporting condition 30 remains unchanged for all applicants. Supporting condition 31 remains unchanged for all applicants. Supporting condition 32 remains unchanged for all applicants. Supporting condition 33 remains unchanged for all applicants. Supporting condition 34 remains unchanged for all applicants. Supporting condition 35 remains unchanged for all applicants. Supporting condition 36 remains unchanged for all applicants. Supporting condition 37 remains unchanged for all applicants. Supporting condition 38 remains unchanged for all applicants. Supporting condition 39 remains unchanged for all applicants. Supporting condition 40 remains unchanged for all applicants. Supporting condition 41 remains unchanged for all applicants. Supporting condition 42 remains unchanged for all applicants. Supporting condition 43 remains unchanged for all applicants. Supporting condition 44 remains unchanged for all applicants. Supporting condition 45 remains unchanged for all applicants. Supporting condition 46 remains unchanged for all applicants. Supporting condition 47 remains unchanged for all applicants. Supporting condition 48 remains unchanged for all applicants. Supporting condition 49 remains unchanged for all applicants. Supporting condition 50 remains unchanged for all applicants. Supporting condition 51 remains unchanged for all applicants. Supporting condition 52 remains unchanged for all applicants. Supporting condition 53 remains unchanged for all applicants. Supporting condition 54 remains unchanged for all applicants. Supporting condition 55 remains unchanged for all applicants. Supporting condition 56 remains unchanged for all applicants. Supporting condition 57 remains unchanged for all applicants. Supporting condition 58 remains unchanged for all applicants. Supporting condition 59 remains unchanged for all applicants. Supporting condition 60 remains unchanged for all applicants. Supporting condition 61 remains unchanged for all applicants. Supporting condition 62 remains unchanged for all applicants. Supporting condition 63 remains unchanged for all applicants. Supporting condition 64 remains unchanged for all applicants.",
+          "current_source_prose_sha256": "0037b1fd16cfef9bdb54f97e1fb1bf1765b8022122115553b8311bf1574cc395",
+          "evidence": {
+            "award_id": "22222222-2222-4222-8222-222222222222",
+            "current_artifact_sha256": "95a981534634f12adbcf3d2c49f56a62a6eb3a4c54452bfc88ad4c7174d81ec3",
+            "current_captured_at": "2026-10-16T12:00:00.000Z",
+            "current_text_hash": "95a981534634f12adbcf3d2c49f56a62a6eb3a4c54452bfc88ad4c7174d81ec3",
+            "current_visible_text_sha256": "d8c52ad73c9745e44c4b3f9522070e45a522a72dd576fca20da5c9649c1b17aa",
+            "final_url": "https://example.org/synthetic-award",
+            "previous_artifact_sha256": "ca0e69b7a97eb8fac9a272132dd07d27b6f9e7270bd1b74c0254cdc1c732aab2",
+            "previous_captured_at": "2026-10-15T12:00:00.000Z",
+            "previous_text_hash": "ca0e69b7a97eb8fac9a272132dd07d27b6f9e7270bd1b74c0254cdc1c732aab2",
+            "previous_visible_text_sha256": "3f654bdd9322aaad1a118f88cfbb8574ea7954b24b2b4b44feb29476297cd327",
+            "source_id": "11111111-1111-4111-8111-111111111111",
+            "source_url": "https://example.org/synthetic-award"
+          },
+          "fields": [
+            "prose",
+            "blocks"
+          ],
+          "previous_context_sha256": "a83f3629dffe4426ff782e478ead2ec56978597a2a70cdb9358a1bdcf57a54be",
+          "previous_prose_replacement_offsets": "utf16_code_units_into_current_source_prose",
+          "previous_prose_replacements": [
+            {
+              "change_index": 0,
+              "current_end": 313,
+              "current_start": 234,
+              "previous_text": "U.S. applicants must apply by October 31, 2027. Only seniors may apply."
+            }
+          ],
+          "previous_source_prose_included": false,
+          "previous_source_prose_reconstructable": true,
+          "previous_source_prose_sha256": "701b7441f444fab552c0698ebdb836d448ad3794c39e23cea39d7d605d6e540f",
+          "reconstruction": "Decode current_context_tables to the complete current context. Restore previous context by replacing decoded blocks[changed_block_indices[i]].text with removed_text[i]. Restore previous prose using the exact previous_prose_replacements in the complete current_source_prose. Verify the retained full-context/prose SHA256 values. Full original artifacts remain retained; neither this storage format nor source context asserts visibility, screenshot coordinates or current award validity.",
+          "representation": "lossless_context_tables",
+          "screenshot_alignment": "not_verified",
+          "source_context_complete": true,
+          "version": 4,
+          "visibility_verified": false,
+          "visible_prose_corroborated": true,
+          "visible_prose_rule": "unique_complete_changed_blocks_with_ordered_visible_context"
+        },
+        "source_context": {
+          "award_name": "Fictional Test Award",
+          "page_type": null,
+          "source_title": "Fictional Test Award",
+          "source_url": "https://example.org/synthetic-award"
+        },
+        "text_length_delta": 8
+      },
+      "strong": {
+        "model": "gemini-3.8-flash",
+        "finish": "STOP",
+        "sha256": "68d819b601b156919fc02ed3ce10baa497be39832291451f66392a1704dc337b",
+        "output": "{\n  \"is_true_change\": true,\n  \"is_alert_worthy\": true,\n  \"source_relevance\": \"primary\",\n  \"source_relevance_reason\": \"Official award details page for Fictional Test Award specifying deadlines and eligibility requirements.\",\n  \"changed_facts\": [\n    {\n      \"fact\": \"U.S. applicant deadline and class eligibility for the 2027 award cycle\",\n      \"before\": \"U.S. applicants must apply by October 31, 2027. Only seniors may apply.\",\n      \"after\": \"U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\",\n      \"added_text\": \"U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\",\n      \"removed_text\": \"U.S. applicants must apply by October 31, 2027. Only seniors may apply.\",\n      \"visual_evidence\": null\n    }\n  ],\n  \"exact_before\": \"U.S. applicants must apply by October 31, 2027. Only seniors may apply.\",\n  \"exact_after\": \"U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\",\n  \"evidence_location\": \"Award source content\",\n  \"before\": \"U.S. applicants must apply by October 31, 2027. Only seniors may apply.\",\n  \"after\": \"U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\",\n  \"section\": \"Award source content\",\n  \"change_type\": \"deadline_and_eligibility_update\",\n  \"confidence\": \"high\",\n  \"noise_flags\": [],\n  \"rejection_reason\": null,\n  \"advisor_impact\": \"Advisors should update their calendars to reflect the extended U.S. applicant deadline (November 15, 2027) and notify eligible junior students, who are now eligible alongside seniors.\",\n  \"reader_summary\": \"For the 2027 award cycle, the application deadline for full-time U.S. citizen applicants has been extended to November 15, 2027 (previously October 31, 2027), and eligibility has expanded to include both juniors and seniors (previously only seniors).\",\n  \"structured_diff\": {\n    \"added_text\": [\n      \"U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\"\n    ],\n    \"amount_changes\": [],\n    \"date_changes\": [\n      \"November 15, 2027\"\n    ],\n    \"likely_section\": \"Award source content\",\n    \"noise_flags\": [],\n    \"page_type\": null,\n    \"removed_text\": [\n      \"U.S. applicants must apply by October 31, 2027. Only seniors may apply.\"\n    ]\n  }\n}"
+      },
+      "fleet": {
+        "model": "gemini-2.5-flash-lite",
+        "finish": "STOP",
+        "sha256": "9224550f97027021a82912f3b318aed33245eb56575f54d5caefef256f9b16da",
+        "output": "{\n  \"is_true_change\": true,\n  \"is_alert_worthy\": true,\n  \"source_relevance\": \"primary\",\n  \"source_relevance_reason\": \"The source page is directly about the Fictional Test Award.\",\n  \"changed_facts\": [\n    {\n      \"fact\": \"Application deadline and eligibility for U.S. applicants\",\n      \"before\": \"U.S. applicants must apply by October 31, 2027. Only seniors may apply.\",\n      \"after\": \"U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\",\n      \"added_text\": \"U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\",\n      \"removed_text\": \"U.S. applicants must apply by October 31, 2027. Only seniors may apply.\",\n      \"visual_evidence\": null\n    }\n  ],\n  \"exact_before\": \"U.S. applicants must apply by October 31, 2027. Only seniors may apply.\",\n  \"exact_after\": \"U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\",\n  \"evidence_location\": \"The change is located in the main body of the award description.\",\n  \"before\": \"For the 2027 award cycle, these requirements apply only to U.S. citizens enrolled full time; international applicants must use their separate application route, and institutional nomination dates may be earlier. U.S. applicants must apply by October 31, 2027. Only seniors may apply.\",\n  \"after\": \"For the 2027 award cycle, these requirements apply only to U.S. citizens enrolled full time; international applicants must use their separate application route, and institutional nomination dates may be earlier. U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\",\n  \"section\": \"Award Requirements\",\n  \"change_type\": \"deadline_change\",\n  \"confidence\": \"high\",\n  \"noise_flags\": [],\n  \"rejection_reason\": null,\n  \"reader_summary\": \"The application deadline for U.S. applicants has been extended from October 31, 2027, to November 15, 2027. Eligibility has also been expanded to include juniors, in addition to seniors.\",\n  \"structured_diff\": {\n    \"added_text\": [\n      \"U.S. applicants must apply by November 15, 2027. Juniors and seniors may apply.\"\n    ],\n    \"amount_changes\": [],\n    \"date_changes\": [\n      \"November 15, 2027\"\n    ],\n    \"likely_section\": \"Award source content\",\n    \"noise_flags\": [],\n    \"page_type\": null,\n    \"removed_text\": [\n      \"U.S. applicants must apply by October 31, 2027. Only seniors may apply.\"\n    ]\n  }\n}"
+      }
+    }
+  ]
+}
