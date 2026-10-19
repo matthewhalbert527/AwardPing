@@ -9,17 +9,17 @@ import {
   buildVisualReviewPromptPayload,
   buildVisualReviewPromptText,
   canonicalVisualReviewSourceUrl,
-  changeDetailsFromVisualBatchResult,
-  classifyVisualReviewCandidate,
+  changeDetailsFromVisualBatchResult as actualChangeDetails,
+  classifyVisualReviewCandidate as actualClassify,
   currentMonitoringPolicyAuditIdentity,
   currentVisualReviewPolicyIdentity,
   expandableSectionCandidateRejectReason,
   fileToVerifiedInlineGeminiPart,
-  latestVisualReviewPolicyDecision,
+  latestVisualReviewPolicyDecision as actualLatestPolicy,
   normalizeVisualBatchResult,
   normalizeVisualReviewMode,
   rebuildVisualReviewCandidateForCurrentPolicy,
-  validateVisualBatchReview,
+  validateVisualBatchReview as actualValidate,
   visualReviewCandidatePolicyFreshness,
   visualReviewBatchCreateFailureDisposition,
   visualReviewBatchPollFailureDisposition,
@@ -36,6 +36,33 @@ import {
   visualReviewStaleClaimRecoveryDecision,
   visualHashFromCandidate,
 } from "./lib/visual-review-queue.mjs";
+import { buildLegacyReviewCompleteness } from "./lib/legacy-review-completeness.mjs";
+
+// These locally authored unit cases model newly produced complete packets.
+// Existing Scrapling/first-document contracts keep their own concrete checks.
+function completeSyntheticArgs(args) {
+  const src = args.source;
+  const original = args.candidate;
+  const inputDiff = args.diff || original?.deterministic_diff || original?.prompt_payload?.deterministic_diff || {};
+  if (inputDiff.candidate_scope === "scrapling_html_source" || original?.candidate_scope === "initial_official_document") return args;
+  const diff = { ...inputDiff };
+  const previousText = args.previous?.text ?? original?.prompt_payload?.previous_text_excerpt ?? (diff.removed_text || []).join("\n");
+  const currentText = args.capture?.text ?? original?.prompt_payload?.new_text_excerpt ?? (diff.added_text || []).join("\n");
+  const sha = value => crypto.createHash("sha256").update(value).digest("hex");
+  diff.legacy_review_completeness = buildLegacyReviewCompleteness({ source: src, previousText, currentText, diff, excludedChangedUnits: 0 });
+  if (!original) return { ...args, diff, previous: { ...args.previous, text: previousText }, baseline: { ...args.baseline, text_hash: sha(previousText) },
+    capture: { ...args.capture, text: currentText, text_hash: sha(currentText) } };
+  const c = { ...original, shared_award_source_id: src.id, source_url: src.url,
+    previous_text_hash: sha(previousText), new_text_hash: sha(currentText), deterministic_diff: diff,
+    prompt_payload: { ...original.prompt_payload, deterministic_diff: diff, previous_text_excerpt: previousText, new_text_excerpt: currentText,
+      hashes: { ...original.prompt_payload?.hashes, previous_text_hash: sha(previousText), new_text_hash: sha(currentText) },
+      text_evidence: Object.fromEntries(["added_text", "removed_text", "date_changes", "amount_changes"].map(field => [field, diff[field] || []])) } };
+  return { ...args, candidate: c };
+}
+const classifyVisualReviewCandidate = args => actualClassify(completeSyntheticArgs(args));
+const validateVisualBatchReview = args => actualValidate(completeSyntheticArgs(args));
+const changeDetailsFromVisualBatchResult = args => actualChangeDetails(completeSyntheticArgs(args));
+const latestVisualReviewPolicyDecision = args => actualLatestPolicy(completeSyntheticArgs(args));
 
 const source = {
   id: "source-1",

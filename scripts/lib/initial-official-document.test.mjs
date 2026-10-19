@@ -515,9 +515,11 @@ describe("initial official document publication", () => {
         candidate,
         source: reviewedSource,
         result: candidate.result,
-      })).toEqual({
+      })).toMatchObject({
         allowed: false,
-        reason: "missing_deterministic_applicant_fact_signal",
+        reason: "legacy_review_completeness_missing",
+        manual_review_required: true,
+        baseline_advance_allowed: false,
       });
     },
   );

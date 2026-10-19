@@ -292,6 +292,7 @@ import {
   visualReviewEvidenceSignature,
   stableJsonStringify,
 } from "./lib/visual-review-queue.mjs";
+import { buildLegacyReviewCompleteness, legacyReviewCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
 import {
   INITIAL_OFFICIAL_DOCUMENT_SCOPE,
   buildInitialOfficialDocumentCandidate,
@@ -4073,6 +4074,7 @@ async function processSourceUnlocked(
   }
 
   const diff = buildDiffSummary(previous.text, capture.text, source);
+  if (await holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report })) return;
   const deterministic = textChanged
     ? classifyDeterministicChange(diff, source)
     : {
@@ -4135,6 +4137,7 @@ async function processSourceUnlocked(
       deterministic: gate.deterministic,
       report,
     });
+    if (queueResult?.manual_review_required) return;
     pruneTransientExpansionStateScreenshots(capture, report);
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     if (queueResult?.absorbed) {
@@ -5953,6 +5956,7 @@ async function processScraplingComparison(source, baseline, previous, capture, r
 
 async function processTextOnlyComparison(source, baseline, previous, capture, report) {
   const diff = buildDiffSummary(previous.text || "", capture.text || "", source);
+  if (await holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report })) return;
   const deterministic = {
     ...classifyDeterministicChange(diff, source),
     text_only: true,
@@ -6032,6 +6036,7 @@ async function processTextOnlyComparison(source, baseline, previous, capture, re
       deterministic: gate.deterministic,
       report,
     });
+    if (queueResult?.manual_review_required) return;
     pruneTransientExpansionStateScreenshots(capture, report);
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     if (queueResult?.absorbed) {
@@ -6173,6 +6178,13 @@ async function processExpandableSectionComparison(
     return { handled: false, reason: "sections_unchanged" };
   }
 
+  // Section candidates cannot authorize rotating an incompletely represented
+  // whole-page comparison. Keep the complete page before evaluating subsets.
+  const wholeDiff = buildDiffSummary(previous.text || "", capture.text || "", source);
+  if (await holdIncompleteLegacyReview({ source, baseline, previous, capture, diff: wholeDiff, report })) {
+    return { handled: true, reason: "legacy_review_completeness_hold" };
+  }
+
   report.expandable_sections_changed += changedSections.length;
   report.expandable_sections_added += addedSections.length;
   report.expandable_sections_removed += removedSections.length;
@@ -6196,6 +6208,7 @@ async function processExpandableSectionComparison(
   let preservedLastKnownGood = 0;
   let absorbed = 0;
   let existing = 0;
+  let manualHolds = 0;
   let representativeNoiseDecision = null;
   const sectionReviewLimit = 24;
   const evaluatedSectionPairs = sectionPairs.slice(0, sectionReviewLimit);
@@ -6211,6 +6224,12 @@ async function processExpandableSectionComparison(
     if (outcome === "preserve_last_known_good") preservedLastKnownGood += 1;
     if (outcome === "absorbed") absorbed += 1;
     if (outcome === "existing") existing += 1;
+    if (outcome === "manual_review_required") manualHolds += 1;
+  }
+
+  if (manualHolds > 0) {
+    capture.persist_expansion_state_screenshots = true;
+    return { handled: true, reason: "legacy_review_completeness_hold" };
   }
 
   if (unreviewedSectionPairs > 0) {
@@ -6372,6 +6391,12 @@ async function processOneSectionChange(
     section_label: displaySection.label || null,
   };
 
+  if (await holdIncompleteLegacyReview({ source, baseline: sectionBaseline, previous: previousSectionCapture,
+    capture: currentSectionCapture, diff, report })) {
+    capture.persist_expansion_state_screenshots = true;
+    return { outcome: "manual_review_required", reason: "legacy_review_completeness_hold" };
+  }
+
   if (!deterministic.candidate_change) {
     report.deterministic_noise += 1;
     report.deterministic_noise_rejected += 1;
@@ -6438,6 +6463,7 @@ async function processOneSectionChange(
     deterministic: gate.deterministic,
     report,
   });
+  if (queueResult?.manual_review_required) return { outcome: "manual_review_required" };
   if (queueResult?.absorbed) return "absorbed";
   if (queueResult?.existing) return "existing";
   report.section_change_candidates_enqueued += 1;
@@ -6455,6 +6481,11 @@ async function finishSafeDeterministicNoise({
   textOnly = false,
   comparisonComplete = true,
 }) {
+  if (!comparisonComplete || decision?.manual_review_required) {
+    capture.persist_expansion_state_screenshots = true;
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    return { absorbed: false, disposition: "incomplete_comparison_retained_manual_hold" };
+  }
   if (!countersAlreadyRecorded) {
     report.deterministic_noise += 1;
     report.deterministic_noise_rejected += 1;
@@ -6828,6 +6859,9 @@ async function enqueueVisualReviewCandidate({
   report,
   enqueuePolicy = null,
 }) {
+  if (await holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report })) {
+    return { manual_review_required: true, retains_current_capture: true, candidate_inserted: false };
+  }
   const candidateCaptureBehaviorVersion = capture?.capture_behavior_version ?? captureBehaviorVersion;
   const candidateCaptureBehaviorName = capture?.capture_behavior_name || captureBehaviorName;
   const stage1MutationAccounting = enqueuePolicy?.context
@@ -7281,6 +7315,8 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     return;
   }
 
+  if (await holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report })) return;
+
   if (!interpretVisualChanges) {
     await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "pdf_visual_interpretation_disabled" });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
@@ -7315,6 +7351,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
       deterministic: gate.deterministic,
       report,
     });
+    if (queueResult?.manual_review_required) return;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     if (queueResult?.absorbed) {
       if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
@@ -14932,10 +14969,10 @@ function buildDiffSummary(previousText, nextText, source) {
   const nextKeys = new Set(nextSentences.map(sentenceKey));
   const addedText = dedupeText(
     nextSentences.filter((sentence) => !previousKeys.has(sentenceKey(sentence))).filter(isUsefulChangedSentence),
-  ).slice(0, 10);
+  );
   const removedText = dedupeText(
     previousSentences.filter((sentence) => !nextKeys.has(sentenceKey(sentence))).filter(isUsefulChangedSentence),
-  ).slice(0, 10);
+  );
   const previousDates = new Set(contextualDatePhrases(previousClean));
   const nextDates = new Set(contextualDatePhrases(nextClean));
   const previousAmounts = new Set(contextualMoneyPhrases(previousClean));
@@ -14946,7 +14983,7 @@ function buildDiffSummary(previousText, nextText, source) {
   const removedAmounts = [...previousAmounts].filter((value) => !nextAmounts.has(value));
   const changedText = [...addedText, ...removedText, ...addedDates, ...removedDates, ...addedAmounts, ...removedAmounts].join(" ");
 
-  return {
+  const diff = {
     source_context: {
       award_name: source.shared_awards?.name || null,
       source_title: source.title || null,
@@ -14969,6 +15006,50 @@ function buildDiffSummary(previousText, nextText, source) {
     new_text_length: nextClean.length,
     text_length_delta: nextClean.length - previousClean.length,
   };
+  diff.legacy_review_completeness = buildLegacyReviewCompleteness({ source, previousText, currentText: nextText, diff,
+    excludedChangedUnits: excludedLegacyChangedUnits(previousClean, nextClean, addedText, removedText) });
+  return diff;
+}
+
+function excludedLegacyChangedUnits(previousText, currentText, addedText, removedText) {
+  const counts = text => {
+    const result = new Map();
+    for (const sentence of splitChangeSentences(normalizeText(text)).map(value => value.trim()).filter(Boolean)) {
+      if (isVolatileOrBoilerplateFragment(sentence)) continue;
+      result.set(sentence, (result.get(sentence) || 0) + 1);
+    }
+    return result;
+  };
+  const before = counts(previousText), after = counts(currentText);
+  let excluded = 0;
+  for (const [here, other, evidence] of [[before, after, removedText], [after, before, addedText]]) {
+    for (const [sentence, count] of here) {
+      const difference = count - (other.get(sentence) || 0);
+      if (difference <= 0) continue;
+      // A length filter, case/punctuation key collapse or duplicate-count change
+      // must not be silently called a complete eligible-text comparison.
+      if (!evidence.includes(sentence)) excluded += difference;
+      else if (difference > 1) excluded += difference - 1;
+    }
+  }
+  if (!excluded && !addedText.length && !removedText.length && previousText !== currentText) excluded += 1;
+  return excluded;
+}
+
+async function holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report }) {
+  const decision = legacyReviewCompletenessDecision({ source, baseline, previous, capture, diff });
+  if (decision.applicable === false || decision.allowed) return false;
+  capture.persist_expansion_state_screenshots = true;
+  const reviewPath = saveReviewRecord({ source, baseline: baseline || {}, previous: previous || {}, capture, diff,
+    deterministic: { classification: "manual_review_required", reason: decision.reason,
+      baseline_advance_allowed: false, comparison_complete: false, retain_both_captures: true,
+      previous_context_available: Boolean(baseline && typeof previous?.text === "string") },
+    reason: decision.reason, aiReview: { provider: "none", model: null, result: null, error: null } });
+  report.review += 1;
+  report.review_paths.push(toArchiveRelative(reviewPath));
+  await markSharedSourceVisualCheckSucceeded(source, capture, report);
+  console.log(`REVIEW retained_legacy_completeness ${decision.reason} ${sourceLabel(source)}`);
+  return true;
 }
 
 function classifyDeterministicChange(diff, source) {
@@ -15055,6 +15136,7 @@ function gateVisualReviewCandidateForAi({
   });
 
   if (!decision.allowed) {
+    if (decision.manual_review_required) return { allowed: false, decision };
     report.deterministic_noise += 1;
     if (decision.source_rejected) {
       report.deterministic_source_rejected += 1;

@@ -1,35 +1,46 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { pdfTextComparisonHoldReason, assessPdfTextCoverage } from "./lib/pdf-text-coverage.mjs";
+import { buildLegacyReviewCompleteness, legacyReviewCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
 
 const worker = readFileSync(new URL("./capture-visual-snapshots.mjs", import.meta.url), "utf8");
 const start = worker.indexOf("async function processPdfComparison(");
 const end = worker.indexOf("async function processInitialOfficialDocumentMaterializationOnly(", start);
 const body = worker.slice(start, end);
+const holdBody = worker.slice(worker.indexOf("async function holdIncompleteLegacyReview("), worker.indexOf("function classifyDeterministicChange("));
 const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
 const oldHash = "a".repeat(64), newHash = "b".repeat(64);
 function coverage(hash, sparse = false) {
   return assessPdfTextCoverage({ total: 1, pages: [{ num: 1, text: sparse ? "page 1" : "Applicant requirements. ".repeat(10) }] }, hash);
 }
 function fixture({ textChanged = false, sameFile = false, oldCoverage = true, sparse = false, interpret = true, promote = true } = {}) {
-  const baseline = { file_hash: oldHash, text_hash: "old-text" };
-  const previous = { text: "Old instructions", meta: { file_hash: oldHash, page_count: 1,
+  const sha = text => createHash("sha256").update(text).digest("hex");
+  const before = "Applicants must submit the original essay materials for this award.";
+  const after = textChanged ? "Applicants must submit the revised essay materials for this award." : before;
+  const source = { id: "synthetic-pdf-source", url: "https://example.edu/award.pdf" };
+  const baseline = { file_hash: oldHash, text_hash: sha(before) };
+  const previous = { text: before, meta: { file_hash: oldHash, page_count: 1,
     ...(oldCoverage ? { pdf_text_coverage: coverage(oldHash) } : {}) } };
-  const capture = { file_hash: sameFile ? oldHash : newHash, text_hash: textChanged ? "new-text" : "old-text",
-    text: "Current instructions", dir: "synthetic-dir", page_count: 1, pdf_text_coverage: coverage(newHash, sparse) };
+  const capture = { file_hash: sameFile ? oldHash : newHash, text_hash: sha(after),
+    text: after, dir: "synthetic-dir", page_count: 1, pdf_text_coverage: coverage(newHash, sparse) };
   const report = { candidate_changes: 0, pdf_changed: 0, review: 0, review_paths: [], unchanged: 0, pdf_unchanged: 0 };
   const mocks = Object.fromEntries(["saveReviewRecord", "markSharedSourceVisualCheckSucceeded", "writeBaseline",
     "removeGeneratedCaptureDir", "enqueueVisualReviewCandidate", "maybeRepairMissingR2Snapshot", "gateVisualReviewCandidateForAi"]
     .map(name => [name, vi.fn()]));
   mocks.saveReviewRecord.mockReturnValue("synthetic-review.json");
   mocks.gateVisualReviewCandidateForAi.mockReturnValue({ allowed: true, deterministic: {} });
-  const deps = { ...mocks, pdfTextComparisonHoldReason, jsonObjectOrEmpty: value => value || {},
-    buildDiffSummary: () => ({ added_text: ["Synthetic change"] }), toArchiveRelative: value => value,
+  const deps = { ...mocks, pdfTextComparisonHoldReason, jsonObjectOrEmpty: value => value || {}, legacyReviewCompletenessDecision,
+    buildDiffSummary: (oldText, newText) => {
+      const diff = { added_text: oldText === newText ? [] : [newText], removed_text: oldText === newText ? [] : [oldText], date_changes: [], amount_changes: [] };
+      diff.legacy_review_completeness = buildLegacyReviewCompleteness({ source, previousText: oldText, currentText: newText, diff, excludedChangedUnits: 0 });
+      return diff;
+    }, toArchiveRelative: value => value,
     sourceLabel: () => "Synthetic PDF", console: { log: vi.fn() }, interpretVisualChanges: interpret,
     visualReviewMode: "batch", promote, keepUnchanged: false };
   const run = new AsyncFunction(...Object.keys(deps), "source", "baseline", "previous", "capture", "report",
-    `${body}\nreturn processPdfComparison(source, baseline, previous, capture, report);`);
-  return { mocks, report, run: () => run(...Object.values(deps), {}, baseline, previous, capture, report) };
+    `${holdBody}\n${body}\nreturn processPdfComparison(source, baseline, previous, capture, report);`);
+  return { mocks, report, run: () => run(...Object.values(deps), source, baseline, previous, capture, report) };
 }
 
 describe("actual PDF worker function with mocked effects, never importing the worker", () => {

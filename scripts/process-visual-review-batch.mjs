@@ -23,6 +23,7 @@ import {
   visualReviewStaleClaimRecoveryDecision,
 } from "./lib/visual-review-queue.mjs";
 import { assertVisualReviewBatchPolicyCoverage } from "./lib/award-monitoring-policy.mjs";
+import { legacyReviewCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
 import { recordVisualRejectionLedger } from "./lib/visual-rejection-ledger.mjs";
 import { acquireVisualReviewPublicationClaim } from "./lib/visual-publication-claim.mjs";
 import { persistVisualChangeAndReconciliation } from "./lib/visual-change-publication.mjs";
@@ -841,7 +842,7 @@ async function reconcileStoredSucceededCandidates(
       else if (publishResult.status === "retry_pending") {
         report.baseline_promotion_pending += 1;
         report.succeeded += 1;
-      } else report.succeeded += 1;
+      } else if (!["manual_review_required", "retained_hold_not_applied"].includes(publishResult.status)) report.succeeded += 1;
     } catch (error) {
       // Leave any acquired claim intact. Its stale-claim lease is the
       // fail-closed recovery boundary, and one broken source must not prevent
@@ -905,6 +906,11 @@ async function submitPendingCandidates() {
     }
     const rejectReason = preSubmissionRejectReason(loadedCandidate, source);
     if (rejectReason) {
+      if (rejectReason.startsWith("manual_review_required:")) {
+        await retainIncompleteReviewHold({ candidate: loadedCandidate,
+          decision: { reason: rejectReason.slice("manual_review_required:".length) } });
+        continue;
+      }
       await markCandidate(loadedCandidate.id, {
         status: "rejected",
         rejection_reason: rejectReason,
@@ -2318,6 +2324,17 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
       continue;
     }
 
+    // This is deliberately outside the JSON/completion catch and escalation
+    // path. A complete provider response with incomplete evidence is retained,
+    // never converted into a stronger paid retry or a partial publication.
+    const completeness = legacyReviewCompletenessDecision({ candidate, result, requireResult: true });
+    if (completeness.applicable !== false && !completeness.allowed) {
+      const retained = apply ? await retainIncompleteReviewHold({ candidate, result, usage, decision: completeness }) : null;
+      const counter = retained?.status === "manual_review_required" ? "manual_review_required" : "review_hold_not_applied";
+      batchReport[counter] = (batchReport[counter] || 0) + 1;
+      continue;
+    }
+
     let publicationClaim = null;
     if (apply) {
       publicationClaim = await claimCompletedCandidatePublication(candidate, result, usage);
@@ -2364,7 +2381,7 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
     } else if (publishResult.status === "retry_pending") {
       report.baseline_promotion_pending += 1;
       report.succeeded += 1;
-    } else {
+    } else if (!["manual_review_required", "retained_hold_not_applied"].includes(publishResult.status)) {
       report.succeeded += 1;
     }
   }
@@ -2410,6 +2427,11 @@ async function claimCompletedCandidatePublication(candidate, result, usage) {
 }
 
 async function publishCandidateResult(args) {
+  const completeness = legacyReviewCompletenessDecision({ candidate: args?.candidate, source: args?.source,
+    result: args?.result, requireResult: true });
+  if (completeness.applicable !== false && !completeness.allowed) {
+    return retainIncompleteReviewHold({ ...args, decision: completeness });
+  }
   const sourceId = args?.source?.id || args?.candidate?.shared_award_source_id;
   if (!sourceId) return publishCandidateResultUnlocked(args);
   return withVisualBaselineLockAsync({
@@ -4083,7 +4105,52 @@ function preSubmissionRejectReason(candidate, source) {
     typeof candidate.prompt_payload !== "object" ||
     Array.isArray(candidate.prompt_payload)
   ) return "missing_prompt_payload";
+  if (candidate.worker_metadata?.review_completeness_hold ||
+      candidate.rejection_reason?.startsWith("manual_review_required:")) {
+    return candidate.rejection_reason?.startsWith("manual_review_required:")
+      ? candidate.rejection_reason : "manual_review_required:saved_evidence_requires_operator_review";
+  }
+  const completeness = legacyReviewCompletenessDecision({ candidate, source });
+  if (completeness.applicable !== false && !completeness.allowed) return `manual_review_required:${completeness.reason}`;
   return null;
+}
+
+async function retainIncompleteReviewHold({ candidate, result, usage, publicationClaimToken, decision }) {
+  const now = new Date().toISOString();
+  const patch = {
+    status: "failed",
+    rejection_reason: `manual_review_required:${decision.reason}`,
+    ...(result ? { ai_result: result } : {}),
+    ...(usage ? { actual_usage: usage } : {}),
+    worker_metadata: workerMetadataForCandidate(candidate, {
+      review_completeness_hold: { ...decision, automatic_retry_allowed: false,
+        baseline_advance_allowed: false, retain_both_captures: true, creates_api_charge: false },
+      baseline_advanced: false,
+    }),
+    completed_at: now, updated_at: now,
+  };
+  if (publicationClaimToken) await markPublicationCandidate(candidate, publicationClaimToken, patch);
+  else {
+    // A saved hold is not authority to overwrite a concurrently finalized or
+    // newly claimed row. The ordinary path must still own this exact version.
+    if (!candidate?.id || !candidate.status || !candidate.updated_at) {
+      return { status: "retained_hold_not_applied", reason: "candidate_version_unavailable" };
+    }
+    if (candidate.publication_claim_token) {
+      return { status: "retained_hold_not_applied", reason: "publication_claim_not_owned" };
+    }
+    let query = supabase.from("shared_award_visual_review_candidates").update(patch)
+      .eq("id", candidate.id).eq("status", candidate.status).eq("updated_at", candidate.updated_at)
+      .is("publication_claim_token", null);
+    const submissionToken = candidate.worker_metadata?.submission_claim_token;
+    query = submissionToken ? query.contains("worker_metadata", { submission_claim_token: submissionToken })
+      : query.is("worker_metadata->>submission_claim_token", null);
+    const { data, error } = await query.select("id").maybeSingle();
+    if (error) throw new Error(`Retain incomplete review hold ${candidate.id} failed: ${error.message}`);
+    if (!data) return { status: "retained_hold_not_applied", reason: "candidate_version_or_claim_changed" };
+  }
+  report.manual_review_required = (report.manual_review_required || 0) + 1;
+  return { status: "manual_review_required", reason: decision.reason };
 }
 
 async function markBatchRowsProcessing(batchName) {

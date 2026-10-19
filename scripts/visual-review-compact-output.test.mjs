@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import * as queue from "./lib/visual-review-queue.mjs";
+import { buildLegacyReviewCompleteness } from "./lib/legacy-review-completeness.mjs";
 import {
   GEMINI_WORKER_MODEL, GEMINI_STRONG_WORKER_MODEL,
   visualReviewClaimedModel, visualReviewCompletionDecision,
@@ -20,6 +22,14 @@ const oldText = "Application deadline: March 1, 2027";
 const newText = "Application deadline: March 15, 2027";
 const diff = { removed_text: [oldText], added_text: [newText], date_changes: [], amount_changes: [] };
 const candidate = { deterministic_diff: diff, prompt_payload: { include_images: false, deterministic_diff: diff } };
+// This one positive case is synthetic. Do not certify the retained Goldwater
+// packet used by the separate failure tests.
+diff.legacy_review_completeness = buildLegacyReviewCompleteness({ source, previousText: oldText, currentText: newText, diff, excludedChangedUnits: 0 });
+const hash = value => createHash("sha256").update(value).digest("hex");
+Object.assign(candidate, { shared_award_source_id: source.id, source_url: source.url, previous_text_hash: hash(oldText), new_text_hash: hash(newText) });
+Object.assign(candidate.prompt_payload, { previous_text_excerpt: oldText, new_text_excerpt: newText,
+  hashes: { previous_text_hash: hash(oldText), new_text_hash: hash(newText) }, text_evidence: {
+    added_text: diff.added_text, removed_text: diff.removed_text, date_changes: [], amount_changes: [] } });
 const verdict = () => ({
   is_true_change: true, is_alert_worthy: true, source_relevance: "primary", confidence: "high", noise_flags: [],
   changed_facts: [{ fact: "Application deadline", before: oldText, after: newText, removed_text: oldText, added_text: newText, visual_evidence: null }],

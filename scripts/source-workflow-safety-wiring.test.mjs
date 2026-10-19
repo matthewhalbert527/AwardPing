@@ -77,7 +77,9 @@ describe("source workflow safety wiring", () => {
     );
     expect(claim).toContain("provider_input_binding");
     expect(claim).toContain("withObservedUpdatedAt(query, row.updated_at)");
-    expect(worker).toContain('{ providerResultMode: "provider_result" }');
+    expect(worker).toContain('{ providerResultMode: "provider_result", providerResponse }');
+    expect(worker).toContain("readCompletedSourceIntakeProviderResponse(response, { rawResult })");
+    expect(worker).toContain("provider_response: response");
     expect(worker).toContain('{ providerResultMode: "replay" }');
     expect(worker).toContain("validateSourceIntakeProviderReplayBinding");
     expect(worker).toContain("provider_input_binding).digest_sha256");

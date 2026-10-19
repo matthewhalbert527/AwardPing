@@ -2,9 +2,10 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  buildVisualReviewPromptText, changeDetailsFromVisualBatchResult,
-  normalizeVisualBatchResult, validateVisualBatchReview, visualReviewResponseSchema,
+  buildVisualReviewPromptText, changeDetailsFromVisualBatchResult as actualChangeDetails,
+  normalizeVisualBatchResult, validateVisualBatchReview as actualValidate, visualReviewResponseSchema,
 } from "./lib/visual-review-queue.mjs";
+import { buildLegacyReviewCompleteness } from "./lib/legacy-review-completeness.mjs";
 import { temporalContextAmbiguityDecision } from "./lib/visual-review-temporal-context.mjs";
 
 const frozen = JSON.parse(readFileSync(new URL("./fixtures/visual-review-accuracy-20261018.json", import.meta.url), "utf8"));
@@ -17,9 +18,27 @@ const source = {
 };
 const oldText = "Application deadline: March 1, 2027";
 const newText = "Application deadline: March 15, 2027";
-const candidate = (diff = { removed_text: [oldText], added_text: [newText] }, images = false) => ({
-  deterministic_diff: diff, prompt_payload: { include_images: images },
+const candidate = (diff = { removed_text: [oldText], added_text: [newText] }, images = false, synthetic = true) => ({
+  synthetic_complete_packet: synthetic, deterministic_diff: diff, prompt_payload: { include_images: images },
 });
+// Only newly constructed synthetic cases receive producer proof. Retained
+// historical packets below remain unchanged and cannot be retro-certified.
+function completeSynthetic(c) {
+  if (!c.synthetic_complete_packet || c.candidate_scope === "initial_official_document" || c.deterministic_diff?.candidate_scope === "scrapling_html_source") return c;
+  const diff = { ...c.deterministic_diff };
+  const fields = ["added_text", "removed_text", "date_changes", "amount_changes"];
+  const previous = c.prompt_payload?.previous_text_excerpt ?? (diff.removed_text || []).join("\n");
+  const current = c.prompt_payload?.new_text_excerpt ?? (diff.added_text || []).join("\n");
+  const sha = value => crypto.createHash("sha256").update(value).digest("hex");
+  diff.legacy_review_completeness = buildLegacyReviewCompleteness({ source, previousText: previous, currentText: current, diff, excludedChangedUnits: 0 });
+  return { ...c, shared_award_source_id: source.id, source_url: source.url,
+    previous_text_hash: sha(previous), new_text_hash: sha(current), deterministic_diff: diff,
+    prompt_payload: { ...c.prompt_payload, deterministic_diff: diff, previous_text_excerpt: previous, new_text_excerpt: current,
+      hashes: { previous_text_hash: sha(previous), new_text_hash: sha(current) },
+      text_evidence: Object.fromEntries(fields.map(field => [field, diff[field] || []])) } };
+}
+const validateVisualBatchReview = args => actualValidate({ ...args, candidate: completeSynthetic(args.candidate) });
+const changeDetailsFromVisualBatchResult = args => actualChangeDetails({ ...args, candidate: completeSynthetic(args.candidate) });
 const result = (overrides = {}) => normalizeVisualBatchResult({
   is_true_change: true, is_alert_worthy: true, source_relevance: "primary", confidence: "high", noise_flags: [],
   changed_facts: [{ fact: "Application deadline", before: oldText, after: newText }],
@@ -220,7 +239,7 @@ describe("corrected replay frozen outputs, reevaluated offline without a new pro
       const answer = c[role];
       expect(crypto.createHash("sha256").update(answer.output).digest("hex")).toBe(answer.sha256);
       expect(answer.finish).toBe("STOP");
-      const input = candidate(c.diff);
+      const input = candidate(c.diff, false, c.id.includes("synthetic"));
       input.prompt_payload.previous_text_excerpt = c.previous_text;
       input.prompt_payload.new_text_excerpt = c.current_text;
       const reviewed = normalizeVisualBatchResult(answer.output);
@@ -235,7 +254,13 @@ describe("corrected replay frozen outputs, reevaluated offline without a new pro
         expect(details(input, reviewed).changed_facts).toEqual([]);
       }
       if (c.id.includes("gates") && role === "strong") {
-        expect(validation.reason).toBe("temporal_value_already_in_unchanged_context");
+        expect(validation.reason).toBe("legacy_review_completeness_missing");
+        // Separately labelled synthetic reconstruction exercises temporal
+        // grounding; it does not certify the historical producer packet.
+        const synthetic = candidate(structuredClone(c.diff));
+        synthetic.prompt_payload.previous_text_excerpt = c.previous_text;
+        synthetic.prompt_payload.new_text_excerpt = c.current_text;
+        expect(check(synthetic, reviewed).reason).toBe("temporal_value_already_in_unchanged_context");
       }
     }
   });
@@ -258,8 +283,9 @@ describe("immutable October 18 provider regressions, not a new model evaluation"
   it("holds the unchanged/ambiguous Gates and incomplete/overquoted Beinecke outputs without repairing them", () => {
     for (const c of frozen.cases.slice(0, 2)) for (const answer of [c.fleet, c.strong]) {
       const r = normalizeVisualBatchResult(answer.output);
-      expect(check(candidate(c.diff), r).allowed, `${c.id}/${answer.returned_model || answer.model}`).toBe(false);
-      expect(details(candidate(c.diff), r).reader_summary).not.toContain("no longer includes");
+      const historical = candidate(c.diff, false, false);
+      expect(check(historical, r)).toMatchObject({ allowed: false, manual_review_required: true, reason: "legacy_review_completeness_missing" });
+      expect(details(historical, r).reader_summary).not.toContain("no longer includes");
     }
   });
 

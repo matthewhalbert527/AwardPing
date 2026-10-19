@@ -8,6 +8,7 @@ import type {
   SourcePageRequestStatus,
 } from "@/lib/database.types";
 import { sourceIntakeTypes } from "@/lib/source-intake";
+import { formatCentralDateTime } from "@/lib/time-zone";
 import {
   FREE_RECONCILIATION_FAILURE_REASON,
   isApprovedBackfillSourceActivationRetry,
@@ -303,7 +304,7 @@ function SourceIntakeRow({
             <Detail label="Deterministic" value={cleanText(deterministic.reason) || "Not run"} />
             <Detail label="Gemini" value={cleanText(ai.status) || cleanText(ai.source_relevance) || "Not run"} />
             <Detail label="Matched award" value={matchedAward?.name || request.created_shared_award_id || "None yet"} />
-            <Detail label="Updated" value={formatDate(request.updated_at)} />
+            <Detail label="Updated" value={formatCentralDateTime(request.updated_at)} />
           </dl>
           {request.error && <p className="mt-3 text-sm font-bold text-[var(--brand-burgundy)]">{request.error}</p>}
           {restrictedRecovery && (
@@ -437,14 +438,4 @@ function labelize(value: string) {
 
 function attentionStatus(status: SourcePageRequestStatus) {
   return status === "failed" || status === "needs_manual_review" || status === "rejected";
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
 }

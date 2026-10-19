@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import * as queue from "./lib/visual-review-queue.mjs";
 import { sourceQualityDecision } from "./lib/source-quality.mjs";
+import { buildLegacyReviewCompleteness, legacyReviewCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
 import {
   paidVisualReviewLaneForCandidate,
   runPaidVisualProviderCreateBoundary,
@@ -45,6 +47,18 @@ function fixture(scope = "content_change") {
     actual_usage: { retained_original: true }, rejection_reason: "Requested entity was not found.",
     worker_metadata: { failure_retry_count: 0, original_provider_receipt: "preserve-me" },
   };
+  // A newly authored synthetic retry fixture, not certification of an old
+  // provider packet. Preserve its complete text and exact producer binding.
+  const sha = text => createHash("sha256").update(text).digest("hex");
+  candidate.previous_text_hash = sha(candidate.prompt_payload.previous_text_excerpt);
+  candidate.new_text_hash = sha(candidate.prompt_payload.new_text_excerpt);
+  candidate.deterministic_diff.legacy_review_completeness = buildLegacyReviewCompleteness({ source,
+    previousText: candidate.prompt_payload.previous_text_excerpt, currentText: candidate.prompt_payload.new_text_excerpt,
+    diff: candidate.deterministic_diff, excludedChangedUnits: 0 });
+  Object.assign(candidate.prompt_payload, { deterministic_diff: candidate.deterministic_diff,
+    hashes: { previous_text_hash: candidate.previous_text_hash, new_text_hash: candidate.new_text_hash },
+    text_evidence: { added_text: candidate.deterministic_diff.added_text, removed_text: candidate.deterministic_diff.removed_text,
+      date_changes: [], amount_changes: [] } });
   const rebuilt = queue.rebuildVisualReviewCandidateForCurrentPolicy(candidate, { source });
   Object.assign(candidate, { candidate_signature: rebuilt.candidate_signature,
     gemini_batch_request_key: rebuilt.candidate_signature, prompt_payload: structuredClone(rebuilt.prompt_payload), prompt_context: rebuilt.prompt_context });
@@ -93,6 +107,7 @@ function harness(f = fixture(), { lane = changedLane, beforeConsume = null, cons
   const report = { retried_failed_candidates: 0, paid_retry_approvals_required: 0, paid_retry_preflight_held: 0,
     paid_retry_preflight_holds: [], paid_retry_request_drift_invalidated: 0, superseded: 0 };
   const actual = runInNewContext(`${code}\n({${names.join(",")}})`, { ...queue, sourceQualityDecision,
+    legacyReviewCompletenessDecision,
     rebuildVisualReviewCandidateForCurrentPolicy: rebuild,
     paidReviewLaneForCandidate: paidVisualReviewLaneForCandidate, paidLane: lane, limit: 10, supabase, report,
     monitoringPolicy: queue.currentVisualReviewPolicyIdentity(), monitoringPolicyBundle: queue.currentMonitoringPolicyAuditIdentity(),

@@ -18,6 +18,7 @@ import { assertRenderedHtmlArtifactIdentity } from "./r2-capture-artifact-bindin
 import { temporalContextAmbiguityDecision } from "./visual-review-temporal-context.mjs";
 import { SOURCE_HTML_PROFILE, validateSourceHtmlEvidence, sourceHtmlReviewText } from "./source-html-evidence.mjs";
 import { sourceHtmlReviewPairingVerified } from "./source-html-review-contract.mjs";
+import { legacyReviewCompletenessDecision } from "./legacy-review-completeness.mjs";
 
 export const visualReviewResponseSchema = {
   type: "object",
@@ -265,6 +266,9 @@ export function classifyVisualReviewCandidate({
       source_noise: sourceNoise,
     });
   }
+
+  const completeness = legacyReviewCompletenessDecision({ source, diff, baseline, previous, capture });
+  if (completeness.applicable !== false && !completeness.allowed) return reject("manual_review_required", completeness.reason, completeness);
 
   if (deterministic?.candidate_change === false) {
     return reject(noiseLabelForReason(deterministic.reason), deterministic.reason || "deterministic_rejected");
@@ -770,6 +774,8 @@ export function buildVisualReviewPromptPayload({
     diff?.scrapling_semantics?.complete === true && diff?.scrapling_semantics?.context_table_reconstruction_verified === true &&
     diff?.scrapling_semantics?.current_context_tables?.schema === "awardping.scrapling-context-tables.v1";
   const contextRepresentation = tableScraplingContext ? "lossless_context_tables" : sharedScraplingContext ? "lossless_shared_context" : null;
+  const completeness = legacyReviewCompletenessDecision({ source, baseline, previous, capture, diff });
+  const completeLegacyContext = Boolean(diff?.legacy_review_completeness);
 
   return {
     version: 1,
@@ -810,17 +816,18 @@ export function buildVisualReviewPromptPayload({
       : null,
     deterministic_classification: deterministic || {},
     deterministic_diff: diff || {},
+    review_completeness: completeness,
     include_images: includeImages,
     // Lossless diffs already carry complete context. Prefix excerpts would duplicate it,
     // potentially clip JSON context, and misleadingly resemble the whole old page.
     ...(contextRepresentation ? { text_context_representation: contextRepresentation } : {}),
-    previous_text_excerpt: contextRepresentation ? "" : String(previous?.text || "").slice(0, promptChars),
-    new_text_excerpt: contextRepresentation ? "" : String(capture?.text || "").slice(0, promptChars),
+    previous_text_excerpt: contextRepresentation ? "" : completeLegacyContext ? String(previous?.text || "") : String(previous?.text || "").slice(0, promptChars),
+    new_text_excerpt: contextRepresentation ? "" : completeLegacyContext ? String(capture?.text || "") : String(capture?.text || "").slice(0, promptChars),
     text_evidence: {
-      added_text: stringArray(diff?.added_text).slice(0, 16),
-      removed_text: stringArray(diff?.removed_text).slice(0, 16),
-      date_changes: stringArray(diff?.date_changes).slice(0, 12),
-      amount_changes: stringArray(diff?.amount_changes).slice(0, 12),
+      added_text: stringArray(diff?.added_text),
+      removed_text: stringArray(diff?.removed_text),
+      date_changes: stringArray(diff?.date_changes),
+      amount_changes: stringArray(diff?.amount_changes),
     },
   };
 }
@@ -1001,6 +1008,9 @@ export function validateVisualBatchReview({ candidate, source, result }) {
     return reject(`source_quality_${quality.reason}`);
   }
 
+  const completeness = legacyReviewCompletenessDecision({ candidate, source, result });
+  if (completeness.applicable !== false && !completeness.allowed) return completeness;
+
   const isInitialOfficialDocument =
     cleanKey(candidate?.candidate_scope) === cleanKey(INITIAL_OFFICIAL_DOCUMENT_SCOPE);
   const initialDocumentApplicantEvidence = isInitialOfficialDocument
@@ -1116,6 +1126,7 @@ export function latestVisualReviewPolicyDecision({
     return {
       allowed: false,
       reason: validation.reason,
+      manual_review_required: validation.manual_review_required === true,
       policy_identity: policyIdentity,
       guard: "visual_review_validation",
     };
@@ -1157,6 +1168,8 @@ export function latestVisualReviewPolicyDecision({
 }
 
 export function changeDetailsFromVisualBatchResult({ candidate, source, result, model }) {
+  const completeness = legacyReviewCompletenessDecision({ candidate, source, result });
+  if (completeness.applicable !== false && !completeness.allowed) return { ...completeness, changed_facts: [], changed_award_facts: [], reader_summary: "Saved change evidence requires manual review." };
   const deterministicDiff = candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {};
   const structuredDiff = normalizeStructuredDiff(
     { noise_flags: result?.noise_flags },
@@ -1669,10 +1682,10 @@ function candidateEvidence({ diff = {}, deterministic = {}, baseline = {}, previ
   );
 
   return {
-    added_text: addedText.slice(0, 16),
-    removed_text: removedText.slice(0, 16),
-    date_changes: dateChanges.slice(0, 12),
-    amount_changes: amountChanges.slice(0, 12),
+    added_text: addedText,
+    removed_text: removedText,
+    date_changes: dateChanges,
+    amount_changes: amountChanges,
     changed_text: changedText,
     has_text_evidence: Boolean(addedText.length || removedText.length),
     has_visual_evidence: Boolean(imageChanged),
@@ -1857,9 +1870,7 @@ function normalizeChangedFacts(values) {
         removed_text: cleanNullable(object.removed_text || object.removedText),
         visual_evidence: cleanNullable(object.visual_evidence || object.visualEvidence || object.evidence),
       };
-    })
-    .filter((value) => value.fact || value.before || value.after || value.added_text || value.removed_text || value.visual_evidence)
-    .slice(0, 12);
+    });
 }
 
 function evidenceDerivedPublicClaims({ candidate, result, structuredDiff }) {
@@ -1927,7 +1938,7 @@ function evidenceDerivedPublicClaims({ candidate, result, structuredDiff }) {
     before,
     after,
     change_type: changeType,
-    changed_facts: changedFacts.slice(0, 12),
+    changed_facts: changedFacts,
   };
 }
 
@@ -2095,17 +2106,17 @@ function normalizeStructuredDiff(value, fallbackDiff = {}, source = null) {
   const object = objectValue(value);
   return {
     added_text: stringArray(object.added_text).length
-      ? stringArray(object.added_text).slice(0, 8)
-      : stringArray(fallbackDiff.added_text).slice(0, 8),
+      ? stringArray(object.added_text)
+      : stringArray(fallbackDiff.added_text),
     removed_text: stringArray(object.removed_text).length
-      ? stringArray(object.removed_text).slice(0, 8)
-      : stringArray(fallbackDiff.removed_text).slice(0, 8),
+      ? stringArray(object.removed_text)
+      : stringArray(fallbackDiff.removed_text),
     date_changes: stringArray(object.date_changes).length
-      ? stringArray(object.date_changes).slice(0, 8)
-      : stringArray(fallbackDiff.date_changes).slice(0, 8),
+      ? stringArray(object.date_changes)
+      : stringArray(fallbackDiff.date_changes),
     amount_changes: stringArray(object.amount_changes).length
-      ? stringArray(object.amount_changes).slice(0, 8)
-      : stringArray(fallbackDiff.amount_changes).slice(0, 8),
+      ? stringArray(object.amount_changes)
+      : stringArray(fallbackDiff.amount_changes),
     noise_flags: unique(stringArray(object.noise_flags).map(cleanKey).filter(Boolean)).slice(0, 20),
     likely_section: cleanNullable(object.likely_section || object.section || fallbackDiff.likely_section),
     page_type: cleanNullable(object.page_type || fallbackDiff.page_type || source?.page_type),

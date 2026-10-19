@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildVisualReviewPromptPayload, classifyVisualReviewCandidate } from "./visual-review-queue.mjs";
+import { buildLegacyReviewCompleteness } from "./legacy-review-completeness.mjs";
 import { buildMonitoringPromotionMatcherBundleManifest, monitoringPromotionMatcherBundleSources,
   monitoringPromotionMatcherBundleDigestFromManifest } from "./monitoring-promotion-matcher-bundle.mjs";
 
@@ -19,8 +20,16 @@ const diffFor = (added, removed = ["Application eligibility requirements were pr
   added_text: Array.isArray(added) ? added : [added], removed_text: removed,
   date_changes: [], amount_changes: [],
 });
-const gate = (added, overrides = {}) => classifyVisualReviewCandidate({ source: source(),
-  diff: diffFor(added), deterministic: { candidate_change: true }, ...overrides });
+const gate = (added, overrides = {}) => {
+  // Explicitly synthetic clause-sized contexts test the name matcher. They do
+  // not certify the historical page or its old clipped producer packet.
+  const input = { source: source(), diff: diffFor(added), deterministic: { candidate_change: true }, ...overrides };
+  const previousText = input.diff.removed_text.join("\n"), currentText = input.diff.added_text.join("\n");
+  const diff = { ...input.diff, legacy_review_completeness: buildLegacyReviewCompleteness({ source: input.source,
+    previousText, currentText, diff: input.diff, excludedChangedUnits: 0 }) };
+  return classifyVisualReviewCandidate({ ...input, diff, previous: { text: previousText }, baseline: { text_hash: hash(previousText) },
+    capture: { text: currentText, text_hash: hash(currentText) } });
+};
 
 beforeEach(() => vi.stubGlobal("fetch", vi.fn(() => { throw new Error("unexpected_network_or_provider_call"); })));
 afterEach(() => { expect(fetch).not.toHaveBeenCalled(); vi.unstubAllGlobals(); });
@@ -37,18 +46,19 @@ describe("generic enrollment clauses are not named sibling programs", () => {
     }
   });
 
-  it("allows the five literal Yenching paragraph changes through the source/candidate gate without editing inputs", () => {
+  it("holds the historical five-paragraph Yenching packet without retroactively certifying its producer", () => {
     const input = { source: source(), diff: diffFor(retained.blocks.map(b => b.after.text), retained.blocks.map(b => b.before.text)),
       deterministic: { candidate_change: true, reason: "award_relevant_terms_or_context" } };
     const before = structuredClone(input);
-    expect(classifyVisualReviewCandidate(input)).toMatchObject({ allowed: true, label: "applicant_fact_change" });
+    expect(classifyVisualReviewCandidate(input)).toMatchObject({ allowed: false, manual_review_required: true,
+      reason: "legacy_review_completeness_missing", baseline_advance_allowed: false });
     expect(input).toEqual(before);
   });
 
   it.each(retained.blocks.map((block, index) => [index + 1, block]))("does not misidentify actual retained paragraph %i as another named program", (_index, block) => {
     const diff = diffFor(block.after.text, [block.before.text]), before = structuredClone(diff);
-    // Other existing applicant-signal gates still apply to an isolated sentence
-    // group; the combined actual change is separately required to be eligible.
+    // A synthetic clause context checks the name inference only. The raw
+    // historical combined packet remains held, not newly certified complete.
     expect(gate(block.after.text, { diff }).reason).not.toBe("sibling_program_or_cross_award");
     expect(diff).toEqual(before);
   });
