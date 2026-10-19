@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual as equal } from "node:util";
 import { validateScraplingCapture, scraplingSourceHtmlProfile } from "./scrapling-capture.mjs";
 import { normalizeVisibleText } from "./capture-stability.mjs";
 
@@ -7,7 +8,6 @@ export const SOURCE_HTML_EVIDENCE_SCHEMA = "awardping.source-html-evidence.v1";
 export const SOURCE_HTML_PROJECTION_SCHEMA = "awardping.source-html-artifact-projection.v1";
 const hash = value => createHash("sha256").update(value).digest("hex");
 const fail = reason => { throw new Error(`Source HTML evidence: ${reason}`); };
-const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 export function sourceHtmlEvidence(record) {
   const checked = validateScraplingCapture(record, { source: { id: record?.source_id, url: record?.url } });

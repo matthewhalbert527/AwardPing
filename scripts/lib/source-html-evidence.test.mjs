@@ -10,6 +10,19 @@ import { collectR2CaptureArtifactFiles, prepareR2CaptureArtifacts, assertR2Captu
 const sha = value => createHash("sha256").update(value).digest("hex");
 const source = { id: "12345678-1234-4234-8234-123456789012", shared_award_id: "22345678-1234-4234-8234-123456789012", url: "https://example.edu/award" };
 const at = "2026-10-18T19:00:00.000Z";
+// Actual JSONB key order from the retained Schwarzman Admissions pointer,
+// captured October 19, 2026 at 02:32:28.419834 UTC.
+const retainedJsonbProjection = {
+  kind: "webpage",
+  schema: "awardping.source-html-artifact-projection.v1",
+  acquisition: "ordinary_anonymous_http",
+  authoritative: { layout_hash: null, layout_retained: false, expansion_state_count: 0 },
+  artifact_slots: ["html", "meta", "text"],
+  capture_profile: "scrapling-source-html-v1",
+  localization_status: "source_html_no_screenshot",
+  visibility_verified: false,
+  screenshot_available: false,
+};
 function record() {
   const text = "Applicants must be United States citizens. The graduate program requires a complete application by October 23, 2026. " + "Applicants must submit complete academic transcripts and all required recommendations. ".repeat(2);
   const html = `<html><head><title>Award</title></head><body><main><p>${text}</p></main></body></html>`;
@@ -35,6 +48,43 @@ async function fixture(callback) {
 }
 
 describe("source-only worker and R2 binding", () => {
+  it("accepts the retained JSONB projection without changing any raw artifact bytes", async () => fixture(({ capture, prepared }) => {
+    const rawBodies = prepared.artifacts.map(artifact => Buffer.from(artifact.body));
+    expect(JSON.stringify(capture.retained_artifact_projection)).not.toBe(JSON.stringify(retainedJsonbProjection));
+    capture.retained_artifact_projection = structuredClone(retainedJsonbProjection);
+    expect(() => assertSourceHtmlArtifactIdentity(capture, prepared)).not.toThrow();
+    expect(prepared.artifacts.every((artifact, index) => artifact.body.equals(rawBodies[index]))).toBe(true);
+  }));
+  it("accepts reordered binding and capsule object keys while retaining raw hashes", async () => fixture(({ capture, prepared }) => {
+    const rawHashes = prepared.artifacts.map(artifact => sha(artifact.body));
+    const originalCapsule = JSON.stringify(capture.source_html);
+    capture.source_html = {
+      capture: Object.fromEntries(Object.entries(capture.source_html.capture).reverse()),
+      schema: capture.source_html.schema,
+    };
+    for (const slot of ["html", "meta", "text"])
+      prepared.artifactBindings[slot] = Object.fromEntries(Object.entries(prepared.artifactBindings[slot]).reverse());
+    expect(JSON.stringify(capture.source_html)).not.toBe(originalCapsule);
+    expect(() => assertSourceHtmlArtifactIdentity(capture, prepared)).not.toThrow();
+    expect(prepared.artifacts.map(artifact => sha(artifact.body))).toEqual(rawHashes);
+  }));
+  it.each([
+    ["changed value", projection => { projection.visibility_verified = true; }],
+    ["changed value type", projection => { projection.authoritative.expansion_state_count = "0"; }],
+    ["missing key", projection => { delete projection.screenshot_available; }],
+    ["extra key", projection => { projection.extra = null; }],
+    ["changed nested value", projection => { projection.authoritative.layout_retained = true; }],
+    ["missing nested key", projection => { delete projection.authoritative.layout_hash; }],
+    ["extra nested key", projection => { projection.authoritative.extra = null; }],
+    ["reordered array", projection => { projection.artifact_slots.reverse(); }],
+    ["missing array item", projection => { projection.artifact_slots.pop(); }],
+    ["extra array item", projection => { projection.artifact_slots.push("page"); }],
+    ["array replaced with object", projection => { projection.artifact_slots = { ...projection.artifact_slots }; }],
+  ])("rejects a projection with a %s after a JSONB round trip", async (_label, mutate) => fixture(({ capture, prepared }) => {
+    capture.retained_artifact_projection = structuredClone(retainedJsonbProjection);
+    mutate(capture.retained_artifact_projection);
+    expect(() => assertSourceHtmlArtifactIdentity(capture, prepared)).toThrow("source artifact projection required");
+  }));
   it("retains exactly3 files, fullbody/main context and immutable raw bindings without a screenshot", async () => fixture(({ capture, prepared }) => {
     expect(readdirSync(capture.dir).sort()).toEqual(["meta.json", "page.html.txt", "text.txt"]);
     expect(capture.html).toBe(record().html);
