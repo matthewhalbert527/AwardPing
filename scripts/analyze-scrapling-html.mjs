@@ -33,6 +33,8 @@ export function validateHtmlDocument(doc, { sourceUrl }) {
     if (!text(block?.kind, 40) || !block.kind || !text(block.text) || !block.text.trim() ||
         !headings(block.heading_path) || !strings(block.list_path) || !strings(block.table_row)) fail("invalid_html_block");
     if (Object.hasOwn(block, "details_path") && (!strings(block.details_path, 100) || !block.details_path.length)) fail("invalid_html_block");
+    if (Object.hasOwn(block, "sibling_button_path") && (!strings(block.sibling_button_path, 100) || !block.sibling_button_path.length ||
+        block.sibling_button_path.some(value => !text(value, 10000) || !value.trim()))) fail("invalid_html_block");
     if (Object.hasOwn(block, "table_cell") && (!block.table_cell || typeof block.table_cell !== "object" ||
         Array.isArray(block.table_cell) || !Object.values(block.table_cell).every((v) => text(v, 10000) ||
           (Number.isInteger(v) && v >= 0 && v <= 65534)))) fail("invalid_html_table_cell");
@@ -42,6 +44,8 @@ export function validateHtmlDocument(doc, { sourceUrl }) {
         !strings(link.base_hrefs, 100) || JSON.stringify(link.base_hrefs) !== JSON.stringify(doc.base_hrefs) ||
         !headings(link.heading_path) || !strings(link.list_path)) fail("invalid_html_link");
     if (Object.hasOwn(link, "details_path") && (!strings(link.details_path, 100) || !link.details_path.length)) fail("invalid_html_link");
+    if (Object.hasOwn(link, "sibling_button_path") && (!strings(link.sibling_button_path, 100) || !link.sibling_button_path.length ||
+        link.sibling_button_path.some(value => !text(value, 10000) || !value.trim()))) fail("invalid_html_link");
   }
   if (Buffer.byteLength(JSON.stringify(doc), "utf8") > 5 * 1024 * 1024) fail("html_document_too_large");
   return doc;

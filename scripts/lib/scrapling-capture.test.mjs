@@ -72,6 +72,23 @@ function evidenceFixture(capturedAt = firstTime) {
 }
 
 describe("opt-in Scrapling evidence profile", () => {
+  it("seals neutral sibling-button paths without inferring headings or visibility", () => {
+    const record = evidenceFixture(), old = validateScraplingCapture(structuredClone(record), { source });
+    record.html_document.blocks[1].sibling_button_path = ["Applicants", "Applicants"];
+    record.html_document.links[0].sibling_button_path = ["Applicants"];
+    const retained = validateScraplingCapture(record, { source });
+    expect(retained.html_document.blocks[1].sibling_button_path).toEqual(["Applicants", "Applicants"]);
+    expect(retained.html_document.blocks[1].heading_path).toEqual([heading]);
+    expect(retained.html_document.visibility_verified).toBe(false);
+    expect(retained.integrity.html_document_sha256).not.toBe(old.integrity.html_document_sha256);
+  });
+  it.each([null, "Label", [], [null], [3], [""], ["  "], Array(101).fill("Label"), ["x".repeat(10001)]])("rejects malformed sibling-button path %j", path => {
+    for (const field of ["blocks", "links"]) {
+      const record = evidenceFixture(); record.html_document[field][0].sibling_button_path = path;
+      expect(() => validateScraplingCapture(record, { source })).toThrow(field === "blocks" ? "invalid_html_block" : "invalid_html_link");
+    }
+  });
+
   it("seals optional FAQ ancestry without dropping it from retained evidence", () => {
     const record = evidenceFixture();
     const original = validateScraplingCapture(structuredClone(record), { source });

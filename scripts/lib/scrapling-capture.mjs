@@ -51,6 +51,8 @@ function validateHtmlDocument(doc, record, scope = "html-source-main-document") 
     if (!isText(block?.kind, 40) || !block.kind || !isText(block.text) || !block.text.trim() ||
         !headingPath(block.heading_path) || !textList(block.list_path) || !textList(block.table_row)) fail("invalid_html_block");
     if (Object.hasOwn(block, "details_path") && (!textList(block.details_path) || !block.details_path.length || block.details_path.length > 100)) fail("invalid_html_block");
+    if (Object.hasOwn(block, "sibling_button_path") && (!textList(block.sibling_button_path) || !block.sibling_button_path.length || block.sibling_button_path.length > 100 ||
+        block.sibling_button_path.some(value => !isText(value, 10000) || !value.trim()))) fail("invalid_html_block");
     if (Object.hasOwn(block, "table_cell") && (!block.table_cell || typeof block.table_cell !== "object" || Array.isArray(block.table_cell) ||
         !Object.values(block.table_cell).every((v) => isText(v, 10000) || (Number.isInteger(v) && v >= 0 && v <= 65534)))) fail("invalid_html_block");
   }
@@ -59,6 +61,8 @@ function validateHtmlDocument(doc, record, scope = "html-source-main-document") 
         JSON.stringify(link.base_hrefs) !== JSON.stringify(doc.base_hrefs) ||
         !headingPath(link.heading_path) || !textList(link.list_path)) fail("invalid_html_link");
     if (Object.hasOwn(link, "details_path") && (!textList(link.details_path) || !link.details_path.length || link.details_path.length > 100)) fail("invalid_html_link");
+    if (Object.hasOwn(link, "sibling_button_path") && (!textList(link.sibling_button_path) || !link.sibling_button_path.length || link.sibling_button_path.length > 100 ||
+        link.sibling_button_path.some(value => !isText(value, 10000) || !value.trim()))) fail("invalid_html_link");
   }
 }
 

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import crypto, { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -8,9 +8,13 @@ import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { hasRelativeAgeOnlyTextDiff } from "./lib/award-monitoring-policy.mjs";
 import { buildLegacyReviewCompleteness, legacyReviewCompletenessDecision,
-  visualReviewResultCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
+  visualReviewResultCompletenessDecision, buildLegacyParagraphReviewDiff, legacyReviewCompletenessLimits,
+  legacyParagraphReviewSchema, isLegacyParagraphReviewCandidate, legacyParagraphReviewLimits } from "./lib/legacy-review-completeness.mjs";
 import { buildVisualReviewPromptPayload, changeDetailsFromVisualBatchResult,
-  classifyVisualReviewCandidate, normalizeVisualBatchResult, validateVisualBatchReview } from "./lib/visual-review-queue.mjs";
+  classifyVisualReviewCandidate, normalizeVisualBatchResult, validateVisualBatchReview,
+  buildVisualReviewPromptText, visualReviewResponseSchemaForCandidate, visualReviewResponseSchema } from "./lib/visual-review-queue.mjs";
+import { visualReviewCompletionDecision } from "./lib/gemini-worker-policy.mjs";
+import { compareVisualCandidateOrder, findBlockingPriorVisualPublication } from "./lib/visual-publication-order.mjs";
 
 // Execute only actual extracted function declarations, never either CLI/main.
 // No artifacts, provider requests, database calls or worker operations are used.
@@ -37,7 +41,7 @@ const producerNames = ["buildDiffSummary", "excludedLegacyChangedUnits", "normal
   "contextAroundMatch", "hasFundingAmountContext", "inferSection", "looksLikeRecipientNewsOrPressText",
   "looksLikeSourceAccessError", "normalizeText", "truncate", "dedupeText", "unique"];
 const producer = functions(captureCode, producerNames, { sentenceDotPlaceholder: "__AP_SENTENCE_DOT__",
-  hasRelativeAgeOnlyTextDiff, buildLegacyReviewCompleteness });
+  hasRelativeAgeOnlyTextDiff, buildLegacyReviewCompleteness, buildLegacyParagraphReviewDiff, legacyReviewCompletenessLimits });
 const source = { id: "source-1", shared_award_id: "award-1", url: "https://example.edu/award/apply",
   title: "Example Award Application", page_type: "application", admin_review_status: "open",
   page_metadata_generated_at: "2026-07-08T00:00:00.000Z", page_metadata_model: "synthetic-test",
@@ -210,6 +214,349 @@ describe("bounded complete legacy evidence (not exhaustive AI reporting)", () =>
       input.capture.text_hash = input.baseline.text_hash; input.candidate.new_text_hash = input.baseline.text_hash; }
     expect(legacyReviewCompletenessDecision(input)).toMatchObject({ applicable: false, allowed: false, requires_existing_contract: true });
     expect(legacyReviewCompletenessDecision({ ...input, requireResult: true })).toMatchObject({ allowed: false, manual_review_required: true });
+  });
+});
+
+describe("v2 complete paired paragraphs: one bounded request, not request chunks", () => {
+  const fixtureBytes = readFileSync(new URL("./fixtures/scrapling-accuracy/yenching-complete-retained-pair-20261018.json", import.meta.url));
+  const fixture = JSON.parse(fixtureBytes);
+  function actualPair() {
+    const input = pair(fixture.before.text, fixture.after.text, true);
+    input.source = { ...source, ...fixture.source };
+    input.diff = producer.buildDiffSummary(input.previous.text, input.capture.text, input.source);
+    input.candidate = { ...input.candidate, shared_award_id: input.source.shared_award_id,
+      shared_award_source_id: input.source.id, source_url: input.source.url, source_title: input.source.title,
+      deterministic_diff: input.diff, prompt_payload: buildVisualReviewPromptPayload(input) };
+    return input;
+  }
+  function reviewed(input = actualPair()) {
+    const changes = [0, 1, 3, 4];
+    const raw = { ...response(changes.map(block_index => ({ fact: "Application requirements changed.", block_index,
+      before: input.diff.removed_text[block_index], after: input.diff.added_text[block_index],
+      removed_text: input.diff.removed_text[block_index], added_text: input.diff.added_text[block_index], visual_evidence: null }))),
+      exact_before: input.diff.removed_text[3], exact_after: input.diff.added_text[3],
+      block_reviews: input.diff.added_text.map((_, block_index) => ({ block_index,
+        disposition: changes.includes(block_index) ? "applicant_change" : "wording_only", reason: "Both complete paragraphs reviewed with their full audience and cycle context." })) };
+    return { ...normalizeVisualBatchResult(raw, input), finish_reason: "STOP", provider_candidate_count: 1 };
+  }
+  it("binds the actual historical source, exact writer files and all91 paragraphs; five replacements reconstruct the entire captured text", () => {
+    expect(digest(fixtureBytes)).toBe("9500cc222600232839335772e887650db5b69effe82b2edc67cf1a50960c8122");
+    expect(fixture.source.id).toBe("c28878c0-6a8b-5fa8-b99b-ec826b86d8f2");
+    expect([fixture.before.meta_sha256, fixture.after.meta_sha256]).toEqual([
+      "4340cbeb8b626461febdb43631dced3e72193981add3810cba1e52448b302c42", "77a03ffea19ba99a2700cf6068491b56c430b9bfacb00f636702ecccfce093b4"]);
+    for (const side of ["before", "after"]) {
+      expect(digest(fixture[side].text)).toBe(fixture[side].text_sha256);
+      expect(digest(fixture[side].text + fixture[side].writer_suffix)).toBe(fixture[side].text_file_sha256);
+      expect(fixture[side].text.split(/\n\s*\n/)).toHaveLength(91);
+    }
+    const input = actualPair(), proof = input.diff.legacy_review_completeness;
+    expect([input.previous.text.length, input.capture.text.length]).toEqual([13_227, 13_173]);
+    expect(proof).toMatchObject({ schema: legacyParagraphReviewSchema, paragraph_count: 91, previous_writer_frame: true,
+      previous_text_sha256: fixture.before.text_file_sha256, previous_capture_text_sha256: fixture.before.text_sha256 });
+    expect(input.diff.added_text).toHaveLength(5); expect(input.diff.removed_text).toHaveLength(5);
+    let reconstructed = fixture.before.text;
+    for (const block of [...proof.changed_blocks].reverse()) {
+      const expected = fixture.changed_ranges[block.block_index];
+      expect([block.previous_start, block.previous_end, block.current_start, block.current_end]).toEqual([
+        expected.before.start, expected.before.end, expected.after.start, expected.after.end]);
+      expect([block.previous_sha256, block.current_sha256]).toEqual([expected.before.sha256, expected.after.sha256]);
+      reconstructed = reconstructed.slice(0, block.previous_start) + input.diff.added_text[block.block_index] + reconstructed.slice(block.previous_end);
+    }
+    expect(reconstructed).toBe(fixture.after.text);
+    const repeated = "Peking University does not permit students to be concurrently enrolled in any other degree program.";
+    expect(input.diff.added_text.join("\n\n").split(repeated)).toHaveLength(3);
+    expect(legacyReviewCompletenessDecision(input)).toMatchObject({ allowed: true, reason: "complete_bounded_paired_paragraph_input" });
+    const result = reviewed(input);
+    expect(legacyReviewCompletenessDecision({ ...input, result, requireResult: true }).allowed).toBe(true);
+    expect(validateVisualBatchReview({ ...input, result }).allowed).toBe(true);
+    expect(changeDetailsFromVisualBatchResult({ ...input, result }).changed_facts).toHaveLength(4);
+  });
+  it("keeps full contexts and every paired paragraph through the actual prompt, normalization and version-selected schema", () => {
+    const input = actualPair(), result = reviewed(input);
+    expect(input.candidate.prompt_payload.previous_text_excerpt).toBe(input.previous.text);
+    expect(input.candidate.prompt_payload.new_text_excerpt).toBe(input.capture.text);
+    const prompt = buildVisualReviewPromptText(input.candidate.prompt_payload);
+    expect(prompt).toContain(fixture.before.text); expect(prompt).toContain(fixture.after.text);
+    expect(prompt).toContain("never infer an unstated day or conflate preliminary and final admission");
+    expect(prompt).toContain("Return structured_diff:null");
+    expect(prompt.split("Required JSON keys:\n")[1].split("\n")[0]).toContain("block_reviews");
+    expect(buildVisualReviewPromptText(pair().candidate.prompt_payload).split("Required JSON keys:\n")[1].split("\n")[0]).not.toContain("block_reviews");
+    expect(result.changed_facts.map(fact => fact.block_index)).toEqual([0, 1, 3, 4]);
+    const schema = visualReviewResponseSchemaForCandidate(input.candidate);
+    expect(schema.required).toContain("block_reviews");
+    expect(schema.properties.changed_facts.items.required).toContain("block_index");
+    expect(visualReviewResponseSchemaForCandidate(pair().candidate)).toBe(visualReviewResponseSchema);
+    expect(legacyReviewCompletenessLimits).toEqual({ evidenceItems: 8, resultFacts: 12, contextChars: 12_000, packetBytes: 128_000 });
+  });
+  it("uses the actual native request with unchanged model/output cap and rejects a full serialized request beyond128KB before submission", () => {
+    const input = actualPair();
+    const api = functions(batchCode, ["geminiBatchRequestForCandidate"], { visualReviewGenerationConfigForModel: () => ({ maxOutputTokens: 2048 }),
+      visualReviewClaimedModel: () => "gemini-2.5-flash-lite", refreshVisualReviewPromptPayloadPolicy: value => value,
+      buildVisualReviewPromptText, visualReviewResponseSchemaForCandidate, isLegacyParagraphReviewCandidate,
+      legacyParagraphReviewLimits, monitoringPolicy: {} });
+    const request = api.geminiBatchRequestForCandidate(input.candidate);
+    expect(request.request.generationConfig.maxOutputTokens).toBe(2048);
+    expect(request.request.generationConfig.responseSchema.required).toContain("block_reviews");
+    expect(request.request.contents[0].parts[0].text).toContain(fixture.after.text);
+    input.candidate.prompt_payload.source.baseline_facts = { synthetic_large_context: "x".repeat(65_000) };
+    expect(legacyReviewCompletenessDecision(input).allowed).toBe(true);
+    expect(() => api.geminiBatchRequestForCandidate(input.candidate)).toThrow("exceeds128KB");
+    input.candidate.prompt_payload.source.baseline_facts.synthetic_large_context += "x".repeat(65_000);
+    expect(legacyReviewCompletenessDecision(input)).toMatchObject({ allowed: false, reason: "legacy_paragraph_review_complete_prompt_exceeds_bound" });
+  });
+  it.each(["owned", "concurrent published", "concurrent claim"])("actual submit/request/failure path keeps oversize input in an explicit nonresumable manual hold (%s)", async drift => {
+    const input = actualPair();
+    input.candidate.prompt_payload.source.baseline_facts = { synthetic_large_context: "x".repeat(65_000) };
+    expect(legacyReviewCompletenessDecision(input).allowed).toBe(true);
+    const frozenPayload = JSON.stringify(input.candidate.prompt_payload), frozenDiff = JSON.stringify(input.diff);
+    let row = structuredClone(input.candidate), patch, filters = [], updates = 0;
+    const query = { update(value) { patch = value; filters = []; updates++;
+      if (updates === 2 && drift === "concurrent published") row.status = "published";
+      if (updates === 2 && drift === "concurrent claim") row.worker_metadata.submission_claim_token = "new-owner";
+      return this; }, eq(key, value) { filters.push(["eq", key, value]); return this; },
+      is(key, value) { filters.push(["is", key, value]); return this; }, contains(key, value) { filters.push(["contains", key, value]); return this; },
+      select() { return this; }, in() { return this; }, neq() { return this; }, order() { return this; },
+      async limit() { return { data: [row], error: null }; },
+      async maybeSingle() { const matches = filters.every(([op, key, value]) => op === "contains"
+        ? row.worker_metadata?.submission_claim_token === value.submission_claim_token : (row[key] ?? null) === value);
+        if (!matches) return { data: null, error: null };
+        row = { ...row, ...patch }; return { data: structuredClone(row), error: null }; } };
+    const forbidden = vi.fn(() => { throw Error("Oversize input must not authorize, reserve, fingerprint, submit or charge"); });
+    const report = { submission_claim_conflicts: 0, errors: [] };
+    const api = functions(batchCode, ["submitCandidateChunk", "geminiBatchRequestForCandidate", "failVisualProviderRequestEvidence",
+      "retainIncompleteReviewHold", "preSubmissionRejectReason", "findPriorNonterminalPublication"], {
+      crypto, paidReviewWorkKindForLane: () => "synthetic-changed", paidReviewLaneForCandidate: () => "changed_page_review",
+      visualReviewMaxOutputTokensForModel: () => 2048, timestampForPath: () => "synthetic-time",
+      supabase: { from: () => query }, report, workerMetadataForCandidate: (candidate, value) => ({ ...candidate.worker_metadata, ...value }),
+      visualReviewGenerationConfigForModel: () => ({ maxOutputTokens: 2048 }), visualReviewClaimedModel: () => "gemini-2.5-flash-lite",
+      refreshVisualReviewPromptPayloadPolicy: value => value, buildVisualReviewPromptText, visualReviewResponseSchemaForCandidate,
+      isLegacyParagraphReviewCandidate, legacyParagraphReviewLimits, legacyReviewCompletenessDecision, monitoringPolicy: {},
+      paidVisualProviderRequestFingerprint: forbidden, authorizePaidRetryCandidatesForSubmission: forbidden,
+      reserveGeminiSpend: forbidden, createGeminiBatchJob: forbidden, estimateGeminiMaximumBatchRequestsCostUsd: forbidden,
+      errorMessage: error => error.message, sourceQualityDecision: () => ({ allowed: true }),
+      visualReviewConditionalSourceApplicantEscape: () => ({ allowed: false }), expandableSectionCandidateRejectReason: () => null,
+      compareVisualCandidateOrder, findBlockingPriorVisualPublication, recoverMissingBatchResponses: false });
+    await api.submitCandidateChunk("gemini-2.5-flash-lite", [input.candidate], "changed_page_review");
+    expect(forbidden).not.toHaveBeenCalled();
+    expect(JSON.stringify(row.prompt_payload)).toBe(frozenPayload); expect(JSON.stringify(row.deterministic_diff)).toBe(frozenDiff);
+    if (drift === "owned") {
+      expect(row).toMatchObject({ status: "failed", rejection_reason: "manual_review_required:legacy_paragraph_review_provider_request_exceeds_bound",
+        worker_metadata: { review_completeness_hold: { automatic_retry_allowed: false, baseline_advance_allowed: false, retain_both_captures: true, creates_api_charge: false } } });
+      expect(report.manual_review_required).toBe(1);
+      expect(api.preSubmissionRejectReason(row, input.source)).toContain("manual_review_required:");
+      const later = { ...input.candidate, id: "later-source-candidate", created_at: "2027-01-01T00:00:00Z" };
+      expect(await api.findPriorNonterminalPublication(later)).toBe(row);
+    } else {
+      expect(report.manual_review_required).toBeUndefined();
+      expect(row.worker_metadata.review_completeness_hold).toBeUndefined();
+      if (drift === "concurrent published") expect(row.status).toBe("published");
+      else expect(row.worker_metadata.submission_claim_token).toBe("new-owner");
+    }
+  });
+  it("does not change the existing generic request-failure disposition for an untagged error", async () => {
+    const input = actualPair(); input.candidate.status = "processing";
+    input.candidate.worker_metadata = { submission_claim_token: "owned" };
+    let patch;
+    const query = { update(value) { patch = value; return this; }, eq() { return this; }, is() { return this; }, contains() { return this; },
+      select() { return this; }, async maybeSingle() { return { data: { id: input.candidate.id }, error: null }; } };
+    const api = functions(batchCode, ["failVisualProviderRequestEvidence"], { supabase: { from: () => query },
+      isLegacyParagraphReviewCandidate, workerMetadataForCandidate: (candidate, value) => ({ ...candidate.worker_metadata, ...value }),
+      errorMessage: error => error.message, truncate: value => value, report: { provider_request_evidence_invalid: 0, errors: [] },
+      retainIncompleteReviewHold: vi.fn(() => { throw Error("Only the new tagged bound may use the new path"); }) });
+    await api.failVisualProviderRequestEvidence([{ candidate: input.candidate, error: new Error("Other artifact failure") }], "owned");
+    expect(patch).toMatchObject({ rejection_reason: "provider_request_evidence_invalid", worker_metadata: { automatic_retry_after_repair: false } });
+    expect(patch.worker_metadata.review_completeness_hold).toBeUndefined();
+  });
+  it.each(["missing", "omitted", "extra", "duplicate", "uncertain", "noninteger", "blank reason", "extra field"])("holds %s block dispositions without allowing a partial page", kind => {
+    const input = actualPair(), result = reviewed(input);
+    if (kind === "missing") delete result.raw_result.block_reviews;
+    if (kind === "omitted") result.raw_result.block_reviews.pop();
+    if (kind === "extra") result.raw_result.block_reviews.push({ block_index: 5, disposition: "noise", reason: "Extra" });
+    if (kind === "duplicate") result.raw_result.block_reviews[4].block_index = 3;
+    if (kind === "uncertain") result.raw_result.block_reviews[4].disposition = "uncertain";
+    if (kind === "noninteger") result.raw_result.block_reviews[4].block_index = "4";
+    if (kind === "blank reason") result.raw_result.block_reviews[4].reason = "";
+    if (kind === "extra field") result.raw_result.block_reviews[4].unreviewed = true;
+    expect(legacyReviewCompletenessDecision({ ...input, result, requireResult: true })).toMatchObject({ allowed: false,
+      manual_review_required: true, baseline_advance_allowed: false, creates_api_charge: false });
+  });
+  it.each(["missing last fact", "wrong block", "cross pair", "unbound quote", "wording fact", "false flags", "visual quote"])("holds %s rather than dropping evidence or inventing a complete verdict", kind => {
+    const input = actualPair(), result = reviewed(input), raw = result.raw_result;
+    if (kind === "missing last fact") raw.changed_facts.pop();
+    if (kind === "wrong block") raw.changed_facts[0].block_index = 8;
+    if (kind === "cross pair") raw.changed_facts[0].after = input.diff.added_text[4];
+    if (kind === "unbound quote") raw.changed_facts[0].after = "Applicants are guaranteed admission on August 31.";
+    if (kind === "wording fact") raw.block_reviews[0].disposition = "wording_only";
+    if (kind === "false flags") raw.is_true_change = false;
+    if (kind === "visual quote") raw.changed_facts[0].visual_evidence = "The screenshot proves this.";
+    expect(legacyReviewCompletenessDecision({ ...input, result }).allowed).toBe(false);
+  });
+  it.each(["MAX_TOKENS", "missing STOP", "multiple candidates", "missing count"])("holds %s metadata even with complete-looking JSON", kind => {
+    const input = actualPair(), result = reviewed(input);
+    if (kind === "MAX_TOKENS") result.finish_reason = "MAX_TOKENS";
+    if (kind === "missing STOP") delete result.finish_reason;
+    if (kind === "multiple candidates") result.provider_candidate_count = 2;
+    if (kind === "missing count") delete result.provider_candidate_count;
+    expect(legacyReviewCompletenessDecision({ ...input, result })).toMatchObject({ allowed: false, creates_api_charge: false });
+  });
+  it.each([undefined, null, [], "not an object", 3])("holds missing or invalid raw_result %j instead of treating normalized content as original provenance", raw => {
+    const input = actualPair(), result = reviewed(input);
+    if (raw === undefined) delete result.raw_result; else result.raw_result = raw;
+    expect(legacyReviewCompletenessDecision({ ...input, result })).toMatchObject({ allowed: false, reason: "legacy_paragraph_review_raw_result_unavailable",
+      baseline_advance_allowed: false, creates_api_charge: false });
+  });
+  it.each(["raw-normalized flags", "normalized block ref", "normalized quote", "partial structured diff", "missing fact key", "fact extra key"])("holds %s result drift before public projection", kind => {
+    const input = actualPair(), result = reviewed(input);
+    if (kind === "raw-normalized flags") result.is_true_change = false;
+    if (kind === "normalized block ref") result.changed_facts[0].block_index = 4;
+    if (kind === "normalized quote") result.changed_facts[0].after = "Invented guaranteed acceptance.";
+    if (kind === "partial structured diff") result.structured_diff.added_text.pop();
+    if (kind === "missing fact key") delete result.raw_result.changed_facts[0].before;
+    if (kind === "fact extra key") result.raw_result.changed_facts[0].extra_claim = "Not assessed";
+    expect(legacyReviewCompletenessDecision({ ...input, result }).allowed).toBe(false);
+  });
+  it.each(["omitted", "null", "empty object", "one complete supplied field"])("keeps all deterministic evidence when compact raw structured_diff is %s", kind => {
+    const input = actualPair(), raw = reviewed(input).raw_result;
+    if (kind === "null") raw.structured_diff = null;
+    if (kind === "empty object") raw.structured_diff = {};
+    if (kind === "one complete supplied field") raw.structured_diff = { added_text: input.diff.added_text };
+    const result = { ...normalizeVisualBatchResult(raw, input), finish_reason: "STOP", provider_candidate_count: 1 };
+    expect(legacyReviewCompletenessDecision({ ...input, result }).allowed).toBe(true);
+    for (const field of Object.keys(blank())) expect(result.structured_diff[field]).toEqual(input.diff[field]);
+  });
+  it.each(["prefix", "empty array", "invented", "non-object", "normalized missing"])("holds %s compact structured_diff rather than repairing supplied content", kind => {
+    const input = actualPair(), raw = reviewed(input).raw_result;
+    raw.structured_diff = { added_text: kind === "empty array" ? [] : kind === "invented" ? ["Invented award facts."] : input.diff.added_text.slice(0, 1) };
+    if (kind === "non-object") raw.structured_diff = [];
+    if (kind === "normalized missing") raw.structured_diff = null;
+    const result = { ...normalizeVisualBatchResult(raw, input), finish_reason: "STOP", provider_candidate_count: 1 };
+    if (kind === "normalized missing") delete result.structured_diff;
+    expect(legacyReviewCompletenessDecision({ ...input, result })).toMatchObject({ allowed: false, reason: "legacy_paragraph_review_result_evidence_mismatch" });
+  });
+  it("allows a complete all-wording/noise verdict, but not an empty-facts rejection that leaves a changed block unresolved", () => {
+    const input = actualPair(), raw = { ...response([]), is_true_change: false, is_alert_worthy: false,
+      block_reviews: input.diff.added_text.map((_, block_index) => ({ block_index, disposition: "wording_only", reason: "Synthetic fully assessed wording-only result, not a human Yenching verdict." })) };
+    const result = { ...normalizeVisualBatchResult(raw, input), finish_reason: "STOP", provider_candidate_count: 1 };
+    expect(legacyReviewCompletenessDecision({ ...input, result }).allowed).toBe(true);
+    result.raw_result.block_reviews[4].disposition = "applicant_change";
+    expect(legacyReviewCompletenessDecision({ ...input, result }).allowed).toBe(false);
+  });
+  it.each(["changed old", "changed new", "wrong source", "wrong award", "wrong hash", "wrong range", "clipped prompt", "wrong frame"])("holds %s binding drift", kind => {
+    const input = actualPair();
+    if (kind === "changed old") input.previous.text += "x";
+    if (kind === "changed new") input.capture.text += "x";
+    if (kind === "wrong source") input.source.id = "other-source";
+    if (kind === "wrong award") input.candidate.shared_award_id = "other-award";
+    if (kind === "wrong hash") input.candidate.new_text_hash = "a".repeat(64);
+    if (kind === "wrong range") input.diff.legacy_review_completeness.changed_blocks[4].previous_start++;
+    if (kind === "clipped prompt") input.candidate.prompt_payload.text_evidence = { ...input.candidate.prompt_payload.text_evidence, added_text: [] };
+    if (kind === "wrong frame") input.baseline.text_hash = digest(input.previous.text);
+    expect(legacyReviewCompletenessDecision(input).allowed).toBe(false);
+  });
+  it("accepts JSONB object-key ordering without changing any values, occurrences or raw hashes", () => {
+    const input = actualPair();
+    const reorder = value => Array.isArray(value) ? value.map(reorder) : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value).reverse().map(([key, value]) => [key, reorder(value)])) : value;
+    const restored = reorder(input);
+    expect(legacyReviewCompletenessDecision(restored).allowed).toBe(true);
+  });
+  it("does not turn section completeness into whole-page authority or repair an older saved packet", () => {
+    const input = actualPair(); input.diff.candidate_scope = "expandable_section";
+    expect(legacyReviewCompletenessDecision(input)).toMatchObject({ allowed: false, reason: "legacy_paragraph_review_requires_whole_page_scope" });
+    const old = pair(); delete old.diff.legacy_review_completeness;
+    const frozen = JSON.stringify(old);
+    expect(legacyReviewCompletenessDecision(old)).toMatchObject({ allowed: false, reason: "legacy_review_completeness_missing" });
+    expect(JSON.stringify(old)).toBe(frozen);
+  });
+  it("does not deduplicate two changed paragraph occurrences, but holds reordering, additions and unexplained separator changes", () => {
+    const old = "Applicants must submit the original essay for eligibility.", next = "Applicants must submit the revised essay for eligibility.";
+    const diff = buildLegacyParagraphReviewDiff({ source, previousText: `${old}\n\n${old}`, currentText: `${next}\n\n${next}` });
+    expect(diff.added_text).toEqual([next, next]); expect(diff.legacy_review_completeness.changed_blocks).toHaveLength(2);
+    for (const [before, after] of [[`${old}\n\n${next}`, `${next}\n\n${old}`], [old, `${next}\n\nAnother paragraph.`], [`${old}\n\nSame.`, `${next}\n\n\nSame.`]]) {
+      expect(buildLegacyParagraphReviewDiff({ source, previousText: before, currentText: after })).toBeNull();
+    }
+  });
+  it("holds nine blocks, full context beyond16k and a UTF8 packet beyond128KB; never keeps a prefix", () => {
+    expect(buildLegacyParagraphReviewDiff({ source, previousText: clauses(9, "old").split(". ").join(".\n\n"), currentText: clauses(9, "new").split(". ").join(".\n\n") })).toBeNull();
+    expect(buildLegacyParagraphReviewDiff({ source, previousText: "x".repeat(16_001), currentText: "y".repeat(16_001) })).toBeNull();
+    expect(buildLegacyParagraphReviewDiff({ source, previousText: "甲".repeat(15_999), currentText: "乙".repeat(15_999) })).toBeNull();
+  });
+  it("accepts all eight complete blocks and the exact16k boundary, preserving Unicode and CRLF offsets", () => {
+    const before = clauses(8, "original").split(". ").join(".\n\n"), current = clauses(8, "revised").split(". ").join(".\n\n");
+    expect(buildLegacyParagraphReviewDiff({ source, previousText: before, currentText: current }).added_text).toHaveLength(8);
+    const old = "Applicants must submit the original essay.", next = "Applicants must submit the revised essay.";
+    const padding = "x".repeat(16_000 - old.length - 2);
+    const previous = { text: `${padding}\n\n${old}` }, capture = { text: `${padding}\n\n${next}` };
+    capture.text_hash = digest(capture.text);
+    const diff = buildLegacyParagraphReviewDiff({ source, previousText: previous.text, currentText: capture.text });
+    expect(legacyReviewCompletenessDecision({ source, previous, capture, baseline: { text_hash: digest(previous.text) }, diff }).allowed).toBe(true);
+    const unicode = buildLegacyParagraphReviewDiff({ source, previousText: `🧭 Unchanged context.\r\n \r\n${old}`, currentText: `🧭 Unchanged context.\r\n \r\n${next}` });
+    expect(unicode.legacy_review_completeness.changed_blocks[0].previous_start).toBe(`🧭 Unchanged context.\r\n \r\n`.length);
+    expect(unicode.added_text).toEqual([next]);
+  });
+  it.each(["MAX_TOKENS", "bad JSON", "missing block", "stored partial", "missing response", "provider error"])("actual reconciler retains %s with zero escalation, publication and baseline calls", async kind => {
+    const input = actualPair(); input.candidate.status = kind === "stored partial" ? "succeeded" : "submitted";
+    const complete = reviewed(input); const rawText = kind === "bad JSON" ? "{incomplete" : JSON.stringify(complete.raw_result);
+    if (kind === "missing block") { complete.raw_result.block_reviews.pop(); }
+    if (kind === "stored partial") input.candidate.ai_result = { ...complete, finish_reason: "MAX_TOKENS" };
+    const provider = { candidates: [{ finishReason: kind === "MAX_TOKENS" ? "MAX_TOKENS" : "STOP", content: { parts: [{ text: kind === "missing block" ? JSON.stringify(complete.raw_result) : rawText }] } }] };
+    const query = {}; for (const method of ["select", "eq", "in"]) query[method] = () => query;
+    query.order = async () => ({ data: [input.candidate], error: null });
+    const retained = vi.fn(async () => ({ status: "manual_review_required" }));
+    const prohibited = vi.fn(() => { throw Error("No retry/publication/claim/baseline operation allowed"); });
+    const api = functions(batchCode, ["reconcileCompletedBatch"], { supabase: { from: () => query },
+      recoverMissingBatchResponses: false, applyPaidLaneCandidateScopeFilter: x => x,
+      loadSourcesById: async () => new Map([[input.source.id, input.source]]),
+      geminiBatchResponseMap: async () => ({ responses: new Map(kind === "missing response" ? [] : [[input.candidate.id, provider]]), accounting: {} }),
+      settleVisualBatchSpend: vi.fn(async () => {}), geminiBatchState: () => "BATCH_STATE_SUCCEEDED",
+      objectValue: x => x || {}, normalizeGeminiUsage: () => ({}), geminiInlineError: () => kind === "provider error" ? { message: "Synthetic provider error" } : null,
+      geminiInlineErrorMessage: value => value.message,
+      geminiInlineResponsePayload: x => x, extractUsageMetadata: () => ({}), extractGeminiText: x => x.candidates[0].content.parts[0].text,
+      extractGeminiFinishReason: x => x.candidates[0].finishReason, cleanNullable: x => x || null,
+      visualReviewCompletionDecision, normalizeVisualBatchResult, isLegacyParagraphReviewCandidate,
+      legacyReviewCompletenessDecision, apply: true, retainIncompleteReviewHold: retained,
+      errorMessage: error => error.message, visualReviewResponseEscalationDecision: prohibited,
+      claimCompletedCandidatePublication: prohibited, publishCandidateResult: prohibited, markCandidate: prohibited,
+      report: { failed: 0, errors: [] } });
+    const batchReport = {};
+    await api.reconcileCompletedBatch("synthetic-batch", {}, batchReport);
+    expect(retained).toHaveBeenCalledOnce(); expect(prohibited).not.toHaveBeenCalled();
+    expect(batchReport.manual_review_required).toBe(1);
+    if (kind === "MAX_TOKENS" || kind === "bad JSON") expect(retained.mock.calls[0][0].result.provider_response).toBe(provider);
+  });
+  it.each(["v1 marker", "v1 reason", "v2 marker", "v2 reason"])("actual guarded publisher cannot bypass an older failed evidence hold with %s", async version => {
+    const input = version.startsWith("v2") ? actualPair() : pair();
+    input.candidate.created_at = "2026-10-19T18:00:00Z";
+    const old = { id: "older-held", status: "failed", created_at: "2026-10-18T18:00:00Z",
+      ...(version.endsWith("marker") ? { worker_metadata: { review_completeness_hold: { baseline_advance_allowed: false } } }
+        : { rejection_reason: "manual_review_required:legacy_review_completeness_missing" }) };
+    const query = {}; for (const method of ["select", "eq", "in", "neq", "order"]) query[method] = () => query;
+    query.limit = async () => ({ data: [old], error: null });
+    const marked = vi.fn(async () => {}), prohibited = vi.fn(() => { throw Error("Must not publish/requeue/promote past an unresolved older hold"); });
+    const api = functions(batchCode, ["publishCandidateResult", "publishCandidateResultUnlocked", "findPriorNonterminalPublication"], {
+      legacyReviewCompletenessDecision, isLegacyParagraphReviewCandidate, archiveRoot: "synthetic-only",
+      withVisualBaselineLockAsync: async ({ operation }) => operation(), assertVisualReviewCompletedResult: () => {},
+      INITIAL_OFFICIAL_DOCUMENT_SCOPE: "initial_official_document", visualReviewSourceIdentityFreshness: () => ({ allowed: true }),
+      supabase: { from: () => query }, compareVisualCandidateOrder, findBlockingPriorVisualPublication,
+      recoverMissingBatchResponses: false, workerMetadataForCandidate: (candidate, value) => ({ ...candidate.worker_metadata, ...value }),
+      markPublicationCandidate: marked, rebuildVisualReviewCandidateForCurrentPolicy: prohibited,
+      promoteApprovedBaselineForCandidate: prohibited, retainIncompleteReviewHold: prohibited, report: {} });
+    const result = version.startsWith("v2") ? reviewed(input) : { ...normalizeVisualBatchResult(response(), input), finish_reason: "STOP", provider_candidate_count: 1 };
+    expect(await api.publishCandidateResult({ ...input, result, usage: {}, publicationClaimToken: "synthetic-owned" })).toEqual({ status: "retry_pending", reason: "prior_source_publication_pending" });
+    expect(marked).toHaveBeenCalledOnce(); expect(marked.mock.calls[0][2]).toMatchObject({ status: "succeeded",
+      worker_metadata: { baseline_advanced: false, blocked_by_prior_publication_candidate_id: old.id, reuse_completed_batch_response: true } });
+    expect(prohibited).not.toHaveBeenCalled();
+    expect(old.status).toBe("failed");
+  });
+  it.each(["ordinary terminal failure", "future held row"])("does not expand the existing ordering semantics for %s", async kind => {
+    const input = actualPair(); input.candidate.created_at = "2026-10-19T18:00:00Z";
+    const row = { id: "other-row", status: "failed", created_at: kind === "future held row" ? "2026-10-20T18:00:00Z" : "2026-10-18T18:00:00Z",
+      rejection_reason: kind === "future held row" ? "manual_review_required:uncertain" : "terminal_provider_error" };
+    const query = {}; for (const method of ["select", "eq", "in", "neq", "order"]) query[method] = () => query;
+    query.limit = async () => ({ data: [row], error: null });
+    const api = functions(batchCode, ["findPriorNonterminalPublication"], { supabase: { from: () => query },
+      compareVisualCandidateOrder, findBlockingPriorVisualPublication, recoverMissingBatchResponses: false });
+    expect(await api.findPriorNonterminalPublication(input.candidate)).toBeNull();
   });
 });
 

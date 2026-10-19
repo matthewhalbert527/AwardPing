@@ -17,13 +17,13 @@ import {
   visualHashFromCandidate,
   visualReviewBatchCreateFailureDisposition,
   visualReviewBatchPollFailureDisposition,
-  visualReviewResponseSchema,
+  visualReviewResponseSchemaForCandidate,
   visualReviewConditionalSourceApplicantEscape,
   visualReviewSourceIdentityFreshness,
   visualReviewStaleClaimRecoveryDecision,
 } from "./lib/visual-review-queue.mjs";
 import { assertVisualReviewBatchPolicyCoverage } from "./lib/award-monitoring-policy.mjs";
-import { legacyReviewCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
+import { legacyReviewCompletenessDecision, isLegacyParagraphReviewCandidate, legacyParagraphReviewLimits } from "./lib/legacy-review-completeness.mjs";
 import { recordVisualRejectionLedger } from "./lib/visual-rejection-ledger.mjs";
 import { acquireVisualReviewPublicationClaim } from "./lib/visual-publication-claim.mjs";
 import { persistVisualChangeAndReconciliation } from "./lib/visual-change-publication.mjs";
@@ -1523,6 +1523,16 @@ async function failVisualProviderRequestEvidence(
   const now = new Date().toISOString();
   for (const failure of failures) {
     const candidate = failure.candidate;
+    if (isLegacyParagraphReviewCandidate(candidate) && failure.error?.code === "legacy_paragraph_provider_packet_exceeds_bound") {
+      if (candidate.worker_metadata?.submission_claim_token !== claimToken) {
+        report.submission_claim_conflicts += 1;
+        continue;
+      }
+      await retainIncompleteReviewHold({ candidate, decision: { allowed: false, manual_review_required: true,
+        reason: "legacy_paragraph_review_provider_request_exceeds_bound", retain_both_captures: true,
+        baseline_advance_allowed: false, creates_api_charge: false } });
+      continue;
+    }
     const message = truncate(errorMessage(failure.error), 800);
     const { data, error } = await supabase
       .from("shared_award_visual_review_candidates")
@@ -2183,6 +2193,14 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
     if (!storedResult) {
       const responseItem = responseMap.get(candidate.id) || responseMap.get(candidate.gemini_batch_request_key);
       if (!responseItem) {
+        if (isLegacyParagraphReviewCandidate(candidate)) {
+          const heldResult = { missing_batch_response: true, finish_reason: null, provider_candidate_count: 0 };
+          const decision = legacyReviewCompletenessDecision({ candidate, result: heldResult, requireResult: true });
+          const retained = apply ? await retainIncompleteReviewHold({ candidate, result: heldResult, usage, decision }) : null;
+          const counter = retained?.status === "manual_review_required" ? "manual_review_required" : "review_hold_not_applied";
+          batchReport[counter] = (batchReport[counter] || 0) + 1;
+          continue;
+        }
         await markCandidate(candidate.id, {
           status: "failed",
           rejection_reason: "missing_batch_response",
@@ -2199,6 +2217,15 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
       if (itemError) {
         const errorPayload = geminiInlineResponsePayload(responseItem);
         usage = normalizeGeminiUsage(extractUsageMetadata(responseItem));
+        if (isLegacyParagraphReviewCandidate(candidate)) {
+          const heldResult = { provider_error: geminiInlineErrorMessage(itemError), provider_response: errorPayload,
+            finish_reason: extractGeminiFinishReason(errorPayload), provider_candidate_count: errorPayload?.candidates?.length ?? 0 };
+          const decision = legacyReviewCompletenessDecision({ candidate, result: heldResult, requireResult: true });
+          const retained = apply ? await retainIncompleteReviewHold({ candidate, result: heldResult, usage, decision }) : null;
+          const counter = retained?.status === "manual_review_required" ? "manual_review_required" : "review_hold_not_applied";
+          batchReport[counter] = (batchReport[counter] || 0) + 1;
+          continue;
+        }
         await markCandidate(candidate.id, {
           status: "failed",
           ai_result: {
@@ -2247,6 +2274,20 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
       } catch (error) {
         // Only STOP-invalid JSON or MAX_TOKENS may use the existing one-time
         // fleet escalation. Refusals and missing completion never auto-retry.
+        if (isLegacyParagraphReviewCandidate(candidate)) {
+          // This new bounded contract never authorizes a paid retry, including
+          // malformed JSON and MAX_TOKENS. Keep the full returned evidence.
+          const heldResult = { raw_text: rawText, provider_response: responsePayload,
+            parse_error: completion.allowed ? errorMessage(error) : null,
+            completion_error: completion.allowed ? null : errorMessage(error),
+            finish_reason: finishReason, requested_model: candidate.model || null,
+            provider_model_version: providerModelVersion, provider_candidate_count: candidateCount };
+          const decision = legacyReviewCompletenessDecision({ candidate, result: heldResult, requireResult: true });
+          const retained = apply ? await retainIncompleteReviewHold({ candidate, result: heldResult, usage, decision }) : null;
+          const counter = retained?.status === "manual_review_required" ? "manual_review_required" : "review_hold_not_applied";
+          batchReport[counter] = (batchReport[counter] || 0) + 1;
+          continue;
+        }
         const escalation = visualReviewResponseEscalationDecision(candidate, finishReason, { candidateCount });
         if (escalation.escalate) {
           const requeue = buildEscalationRequeue(candidate, {
@@ -2312,6 +2353,13 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
       candidateCount: result?.provider_candidate_count ?? 1,
     });
     if (!publicationCompletion.allowed) {
+      if (isLegacyParagraphReviewCandidate(candidate)) {
+        const decision = legacyReviewCompletenessDecision({ candidate, result, requireResult: true });
+        const retained = apply ? await retainIncompleteReviewHold({ candidate, result, usage, decision }) : null;
+        const counter = retained?.status === "manual_review_required" ? "manual_review_required" : "review_hold_not_applied";
+        batchReport[counter] = (batchReport[counter] || 0) + 1;
+        continue;
+      }
       report.failed += 1;
       batchReport.failed += 1;
       report.errors.push({
@@ -2528,6 +2576,9 @@ async function publishCandidateResultUnlocked({
   }
 
   const priorPublication = await findPriorNonterminalPublication(candidate);
+  if (priorPublication?.manual_review_required === true && priorPublication.allowed === false) {
+    return retainIncompleteReviewHold({ candidate, result, usage, publicationClaimToken, decision: priorPublication });
+  }
   if (priorPublication) {
     await markPublicationCandidate(candidate, publicationClaimToken, {
       status: "succeeded",
@@ -3675,7 +3726,7 @@ function geminiBatchRequestForCandidate(candidate) {
     }
   }
 
-  return {
+  const batchRequest = {
     request: {
       systemInstruction: {
         parts: [
@@ -3693,7 +3744,7 @@ function geminiBatchRequestForCandidate(candidate) {
       generationConfig: {
         ...generationConfig,
         responseMimeType: "application/json",
-        responseSchema: visualReviewResponseSchema,
+        responseSchema: visualReviewResponseSchemaForCandidate(candidate),
       },
     },
     metadata: {
@@ -3704,6 +3755,12 @@ function geminiBatchRequestForCandidate(candidate) {
       monitoring_policy_hash: monitoringPolicy?.hash || null,
     },
   };
+  if (isLegacyParagraphReviewCandidate(candidate) && Buffer.byteLength(JSON.stringify(batchRequest), "utf8") > legacyParagraphReviewLimits.packetBytes) {
+    const error = new Error("Complete paired-paragraph provider request exceeds128KB; retain evidence without provider submission or automatic retry.");
+    error.code = "legacy_paragraph_provider_packet_exceeds_bound";
+    throw error;
+  }
+  return batchRequest;
 }
 
 async function createGeminiBatchJob({
@@ -4075,6 +4132,19 @@ async function findPriorNonterminalPublication(candidate) {
   if (error) {
     throw new Error(`Check prior visual publication retries failed: ${error.message}`);
   }
+  // The bounded response cannot prove that older evidence holds are absent.
+  // Do not invent a blocking row or let terminal/future rows hide old history.
+  if ((data || []).length >= 1000) return { allowed: false, manual_review_required: true,
+    reason: "source_publication_history_incomplete", source_history_incomplete: true,
+    query_limit: 1000, observed_rows: data.length, retain_both_captures: true,
+    baseline_advance_allowed: false, creates_api_charge: false };
+  // A retained evidence-completeness/manual hold is not a terminal rejection.
+  // Newer representations must not erase it by rotating the whole-page baseline.
+  // Keep every other failed-row rule, source query and ordering rule unchanged.
+  const evidenceHold = (data || []).find(earlierCandidate =>
+    compareVisualCandidateOrder(earlierCandidate, candidate) < 0 && earlierCandidate.status === "failed" &&
+    (earlierCandidate.worker_metadata?.review_completeness_hold || earlierCandidate.rejection_reason?.startsWith("manual_review_required:")));
+  if (evidenceHold) return evidenceHold;
   const eligible = (data || []).filter((earlierCandidate) =>
     compareVisualCandidateOrder(earlierCandidate, candidate) < 0 && (
       earlierCandidate.status !== "failed" || (

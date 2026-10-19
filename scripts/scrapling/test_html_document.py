@@ -19,6 +19,69 @@ def document(body, head="<title>Example Award</title>"):
 
 
 class HtmlSourceDocumentTests(unittest.TestCase):
+    def test_sibling_button_path_is_source_structure_not_a_heading_or_new_block(self):
+        doc = document('<h1>Example Award</h1><div id="question-1"><button>Who can apply?</button>'
+            '<div><p>College juniors may apply.</p><a href="/rules">Rules</a></div></div>'
+            '<p>Outside condition.</p>')
+        answer = next(block for block in doc["blocks"] if block["text"] == "College juniors may apply.")
+        self.assertEqual(answer["sibling_button_path"], ["Who can apply?"])
+        self.assertEqual(answer["heading_path"], [{"level": 1, "text": "Example Award"}])
+        self.assertEqual(doc["links"][0]["sibling_button_path"], ["Who can apply?"])
+        self.assertNotIn("sibling_button_path", doc["blocks"][-1])
+        self.assertFalse(any(block["text"] == "Who can apply?" for block in doc["blocks"]))
+        self.assertFalse(doc["visibility_verified"])
+
+    def test_sibling_button_nested_occurrences_do_not_leak_or_deduplicate(self):
+        doc = document('<div id="same"><button>Applicants</button><section>'
+            '<div id="same"><button>Applicants</button><div><p>Nested requirement.</p></div></div>'
+            '<p>Outer requirement.</p></section></div>'
+            '<div id="same"><button>Applicants</button><div><p>Outer requirement.</p></div></div>')
+        paragraphs = [block for block in doc["blocks"] if block["kind"] == "p"]
+        self.assertEqual([block["sibling_button_path"] for block in paragraphs],
+                         [["Applicants", "Applicants"], ["Applicants"], ["Applicants"]])
+        self.assertEqual(sum(block["text"] == "Outer requirement." for block in paragraphs), 2)
+
+    def test_sibling_button_label_inline_text_is_inert_and_no_aria_or_class_is_required(self):
+        doc = document('<div><button onclick="fetch(\'https://never.example/\')">Who <span>may apply?</span></button>'
+            '<div hidden style="display:none"><p>Actual source requirement.</p></div></div>')
+        self.assertEqual(doc["blocks"][0]["sibling_button_path"], ["Who may apply?"])
+        self.assertNotIn("never.example", json.dumps(doc))
+        self.assertIn("Actual source requirement.", doc["text"])
+
+    def test_sibling_button_ambiguous_or_interactive_shapes_remain_unassociated(self):
+        bodies = [
+            '<div><button>Who?</button><button>Other?</button><div><p>Requirement.</p></div></div>',
+            '<div><button>Who?</button><div><p>Requirement.</p></div><p>Extra.</p></div>',
+            '<div>Unscoped text<button>Who?</button><div><p>Requirement.</p></div></div>',
+            '<div><button> </button><div><p>Requirement.</p></div></div>',
+            '<div><button>Who?</button><div><p>Requirement.</p></div><script>ignored()</script></div>',
+            '<div><button>Who?<script>ignored()</script></button><div><p>Requirement.</p></div></div>',
+            '<div><button>Who?<span><template>ignored</template></span></button><div><p>Requirement.</p></div></div>',
+            '<div><button><a href="/other">Who?</a></button><div><p>Requirement.</p></div></div>',
+            '<div><button><span role="button">Who?</span></button><div><p>Requirement.</p></div></div>',
+            '<div><button><span onclick="ignored()">Who?</span></button><div><p>Requirement.</p></div></div>',
+            '<form><div><button>Submit</button><div><p>Requirement.</p></div></div></form>',
+            '<nav><div><button>Menu</button><div><p>Requirement.</p></div></div></nav>',
+        ]
+        for body in bodies:
+            with self.subTest(body=body):
+                doc = document(body)
+                self.assertTrue(all("sibling_button_path" not in block for block in doc["blocks"]))
+                self.assertIn("Requirement.", doc["text"])
+
+    def test_sibling_button_moving_answer_or_link_changes_context_not_full_prose(self):
+        before = document('<div><button>Juniors</button><div><p>Requirement.</p><a href="/rules">Rules</a></div></div>')
+        after = document('<div><button>Juniors</button><div></div></div><p>Requirement.</p><a href="/rules">Rules</a>')
+        self.assertEqual(before["text"], after["text"])
+        self.assertNotEqual(before["blocks"], after["blocks"])
+        self.assertNotEqual(before["links"], after["links"])
+        self.assertNotIn("sibling_button_path", after["links"][0])
+
+    def test_sibling_button_repeated_context_remains_size_bounded(self):
+        with patch.object(module, "MAX_OUTPUT_BYTES", 1500):
+            with self.assertRaisesRegex(HtmlDocumentError, "html_document_size_limit"):
+                document('<div><button>' + 'Question ' * 25 + '</button><div>' + '<p>Requirement.</p>' * 5 + '</div></div>')
+
     def test_closed_gilman_deadline_is_retained_without_visibility_claim(self):
         doc = document('<h1>Gilman Scholarship</h1><button aria-expanded="false">Deadlines</button>'
             '<section hidden><h2>March 2027 application</h2><p>Submit by March 4, 2027 at 11:59 p.m. Pacific Time.</p></section>')

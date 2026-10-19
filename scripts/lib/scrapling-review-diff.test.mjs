@@ -61,6 +61,49 @@ function contextualPair() {
 }
 
 describe("complete retained Scrapling evidence", () => {
+  it.each([null, "Label", [], [null], [3], [""], ["  "], Array(101).fill("Label"), ["x".repeat(10001)]])("rejects malformed sibling-button review context %j", path => {
+    for (const field of ["blocks", "links"]) {
+      const doc = document(); doc[field][0].sibling_button_path = path;
+      expect(buildScraplingReviewDiff(inputs(doc))).toMatchObject({ status: "unavailable", publishable: false,
+        baseline_advance_allowed: false, reason: field === "blocks" ? "invalid_block" : "invalid_link_context" });
+    }
+  });
+  it("keeps sibling-button context through serialization and holds context-only or mixed-parser transitions", () => {
+    const a = document(), b = structuredClone(a);
+    b.blocks[0].sibling_button_path = ["Applicants", "Applicants"];
+    b.links[0].sibling_button_path = ["Applicants"];
+    expect(parseScraplingReviewText(scraplingReviewText(b), { finalUrl: source.url }).context.blocks[0].sibling_button_path)
+      .toEqual(["Applicants", "Applicants"]);
+    expect(buildScraplingReviewDiff(inputs(a, b))).toMatchObject({ status: "manual_review_required",
+      reason: "structural_only_change", publishable: false, baseline_advance_allowed: false });
+    const c = structuredClone(b); c.blocks[0].sibling_button_path = ["Different applicants"];
+    expect(buildScraplingReviewDiff(inputs(b, c))).toMatchObject({ status: "manual_review_required", reason: "structural_only_change" });
+  });
+  it("requires a sibling label to be unique and ordered before the actual changed block", () => {
+    for (const [text, expected] of [[`Who may apply? ${sentence}`, "changed_needs_review"],
+      [`${sentence} Who may apply?`, "manual_review_required"],
+      [`Who may apply? ${sentence} Who may apply?`, "manual_review_required"]]) {
+      const a = document(); a.text = text; a.blocks[0].sibling_button_path = ["Who may apply?"];
+      const b = proseChange(a), result = buildScraplingReviewDiff(inputs(a, b));
+      expect(result.status).toBe(expected); expect(result.publishable).toBe(false); expect(result.baseline_advance_allowed).toBe(false);
+    }
+  });
+  it("conservatively holds interleaved heading/details and sibling-label anchor orders", () => {
+    // The existing gate concatenates context types, not a reconstructed DOM
+    // ordering. Retain these cases rather than relaxing its occurrence proof.
+    for (const context of [
+      { heading_path: [{ level: 2, text: "Nested heading" }], text: `Outer label Nested heading ${sentence}` },
+      { details_path: ["Inner details"], text: `Outer label Inner details ${sentence}` },
+    ]) {
+      const a = document(); a.text = context.text;
+      a.blocks[0] = { ...a.blocks[0], ...(context.heading_path ? { heading_path: context.heading_path } : { details_path: context.details_path }),
+        sibling_button_path: ["Outer label"] };
+      const result = buildScraplingReviewDiff(inputs(a, proseChange(a)));
+      expect(result).toMatchObject({ status: "manual_review_required", reason: "changed_block_context_not_uniquely_visible",
+        publishable: false, baseline_advance_allowed: false });
+    }
+  });
+
   it.each([null, "Question", [], [null], [4], Array(101).fill("Question")])("rejects malformed FAQ review context %j", path => {
     for (const field of ["blocks", "links"]) {
       const doc = document();
@@ -607,7 +650,7 @@ describe("lossless labeled context tables for repeated long-page context", () =>
       if (["kind", "table_cell"].includes(field)) return [field, value];
       if (field === "heading_path") return [field, at(tables.heading_paths, value).map(heading => Object.fromEntries(
         Object.entries(heading).map(([key, v]) => [key, key === "text" ? at(tables.strings, v) : v])))];
-      if (["list_path", "table_row", "details_path", "base_hrefs"].includes(field)) return [field, list(value)];
+      if (["list_path", "table_row", "details_path", "sibling_button_path", "base_hrefs"].includes(field)) return [field, list(value)];
       return [field, at(tables.strings, value)];
     })));
     return Object.fromEntries(tables.context_fields.map(field => [field, field === "base_hrefs" ? list(tables.base_hrefs) : rows(tables[field])]));
@@ -652,6 +695,8 @@ describe("lossless labeled context tables for repeated long-page context", () =>
       doc.links[0].details_path = ["Who may apply?", ""]; // Empty unlabeled ancestor remains explicit.
       doc.blocks[3].table_cell = { raw_colspan: "01", colspan: 1, headers: "U.S.  applicants", scope: "row", rowspan: 0 };
       doc.blocks[4].details_path = ["Who may apply?"];
+      doc.blocks[4].sibling_button_path = ["Repeated label", "Repeated label"];
+      doc.links[0].sibling_button_path = ["Repeated label"];
       doc.blocks[5] = Object.fromEntries(Object.entries(doc.blocks[5]).reverse());
       doc.blocks.push(structuredClone(doc.blocks[6]));
       doc.text = doc.blocks.map(item => item.text).join(" ");
@@ -662,6 +707,9 @@ describe("lossless labeled context tables for repeated long-page context", () =>
     const context = decode(result.diff.scrapling_semantics.current_context_tables);
     expect(context.blocks[2]).not.toHaveProperty("details_path");
     expect(context.blocks[4].details_path).toEqual(["Who may apply?"]);
+    expect(context.blocks[4].sibling_button_path).toEqual(["Repeated label", "Repeated label"]);
+    expect(context.links[0].sibling_button_path).toEqual(["Repeated label"]);
+    expect(result.diff.scrapling_semantics.context_table_decoding).toContain("sibling_button_path");
     expect(context.links).toHaveLength(b.links.length);
     expect(context.blocks).toHaveLength(b.blocks.length);
     expect(context.blocks[6]).toEqual(context.blocks.at(-1));

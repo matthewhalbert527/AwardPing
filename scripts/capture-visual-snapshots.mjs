@@ -292,7 +292,7 @@ import {
   visualReviewEvidenceSignature,
   stableJsonStringify,
 } from "./lib/visual-review-queue.mjs";
-import { buildLegacyReviewCompleteness, legacyReviewCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
+import { buildLegacyReviewCompleteness, buildLegacyParagraphReviewDiff, legacyReviewCompletenessDecision, legacyReviewCompletenessLimits } from "./lib/legacy-review-completeness.mjs";
 import {
   INITIAL_OFFICIAL_DOCUMENT_SCOPE,
   buildInitialOfficialDocumentCandidate,
@@ -15008,6 +15008,12 @@ function buildDiffSummary(previousText, nextText, source) {
   };
   diff.legacy_review_completeness = buildLegacyReviewCompleteness({ source, previousText, currentText: nextText, diff,
     excludedChangedUnits: excludedLegacyChangedUnits(previousClean, nextClean, addedText, removedText) });
+  // Existing short-page/v1 behavior is unchanged. A long page may use the
+  // separate replacement-only contract ONLY when every raw paragraph and
+  // separator is accounted for; otherwise retain the original strict hold.
+  if (previousText.length > legacyReviewCompletenessLimits.contextChars || nextText.length > legacyReviewCompletenessLimits.contextChars) {
+    return buildLegacyParagraphReviewDiff({ source, previousText, currentText: nextText, diff }) || diff;
+  }
   return diff;
 }
 

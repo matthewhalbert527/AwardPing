@@ -85,7 +85,7 @@ class SourceBounds(HTMLParser):
 
 
 class Node:
-    __slots__ = ("tag", "attrs", "children", "content", "text")
+    __slots__ = ("tag", "attrs", "children", "content", "text", "element_count", "interactive_attrs")
 
     def __init__(self, tag, attrs=None, children=None, content=""):
         self.tag = tag
@@ -93,6 +93,8 @@ class Node:
         self.children = children or []
         self.content = content
         self.text = normalize(content)
+        self.element_count = 0
+        self.interactive_attrs = False
 
 
 def extract_html_document(html, url):
@@ -169,13 +171,20 @@ def extract_html_document(html, url):
         # and event handlers never become extraction instructions.
         attrs = {key: str(element.attrib[key]) for key in ("href", "colspan", "rowspan", "scope", "headers", "id", "role", "aria-level") if key in element.attrib}
         require(all(len(value) <= MAX_ATTRIBUTE_CHARS for value in attrs.values()), "attribute_size_limit")
-        return Node(tag, attrs=attrs, children=children, content=content)
+        node = Node(tag, attrs=attrs, children=children, content=content)
+        # Preserve original child cardinality even when excluded script/template
+        # children were removed. They must not manufacture a two-child contract.
+        node.element_count = len(element.xpath("./*"))
+        node.interactive_attrs = any(key.lower().startswith("on") or key.lower() in {"tabindex", "contenteditable"}
+                                     for key in element.attrib)
+        return node
 
     tree = build(body)
     require(tree is not None, "html_body_unavailable")
     blocks, links = [], []
     headings = []
     details_labels = {}
+    sibling_buttons = {}
     item_bytes = 0
 
     def add(items, item):
@@ -184,6 +193,32 @@ def extract_html_document(html, url):
         item_bytes += serialized_size(item)
         require(item_bytes <= MAX_OUTPUT_BYTES, "html_document_size_limit")
         items.append(item)
+
+    def sibling_button(ancestor):
+        """A local source shape, not a question/heading or a working UI control."""
+        if ancestor in sibling_buttons:
+            return sibling_buttons[ancestor]
+        result = None
+        elements = [child for child in ancestor.children if child.tag != "#text"]
+        if (ancestor.tag in {"div", "section"} and ancestor.element_count == 2 and len(elements) == 2
+                and elements[0].tag == "button" and elements[1].tag in {"div", "section"}
+                and not any(child.text for child in ancestor.children if child.tag == "#text")
+                and 0 < len(elements[0].text) <= MAX_ATTRIBUTE_CHARS and elements[1].text):
+            label, content = elements
+            pending = list(label.children)
+            safe = True
+            while pending:
+                child = pending.pop()
+                if (child.tag in {"a", "button", "input", "select", "textarea", "form", "details", "summary", "iframe", "object", "embed", "audio", "video"}
+                        or child.attrs.get("role") or child.interactive_attrs
+                        or child.element_count != sum(item.tag != "#text" for item in child.children)):
+                    safe = False
+                    break
+                pending.extend(child.children)
+            if safe and label.element_count == sum(child.tag != "#text" for child in label.children):
+                result = (content, label.text)
+        sibling_buttons[ancestor] = result
+        return result
 
     def visit(node, ancestors):
         nonlocal headings
@@ -209,12 +244,24 @@ def extract_html_document(html, url):
                 details_labels[ancestor] = summary.text if summary is not None else ""
             details_path.append(details_labels[ancestor])
         details_context = {"details_path": details_path} if details_path else {}
+        # Only descendants of THIS parent's second child receive its preceding
+        # sibling button label. No ID/class lookup, nearest-button search,
+        # semantic heading level, deduplication or visibility inference.
+        sibling_button_path = []
+        if not any(ancestor.tag in {"form", "nav"} for ancestor in ancestors):
+            for index, ancestor in enumerate(ancestors):
+                match = sibling_button(ancestor)
+                branch = ancestors[index + 1] if index + 1 < len(ancestors) else node
+                if match is not None and branch is match[0]:
+                    sibling_button_path.append(match[1])
+        require(len(sibling_button_path) <= 100, "html_depth_limit")
+        sibling_context = {"sibling_button_path": sibling_button_path} if sibling_button_path else {}
         if node.text and (node.tag in SEMANTIC or level):
             row = next((ancestor for ancestor in reversed(ancestors) if ancestor.tag == "tr"), None)
             table_row = [child.text for child in row.children if child.tag in {"td", "th"}] if row else []
             block = {"kind": "heading" if level else node.tag, "text": node.text,
                      "heading_path": heading_path, "list_path": list_path, "table_row": table_row,
-                     **details_context}
+                     **details_context, **sibling_context}
             if node.tag in {"td", "th"}:
                 block["table_cell"] = {"raw_colspan": node.attrs.get("colspan", "1"), "raw_rowspan": node.attrs.get("rowspan", "1"),
                     "scope": node.attrs.get("scope", ""), "headers": node.attrs.get("headers", ""), "id": node.attrs.get("id", "")}
@@ -222,7 +269,7 @@ def extract_html_document(html, url):
         if node.tag == "a" and "href" in node.attrs:
             add(links, {"text": node.text, "raw_href": node.attrs["href"], "source_url": url,
                         "base_hrefs": list(base_hrefs), "heading_path": heading_path, "list_path": list_path,
-                        **details_context})
+                        **details_context, **sibling_context})
         for child in node.children:
             visit(child, [*ancestors, node])
 

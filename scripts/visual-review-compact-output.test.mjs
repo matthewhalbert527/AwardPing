@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as queue from "./lib/visual-review-queue.mjs";
-import { buildLegacyReviewCompleteness } from "./lib/legacy-review-completeness.mjs";
+import { buildLegacyReviewCompleteness, isLegacyParagraphReviewCandidate, legacyParagraphReviewLimits, legacyReviewCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
+import { compareVisualCandidateOrder, findBlockingPriorVisualPublication } from "./lib/visual-publication-order.mjs";
 import {
   GEMINI_WORKER_MODEL, GEMINI_STRONG_WORKER_MODEL,
   visualReviewClaimedModel, visualReviewCompletionDecision,
@@ -34,6 +35,140 @@ const verdict = () => ({
   is_true_change: true, is_alert_worthy: true, source_relevance: "primary", confidence: "high", noise_flags: [],
   changed_facts: [{ fact: "Application deadline", before: oldText, after: newText, removed_text: oldText, added_text: newText, visual_evidence: null }],
   exact_before: oldText, exact_after: newText, section: "Application", change_type: "deadline",
+});
+
+// Exercise real declarations only; never import the credential-loading worker.
+const batchText = readFileSync(new URL("./process-visual-review-batch.mjs", import.meta.url), "utf8");
+function publicationFunctions(names, globals) {
+  const ast = ts.createSourceFile("worker.mjs", batchText, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const declarations = names.map(name => {
+    const matches = ast.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+    if (matches.length !== 1) throw new Error(`Expected one real declaration: ${name}`);
+    return matches[0].getText(ast);
+  }).join("\n");
+  return runInNewContext(`${declarations}; ({${names.join(",")}})`, { Buffer, ...globals });
+}
+const historyId = n => `20000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+const historyTime = n => new Date(Date.UTC(2026, 9, 18) + n * 1000).toISOString();
+function historyRow(n, overrides = {}) {
+  return { id: historyId(n), shared_award_source_id: source.id, created_at: historyTime(n), status: "failed",
+    rejection_reason: "ordinary_terminal_failure", worker_metadata: {}, ...overrides };
+}
+function historyFixture(rows, { race = null, queryError = null } = {}) {
+  const current = { ...structuredClone(candidate), id: historyId(2000), created_at: historyTime(2000),
+    status: "succeeded", updated_at: historyTime(2001), publication_claim_token: "owned-publication",
+    worker_metadata: {}, new_snapshot_ref: { meta_path: "retained/current.json" }, previous_snapshot_ref: { meta_path: "retained/previous.json" } };
+  const record = structuredClone(current);
+  if (race === "published") Object.assign(record, { status: "published", publication_claim_token: null });
+  if (race === "new claim") record.publication_claim_token = "other-publication";
+  const calls = [], updates = [], returned = [];
+  const supabase = { from(table) {
+    if (table !== "shared_award_visual_review_candidates") throw new Error("No other table is permitted");
+    const filters = [], order = []; let patch = null;
+    const query = {
+      select(...args) { calls.push(["select", ...args]); return this; },
+      eq(key, value) { calls.push(["eq", key, value]); filters.push(row => row[key] === value); return this; },
+      in(key, values) { calls.push(["in", key, values]); filters.push(row => values.includes(row[key])); return this; },
+      neq(key, value) { calls.push(["neq", key, value]); filters.push(row => row[key] !== value); return this; },
+      order(key, options) { calls.push(["order", key, options]); order.push([key, options]); return this; },
+      async limit(limit) {
+        calls.push(["limit", limit]);
+        const data = rows.filter(row => filters.every(test => test(row))).sort((a, b) => {
+          for (const [key, options] of order) {
+            const comparison = key === "created_at" ? Date.parse(a[key]) - Date.parse(b[key]) : a[key].localeCompare(b[key]);
+            if (comparison) return options.ascending ? comparison : -comparison;
+          }
+          return 0;
+        }).slice(0, limit);
+        returned.push(...data); return { data, error: queryError };
+      },
+      update(value) { patch = value; updates.push(value); return this; },
+      async maybeSingle() {
+        if (!filters.every(test => test(record))) return { data: null, error: null };
+        Object.assign(record, patch); return { data: { id: record.id }, error: null };
+      },
+    };
+    return query;
+  } };
+  const prohibited = vi.fn(() => { throw new Error("No source/event/baseline/queue/provider operation is permitted"); });
+  const report = {};
+  const api = publicationFunctions(["findPriorNonterminalPublication", "publishCandidateResult", "publishCandidateResultUnlocked",
+    "retainIncompleteReviewHold", "markPublicationCandidate", "publicationFinalizationPatch", "objectValue"], {
+    supabase, compareVisualCandidateOrder, findBlockingPriorVisualPublication, recoverMissingBatchResponses: false,
+    legacyReviewCompletenessDecision, archiveRoot: "synthetic-only", withVisualBaselineLockAsync: async ({ operation }) => operation(),
+    assertVisualReviewCompletedResult: () => {}, INITIAL_OFFICIAL_DOCUMENT_SCOPE: "initial_official_document",
+    visualReviewSourceIdentityFreshness: () => ({ allowed: true }), initialOfficialDocumentSourceIdentityDecision: () => ({ allowed: true }),
+    workerMetadataForCandidate: (row, patch) => ({ ...row.worker_metadata, ...patch }), cleanText: value => String(value || "").trim(), report,
+    rebuildVisualReviewCandidateForCurrentPolicy: prohibited, publishInitialOfficialDocumentCandidate: prohibited,
+    promoteApprovedBaselineForCandidate: prohibited, persistVisualChangeAndReconciliation: prohibited,
+  });
+  const result = { ...queue.normalizeVisualBatchResult(verdict(), { candidate: current, source }), finish_reason: "STOP", provider_candidate_count: 1 };
+  return { api, current, record, result, calls, updates, returned, report, prohibited };
+}
+
+describe("bounded source history never certifies unseen older reviews as clear", () => {
+  it.each(["oldest hold beyond1000", "exact1000 future rows", "equal timestamp IDs"])("holds saturated actual sorted/limited history: %s", async kind => {
+    const rows = Array.from({ length: kind === "oldest hold beyond1000" ? 1001 : 1000 }, (_, i) => historyRow(i + 1));
+    if (kind === "oldest hold beyond1000") Object.assign(rows[0], { rejection_reason: "manual_review_required:old_evidence", worker_metadata: { review_completeness_hold: {} } });
+    if (kind === "exact1000 future rows") rows.forEach((row, i) => { row.created_at = historyTime(3000 + i); });
+    if (kind === "equal timestamp IDs") rows.forEach(row => { row.created_at = historyTime(2000); });
+    const fixture = historyFixture(rows);
+    const decision = await fixture.api.findPriorNonterminalPublication(fixture.current);
+    expect(decision).toMatchObject({ allowed: false, manual_review_required: true, source_history_incomplete: true,
+      reason: "source_publication_history_incomplete", observed_rows: 1000, query_limit: 1000, baseline_advance_allowed: false, creates_api_charge: false });
+    expect(decision).not.toHaveProperty("id");
+    expect(fixture.calls).toContainEqual(["eq", "shared_award_source_id", source.id]);
+    expect(fixture.calls).toContainEqual(["neq", "id", fixture.current.id]);
+    expect(fixture.calls.filter(call => call[0] === "order")).toEqual([["order", "created_at", { ascending: false }], ["order", "id", { ascending: false }]]);
+    expect(fixture.calls.at(-1)).toEqual(["limit", 1000]);
+    if (kind === "oldest hold beyond1000") expect(fixture.returned).not.toContain(rows[0]);
+    expect(fixture.updates).toHaveLength(0);
+  });
+  it.each(["terminal only", "earlier marker", "earlier reason", "equal smaller ID", "equal larger ID"])("keeps normal999 ordering semantics: %s", async kind => {
+    const rows = Array.from({ length: 999 }, (_, i) => historyRow(i + 1));
+    if (kind === "earlier marker") rows[0].worker_metadata.review_completeness_hold = {};
+    if (kind === "earlier reason") rows[0].rejection_reason = "manual_review_required:old_evidence";
+    if (kind.startsWith("equal")) Object.assign(rows[0], { id: historyId(kind === "equal smaller ID" ? 1 : 3000), created_at: historyTime(2000), rejection_reason: "manual_review_required:old_evidence" });
+    const fixture = historyFixture(rows);
+    const result = await fixture.api.findPriorNonterminalPublication(fixture.current);
+    expect(result).toBe(["earlier marker", "earlier reason", "equal smaller ID"].includes(kind) ? rows[0] : null);
+  });
+  it("filters other sources, finalized rows and the current ID before applying the bounded cap", async () => {
+    const rows = Array.from({ length: 999 }, (_, i) => historyRow(i + 1));
+    rows.push(...Array.from({ length: 1001 }, (_, i) => historyRow(3000 + i, { shared_award_source_id: "other-source" })),
+      historyRow(5000, { status: "published" }), historyRow(2000));
+    const fixture = historyFixture(rows);
+    expect(await fixture.api.findPriorNonterminalPublication(fixture.current)).toBeNull();
+    expect(fixture.returned).toHaveLength(999);
+    expect(fixture.calls).toContainEqual(["in", "status", ["pending", "submitted", "processing", "succeeded", "failed"]]);
+  });
+  it.each([null, "published", "new claim"])("actual publisher retains the completed result only under its owned claim (%s)", async race => {
+    const fixture = historyFixture(Array.from({ length: 1000 }, (_, i) => historyRow(i + 1)), { race });
+    const before = structuredClone(fixture.current), previousRecord = structuredClone(fixture.record);
+    const usage = { input_tokens: 47, output_tokens: 12 };
+    const publish = fixture.api.publishCandidateResult({ candidate: fixture.current, source, result: fixture.result, usage, publicationClaimToken: "owned-publication" });
+    if (race) {
+      await expect(publish).rejects.toThrow("claim");
+      expect(fixture.record).toEqual(previousRecord); expect(fixture.report.manual_review_required).toBeUndefined();
+    } else {
+      await expect(publish).resolves.toEqual({ status: "manual_review_required", reason: "source_publication_history_incomplete" });
+      expect(fixture.record).toMatchObject({ status: "failed", rejection_reason: "manual_review_required:source_publication_history_incomplete",
+        publication_claim_token: null, worker_metadata: { baseline_advanced: false, review_completeness_hold: { automatic_retry_allowed: false, creates_api_charge: false } } });
+      expect(fixture.record.ai_result).toBe(fixture.result); expect(fixture.record.actual_usage).toBe(usage);
+      expect(fixture.report.manual_review_required).toBe(1);
+    }
+    expect(fixture.current).toEqual(before);
+    expect(fixture.record.new_snapshot_ref).toEqual(before.new_snapshot_ref);
+    expect(fixture.record.previous_snapshot_ref).toEqual(before.previous_snapshot_ref);
+    expect(fixture.prohibited).not.toHaveBeenCalled();
+    expect(fixture.updates).toHaveLength(1);
+  });
+  it("preserves the existing query-error failure without publishing or fabricating an order result", async () => {
+    const fixture = historyFixture([], { queryError: { message: "synthetic read unavailable" } });
+    await expect(fixture.api.publishCandidateResult({ candidate: fixture.current, source, result: fixture.result, usage: {}, publicationClaimToken: "owned-publication" }))
+      .rejects.toThrow("Check prior visual publication retries failed");
+    expect(fixture.updates).toHaveLength(0); expect(fixture.prohibited).not.toHaveBeenCalled();
+  });
 });
 const check = (c, value) => queue.validateVisualBatchReview({ candidate: c, source, result: queue.normalizeVisualBatchResult(value, { candidate: c, source }) });
 
@@ -110,6 +245,7 @@ describe("compact output contract, with retained Goldwater failure provenance", 
     expect(fn).toBeTruthy();
     const makeRequest = runInNewContext(`${fn.getText(ast)}; geminiBatchRequestForCandidate`, {
       ...queue, visualReviewGenerationConfigForModel, visualReviewClaimedModel, monitoringPolicy: null,
+      Buffer, isLegacyParagraphReviewCandidate, legacyParagraphReviewLimits,
     });
     const request = makeRequest({ id: "test-candidate", candidate_signature: "test-signature", model, worker_metadata: { review_model: model }, prompt_payload: candidate.prompt_payload }).request;
     expect(request.generationConfig).toEqual({ ...visualReviewGenerationConfigForModel(model), responseMimeType: "application/json", responseSchema: queue.visualReviewResponseSchema });

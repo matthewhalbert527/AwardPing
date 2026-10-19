@@ -43,20 +43,24 @@ function validateContext(context, finalUrl) {
       !Array.isArray(context.blocks) || !context.blocks.length || context.blocks.length > 10000 ||
       !Array.isArray(context.links) || context.links.length > 10000) fail("invalid_context");
   for (const block of context.blocks) {
-    if (!keys(block, ["kind", "text", "heading_path", "list_path", "table_row"], ["table_cell", "details_path"]) ||
+    if (!keys(block, ["kind", "text", "heading_path", "list_path", "table_row"], ["table_cell", "details_path", "sibling_button_path"]) ||
         !text(block.kind, 40) || !block.kind || !text(block.text) || !block.text.trim() ||
         !headings(block.heading_path) || !strings(block.list_path) || !strings(block.table_row)) fail("invalid_block");
     if (Object.hasOwn(block, "details_path") && (!strings(block.details_path, 100) || !block.details_path.length)) fail("invalid_block");
+    if (Object.hasOwn(block, "sibling_button_path") && (!strings(block.sibling_button_path, 100) || !block.sibling_button_path.length ||
+        block.sibling_button_path.some(value => !text(value, 10000) || !value.trim()))) fail("invalid_block");
     if (Object.hasOwn(block, "table_cell") && (!object(block.table_cell) ||
         Object.keys(block.table_cell).some(key => !text(key, 100)) ||
         !Object.values(block.table_cell).every(value => text(value, 10000) ||
           (Number.isInteger(value) && value >= 0 && value <= 65534)))) fail("invalid_table_context");
   }
   for (const link of context.links) {
-    if (!keys(link, ["text", "raw_href", "source_url", "base_hrefs", "heading_path", "list_path"], ["details_path"]) ||
+    if (!keys(link, ["text", "raw_href", "source_url", "base_hrefs", "heading_path", "list_path"], ["details_path", "sibling_button_path"]) ||
         !text(link.text) || !text(link.raw_href, 10000) || link.source_url !== finalUrl ||
         !equal(link.base_hrefs, context.base_hrefs) || !headings(link.heading_path) || !strings(link.list_path)) fail("invalid_link_context");
     if (Object.hasOwn(link, "details_path") && (!strings(link.details_path, 100) || !link.details_path.length)) fail("invalid_link_context");
+    if (Object.hasOwn(link, "sibling_button_path") && (!strings(link.sibling_button_path, 100) || !link.sibling_button_path.length ||
+        link.sibling_button_path.some(value => !text(value, 10000) || !value.trim()))) fail("invalid_link_context");
   }
 }
 
@@ -312,7 +316,7 @@ function htmlBody(prose, metadata) {
 function contextCorroborated(block, body, visible, sourceMatch, visibleMatch) {
   // A source FAQ question cannot be silently detached from its answer. Empty,
   // ambiguous or differently ordered contexts stay held rather than guessing.
-  const anchors = [...block.heading_path.map(heading => heading.text), ...(block.details_path || []),
+  const anchors = [...block.heading_path.map(heading => heading.text), ...(block.details_path || []), ...(block.sibling_button_path || []),
     ...block.list_path, ...block.table_row].map(flow);
   let sourceStart = sourceMatch.start, visibleStart = visibleMatch.start;
   let previousSourceEnd = -1, previousVisibleEnd = -1;
@@ -482,7 +486,7 @@ function losslessContextTables(before, after, changed) {
   const list = values => intern(values.map(string), packed.string_lists, maps.string_lists);
   const heading = values => intern(values.map(item => Object.fromEntries(Object.entries(item)
     .map(([key, value]) => [key, key === "text" ? string(value) : value]))), packed.heading_paths, maps.heading_paths);
-  const listFields = ["list_path", "table_row", "details_path", "base_hrefs"];
+  const listFields = ["list_path", "table_row", "details_path", "sibling_button_path", "base_hrefs"];
   const encodeValue = (key, value) => key === "kind" || key === "table_cell" ? value :
     key === "heading_path" ? heading(value) : listFields.includes(key) ? list(value) : string(value);
   const rows = items => {
@@ -662,7 +666,7 @@ export function buildScraplingReviewDiff(input = {}, {
       delete diff.scrapling_semantics.current_context;
       Object.assign(diff.scrapling_semantics, { version: 4, representation: "lossless_context_tables",
         current_context_tables: tables, context_table_reconstruction_verified: true,
-        context_table_decoding: "All indices are zero-based. Each blocks/links row starts with its field_orders index; remaining values follow those named fields. kind and table_cell are literal. text, raw_href and source_url index strings. heading_path indexes heading_paths, whose heading text indexes strings. list_path, table_row, details_path and base_hrefs index string_lists, whose entries index strings. context_fields preserves root property order; field_orders preserves row property order and optional-field presence. Rows and path items remain ordered and duplicates are retained. No text was omitted or shortened.",
+        context_table_decoding: "All indices are zero-based. Each blocks/links row starts with its field_orders index; remaining values follow those named fields. kind and table_cell are literal. text, raw_href and source_url index strings. heading_path indexes heading_paths, whose heading text indexes strings. list_path, table_row, details_path, sibling_button_path and base_hrefs index string_lists, whose entries index strings. context_fields preserves root property order; field_orders preserves row property order and optional-field presence. Rows and path items remain ordered and duplicates are retained. No text was omitted or shortened.",
         reconstruction: "Decode current_context_tables to the complete current context. Restore previous context by replacing decoded blocks[changed_block_indices[i]].text with removed_text[i]. Restore previous prose using the exact previous_prose_replacements in the complete current_source_prose. Verify the retained full-context/prose SHA256 values. Full original artifacts remain retained; neither this storage format nor source context asserts visibility, screenshot coordinates or current award validity." });
     }
     if (Buffer.byteLength(JSON.stringify(diff), "utf8") > maxDiffBytes) return manual("complete_diff_exceeds_review_bound");

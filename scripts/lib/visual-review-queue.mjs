@@ -18,7 +18,7 @@ import { assertRenderedHtmlArtifactIdentity } from "./r2-capture-artifact-bindin
 import { temporalContextAmbiguityDecision } from "./visual-review-temporal-context.mjs";
 import { SOURCE_HTML_PROFILE, validateSourceHtmlEvidence, sourceHtmlReviewText } from "./source-html-evidence.mjs";
 import { sourceHtmlReviewPairingVerified } from "./source-html-review-contract.mjs";
-import { legacyReviewCompletenessDecision } from "./legacy-review-completeness.mjs";
+import { legacyReviewCompletenessDecision, isLegacyParagraphReviewCandidate, legacyParagraphReviewResponseSchema } from "./legacy-review-completeness.mjs";
 
 export const visualReviewResponseSchema = {
   type: "object",
@@ -82,6 +82,10 @@ export const visualReviewResponseSchema = {
     "rejection_reason",
   ],
 };
+
+export function visualReviewResponseSchemaForCandidate(candidate) {
+  return isLegacyParagraphReviewCandidate(candidate) ? legacyParagraphReviewResponseSchema(visualReviewResponseSchema) : visualReviewResponseSchema;
+}
 
 const rejectNoiseFlags = new Set([
   "access-error",
@@ -838,6 +842,7 @@ export function buildVisualSnapshotRef(capture, archiveRelative = (value) => val
 
 export function buildVisualReviewPromptText(payload) {
   const activePolicyIdentity = currentVisualReviewPolicyIdentity();
+  const pairedParagraphs = isLegacyParagraphReviewCandidate({ deterministic_diff: payload.deterministic_diff });
   return [
     "You are reviewing an official scholarship/fellowship award source page for AwardPing.",
     "Return strict JSON only. Do not use markdown.",
@@ -850,6 +855,12 @@ export function buildVisualReviewPromptText(payload) {
     "Do not infer a change from a page title, layout movement, menu expansion/collapse, or generic page refresh.",
     "For an expandable-section addition or removal, reject unless deterministic evidence explicitly marks section_addition_confirmed or section_removal_confirmed true. A missing extraction is not proof that a section was removed.",
     "Every approved changed_facts item must include exact added_text or removed_text from the deterministic diff, or a specific visual_evidence phrase when the screenshot changed but text extraction did not capture the changed section.",
+    ...(pairedParagraphs ? [
+      "Complete paired-paragraph review v2: read BOTH full retained texts and EVERY changed block. The complete previous captured text is reconstructed by the bound paragraph replacements, not by a sentence prefix. Duplicate occurrences remain separate evidence.",
+      "Return block_reviews with EXACTLY one {block_index, disposition, reason} for EVERY legacy_review_completeness.changed_blocks entry. Use applicant_change, wording_only, noise, or uncertain. A missing, extra, duplicated or uncertain block holds the entire page; no partial assessment advances its baseline. Keep each reason under 320 characters.",
+      "Every changed_facts item also requires block_index. Its exact before/removed_text and after/added_text must come from that SAME paired block. Every applicant_change block needs a supported fact; wording_only/noise blocks must have no facts. Preserve each stated audience, exception and date precision; never infer an unstated day or conflate preliminary and final admission. If no applicant-facing facts changed, all dispositions must be wording_only/noise and both change flags must be false.",
+      "Return structured_diff:null. The complete deterministic evidence is already supplied; do not retranscribe it or copy whole page paragraphs into the response.",
+    ] : []),
     "Use only the canonical changed_facts array, never a second changed_award_facts array. Keep evidence short: copy exact directional snippets contained in the deterministic removed_text/added_text, without ellipses or surrounding invented text. For a replacement, include both sides from the SAME changed block; do not combine unrelated additions and removals. Use null only for a genuinely one-sided change. Never put current text into visual_evidence; use visual_evidence only for a supplied screenshot-only change, with text evidence fields null.",
     "exact_before and exact_after must be exact strings from deterministic diff evidence, or null only when the change is one-sided and the other side is genuinely absent.",
     "Return a compact change assessment, not a page transcription. The full source excerpts are reading context, not output. At the top level use only exact_before/exact_after for short exact evidence; do not return legacy before/after aliases or copy unchanged paragraphs. Keep explanations and summaries brief without dropping audience, cycle or exception qualifiers needed for accuracy.",
@@ -857,7 +868,7 @@ export function buildVisualReviewPromptText(payload) {
     "source_relevance must be primary or supporting only when this exact page is about the named award or a directly supporting official source for it.",
     "",
     "Required JSON keys:",
-    "{is_true_change, is_alert_worthy, source_relevance, source_relevance_reason, changed_facts, exact_before, exact_after, evidence_location, section, change_type, confidence, noise_flags, rejection_reason, reader_summary, advisor_impact, structured_diff}",
+    "{is_true_change, is_alert_worthy, source_relevance, source_relevance_reason, changed_facts, exact_before, exact_after, evidence_location, section, change_type, confidence, noise_flags, rejection_reason, reader_summary, advisor_impact, structured_diff" + (pairedParagraphs ? ", block_reviews}" : "}"),
     "",
     "Active monitoring policy identity (this supersedes any policy metadata captured with the queued candidate):",
     stableJsonStringify(activePolicyIdentity),
@@ -892,7 +903,7 @@ export function buildVisualReviewPromptText(payload) {
     ] : []),
     ...(payload.text_context_representation === "lossless_context_tables" ? [
       "Lossless context tables: current_source_prose is the COMPLETE readable current source text. current_context_tables preserves ALL ordered source blocks, links, duplicate occurrences and exact relationships; it is not a selection or summary.",
-      "Follow context_table_decoding: rows begin with a field_orders index. Resolve text/raw_href/source_url through strings; heading_path through heading_paths (whose text values reference strings); list_path/table_row/details_path/base_hrefs through string_lists (whose entries reference strings). kind and table_cell remain literal. Preserve field order, optional-field presence and every duplicate row. Do not mistake numeric references for award facts.",
+      "Follow context_table_decoding: rows begin with a field_orders index. Resolve text/raw_href/source_url through strings; heading_path through heading_paths (whose text values reference strings); list_path/table_row/details_path/sibling_button_path/base_hrefs through string_lists (whose entries reference strings). kind and table_cell remain literal. Preserve field order, optional-field presence and every duplicate row. Do not mistake numeric references for award facts.",
       "All previous values remain in removed_text, aligned with added_text and changed_block_indices. Decode the complete current context before applying those block replacements; previous_prose_replacements reconstruct the complete previous prose. The previous page is not quoted separately. If you cannot interpret the complete context, reject rather than guess.",
       "Read all audience, award-cycle, exception and date-conflict context before describing a change. HTML context may include hidden/stale text; only separately corroborated changed blocks are eligible evidence. This does not establish diagram relationships, screenshot coordinates, AI accuracy or publication authority.",
     ] : []),
@@ -944,6 +955,7 @@ export function normalizeVisualBatchResult(value, { candidate = null, source = n
     source_relevance_reason: cleanNullable(parsed.source_relevance_reason),
     changed_facts: facts,
     changed_award_facts: facts,
+    ...(Object.hasOwn(parsed, "block_reviews") ? { block_reviews: parsed.block_reviews } : {}),
     exact_before: cleanNullable(parsed.exact_before ?? parsed.before),
     exact_after: cleanNullable(parsed.exact_after ?? parsed.after),
     evidence_location: cleanNullable(parsed.evidence_location),
@@ -1869,6 +1881,7 @@ function normalizeChangedFacts(values) {
         added_text: cleanNullable(object.added_text || object.addedText),
         removed_text: cleanNullable(object.removed_text || object.removedText),
         visual_evidence: cleanNullable(object.visual_evidence || object.visualEvidence || object.evidence),
+        ...(Object.hasOwn(object, "block_index") ? { block_index: object.block_index } : {}),
       };
     });
 }
@@ -2079,6 +2092,14 @@ function changedFactEvidenceDecision({ fact, candidate }) {
   // of BOTH directions. They do not establish deterministic pair identity.
   // Scrapling does promise aligned blocks; never fall back if that proof is bad.
   if (diff.candidate_scope !== "scrapling_html_source") {
+    if (isLegacyParagraphReviewCandidate(candidate)) {
+      const index = fact?.block_index;
+      return Number.isSafeInteger(index) && index >= 0 && index < rawAdded.length &&
+        before.every(value => textContainsEvidence([rawRemoved[index]], value)) &&
+        after.every(value => textContainsEvidence([rawAdded[index]], value))
+        ? { allowed: true, reason: "paired_legacy_paragraph_change" }
+        : { allowed: false, reason: "legacy_paragraph_review_fact_pair_mismatch" };
+    }
     if (before.some((value) => textContainsEvidence(addedText, value)) ||
         after.some((value) => textContainsEvidence(removedText, value))) return unsupported;
     return { allowed: true, reason: "legacy_directional_evidence_ai_pairing" };

@@ -61,6 +61,18 @@ def native_fixture(payload):
 
 
 class SourceHtmlCollectorTests(unittest.TestCase):
+    def test_source_only_sibling_button_context_survives_both_complete_documents(self):
+        raw = HTML.replace(b'<details>', b'<div><button>Source applicant label</button><div>')
+        raw = raw.replace(b'<summary>Graduate applicants</summary>', b'').replace(b'</details>', b'</div></div>')
+        result, _options = self.run_capture(fake_get(raw=raw))
+        for key in ("html_document", "source_main_document"):
+            answers = [block for block in result[key]["blocks"] if "Complete qualification." in block["text"]]
+            self.assertEqual(len(answers), 1)
+            self.assertEqual(answers[0]["sibling_button_path"], ["Source applicant label"])
+            self.assertFalse(result[key]["visibility_verified"])
+        self.assertEqual(result["html"].encode(), raw)
+        self.assertEqual(result["source_http"]["body_sha256"], hashlib.sha256(raw).hexdigest())
+
     def run_capture(self, fetch=None, request=None):
         with patch.dict(os.environ, {}, clear=True), patch.object(collector.Fetcher, "get", side_effect=fetch or fake_get()) as mocked:
             result = collector.capture(request or REQUEST)

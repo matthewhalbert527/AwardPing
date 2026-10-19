@@ -19,11 +19,12 @@ source.page_metadata = { baseline_facts: { award_relevance: "primary", cycle_rel
 const oldText = "Applications close October 23, 2026. Only U.S. citizens may apply. International applicants use a separate program. " +
   "Applicants must provide the complete graduate transcript and three letters from academic referees before the stated deadline.";
 const newText = oldText.replace("October 23", "October 30");
-function record(text, at) {
-  const html = `<html><head><title>Example Scholarship</title></head><body><main><p>${text}</p></main></body></html>`;
+function record(text, at, siblingLabel = null) {
+  const body = siblingLabel ? `<div><button>${siblingLabel}</button><div><p>${text}</p></div></div>` : `<p>${text}</p>`;
+  const html = `<html><head><title>Example Scholarship</title></head><body><main>${body}</main></body></html>`;
   const document = { schema: "awardping.scrapling-html-document.v1", scope: "html-source-main-document",
-    source_url: source.url, title: "Example Scholarship", text, publishable: false, visibility_verified: false,
-    blocks: [{ kind: "p", text, heading_path: [], list_path: [], table_row: [] }],
+    source_url: source.url, title: "Example Scholarship", text: siblingLabel ? `${siblingLabel} ${text}` : text, publishable: false, visibility_verified: false,
+    blocks: [{ kind: "p", text, heading_path: [], list_path: [], table_row: [], ...(siblingLabel ? { sibling_button_path: [siblingLabel] } : {}) }],
     links: [], base_hrefs: [], limitations: ["Source is not browser-visible evidence."] };
   return { schema: "awardping.scrapling-capture.v1", capture_profile: SOURCE_HTML_PROFILE, source_id: source.id,
     url: source.url, final_url: source.url, captured_at: at, status_code: 200, content_type: "text/html; charset=utf-8",
@@ -36,10 +37,10 @@ function record(text, at) {
 }
 const directories = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
-async function inputs({ unchanged = false, mutate } = {}) {
+async function inputs({ unchanged = false, mutate, siblingLabels = [null, null] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "awardping-source-review-")); directories.push(root);
-  const a = record(oldText, "2026-10-18T18:00:00.000Z");
-  const b = record(unchanged ? oldText : newText, "2026-10-18T19:00:00.000Z");
+  const a = record(oldText, "2026-10-18T18:00:00.000Z", siblingLabels[0]);
+  const b = record(unchanged ? oldText : newText, "2026-10-18T19:00:00.000Z", siblingLabels[1]);
   if (mutate) mutate(b);
   const keep = value => captureScraplingWorkerSource(source, { archiveRoot: root, captureProfile: SOURCE_HTML_PROFILE,
     capture: async () => value });
@@ -50,6 +51,25 @@ function payload(input, diff) {
   return buildVisualReviewPromptPayload({ ...input, diff, archiveRelative: value => relative(input.root, value).replaceAll("\\", "/") });
 }
 describe("source-only review remains distinct from browser evidence", () => {
+  it("retains local sibling-button context in exact paired source-only changes without visibility claims", async () => {
+    const input = await inputs({ siblingLabels: ["Who may apply?", "Who may apply?"] }), result = buildScraplingReviewDiff(input);
+    expect(result).toMatchObject({ status: "changed_needs_review", source_main_prose_corroborated: true,
+      visibility_verified: false, publishable: false, baseline_advance_allowed: false });
+    expect(result.diff.scrapling_semantics.previous_context.blocks[0].sibling_button_path).toEqual(["Who may apply?"]);
+    expect(result.diff.scrapling_semantics.current_context.blocks[0].sibling_button_path).toEqual(["Who may apply?"]);
+  });
+  it("holds changed labels and mixed old/new structural context without a baseline refresh", async () => {
+    for (const labels of [["Who may apply?", "Who may apply now?"], [null, "Who may apply?"]]) {
+      const input = await inputs({ unchanged: true, siblingLabels: labels }), result = buildScraplingReviewDiff(input);
+      expect(result).toMatchObject({ status: "manual_review_required", publishable: false, baseline_advance_allowed: false });
+    }
+  });
+  it("holds a main-only sibling relationship change despite matching full-body relationships", async () => {
+    const input = await inputs({ siblingLabels: ["Who may apply?", "Who may apply?"],
+      mutate: b => { b.source_main_document.blocks[0].sibling_button_path = ["Other applicants"]; } });
+    expect(buildScraplingReviewDiff(input)).toMatchObject({ status: "manual_review_required", reason: "source_main_relationship_changed" });
+  });
+
   it("validates complete source artifacts for unchanged captures", async () => {
     const input = await inputs({ unchanged: true });
     expect(buildScraplingReviewDiff(input)).toMatchObject({ status: "unchanged", publishable: false, baseline_advance_allowed: false });
