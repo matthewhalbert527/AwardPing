@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { load } from "cheerio";
 import { normalizeVisibleText } from "./capture-stability.mjs";
 import { normalizePublicHttpUrl } from "./public-network-safety.mjs";
 import { SOURCE_HTML_PROFILE, validateSourceHtmlEvidence, sourceHtmlReviewText } from "./source-html-evidence.mjs";
@@ -16,6 +17,7 @@ const MAX_PROSE_CHARS = 8000;
 // sixteen. Never enqueue a larger complete change set that would be shortened.
 const MAX_CHANGED_BLOCKS = 8;
 const MAX_CONTEXT_TABLE_ENTRIES = 50000;
+const HONEYPOT_DESCRIPTION = "This field is for validation purposes and should be left unchanged.";
 const flow = value => value.replace(/\s+/g, " ").trim();
 const hash = value => createHash("sha256").update(value).digest("hex");
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -110,6 +112,67 @@ function sourceMainEvidence(metadata, html, retainedText, source) {
     sha256: record.integrity.source_main_document_sha256, record,
     parsed: { prose: normalizeVisibleText([record.html_document.title, record.html_document.text].join("\n\n")),
       context, text_hash: hash(normalizeVisibleText(retainedText)), artifact_sha256: hash(retainedText) } };
+}
+
+// Gravity Forms varies this bot-trap label between requests. Recognize only
+// its exact retained controls outside main; never infer CSS visibility or
+// discard other form content. The full raw response remains evidence.
+function gravityFormsHoneypot(html) {
+  const $ = load(html);
+  const marked = $(".gfield--type-honeypot, .gform_validation_container");
+  if (marked.length !== 1) return null;
+  const field = marked.first(), form = field.closest("form");
+  if (!field.is("li.gfield.gfield--type-honeypot.gform_validation_container") || form.length !== 1 ||
+      field.parents().filter((_, node) => node.name === "main" || node.attribs?.role?.trim().toLowerCase() === "main").length ||
+      field.children().length !== 3) return null;
+  const match = /^field_([1-9]\d*)_([1-9]\d*)$/.exec(field.attr("id") || "");
+  if (!match || form.attr("id") !== `gform_${match[1]}` || form.attr("data-formid") !== match[1] ||
+      form.attr("method")?.toLowerCase() !== "post") return null;
+  const label = field.children("label.gfield_label.gform-field-label"), wrapper = field.children("div.ginput_container"),
+    description = field.children("div.gfield_description"), input = wrapper.children("input");
+  if (label.length !== 1 || label.children().length || wrapper.length !== 1 || wrapper.children().length !== 1 ||
+      input.length !== 1 || field.find("input,select,textarea,button").length !== 1 ||
+      description.length !== 1 || description.children().length || flow(description.text()) !== HONEYPOT_DESCRIPTION ||
+      description.attr("id") !== `gfield_description_${match[1]}_${match[2]}` ||
+      input.attr("type") !== "text" || input.attr("name") !== `input_${match[2]}` ||
+      input.attr("id") !== `input_${match[1]}_${match[2]}` || label.attr("for") !== input.attr("id") ||
+      input.attr("value") !== "" || input.attr("autocomplete") !== "new-password") return null;
+  const labelText = label.text();
+  if (!labelText || labelText !== flow(labelText) || labelText.length > 80) return null;
+  const normalizedField = field.clone();
+  normalizedField.children("label").text("AWARDPING_HONEYPOT_LABEL");
+  return { text: `${labelText} ${HONEYPOT_DESCRIPTION}`, label: labelText,
+    markup: $.html(normalizedField), form: form[0].attribs };
+}
+
+function onlyOutsideMainHoneypotLabelChanged(previous, current) {
+  if (!equal(previous.record.source_main_document, current.record.source_main_document)) return false;
+  const before = previous.record.html_document, after = current.record.html_document;
+  if (before.blocks.length !== after.blocks.length) return false;
+  const changed = before.blocks.map((block, index) => ({ before: block, after: after.blocks[index], index }))
+    .filter(pair => !equal(pair.before, pair.after));
+  if (changed.length !== 1) return false;
+  const oldTrap = gravityFormsHoneypot(previous.record.html), newTrap = gravityFormsHoneypot(current.record.html);
+  if (!oldTrap || !newTrap || oldTrap.label === newTrap.label || oldTrap.markup !== newTrap.markup ||
+      !equal(oldTrap.form, newTrap.form)) return false;
+  const pair = changed[0];
+  if (pair.before.kind !== "li" || pair.before.text !== oldTrap.text || pair.after.text !== newTrap.text ||
+      !equal(withoutBlockText(pair.before), withoutBlockText(pair.after)) ||
+      blockOccurrenceCount(before.blocks, oldTrap.text) !== 1 || blockOccurrenceCount(after.blocks, newTrap.text) !== 1) return false;
+  const oldMatch = occurrence(before.text, oldTrap.text), newMatch = occurrence(after.text, newTrap.text);
+  if (oldMatch.count !== 1 || newMatch.count !== 1 ||
+      !substitutionsExplain(before.text, after.text, [{ start: oldMatch.start, oldLength: oldTrap.text.length, text: newTrap.text }])) return false;
+  const restored = { ...after, text: before.text,
+    blocks: after.blocks.map((block, index) => index === pair.index ? { ...block, text: pair.before.text } : block) };
+  // Raw response sizes can differ; bind each size to its own retained bytes.
+  // All other document counters and every other field must remain identical.
+  if (Object.hasOwn(before, "counts") || Object.hasOwn(after, "counts")) {
+    if (!object(before.counts) || !object(after.counts) ||
+        before.counts.html_bytes !== Buffer.byteLength(previous.record.html) ||
+        after.counts.html_bytes !== Buffer.byteLength(current.record.html)) return false;
+    restored.counts = { ...after.counts, html_bytes: before.counts.html_bytes };
+  }
+  return equal(restored, before);
 }
 
 function withoutBlockText(block) {
@@ -431,6 +494,10 @@ export function buildScraplingReviewDiff(input = {}, {
           fields, evidence, retain_both_captures: true, diff: null };
       }
       return { ...base, status: "unchanged", reason: "complete_semantics_equal", fields, evidence };
+    }
+    if (sourceOnly && onlyOutsideMainHoneypotLabelChanged(...sourcePair)) {
+      return { ...base, status: "unchanged", reason: "gravity_forms_honeypot_label_only", fields, evidence,
+        retain_both_captures: true };
     }
     const manual = reason => ({ ...base, status: "manual_review_required", reason, fields, evidence,
       retain_both_captures: true, diff: null,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,6 +11,17 @@ import { prepareR2CaptureArtifacts, collectR2CaptureArtifactFiles } from "./r2-c
 const hash = value => createHash("sha256").update(value).digest("hex");
 const source = { id: "10000000-0000-0000-0000-000000000001", shared_award_id: "20000000-0000-0000-0000-000000000001", url: "https://example.edu/award" };
 const dirs = [];
+const worker = readFileSync(new URL("../capture-visual-snapshots.mjs", import.meta.url), "utf8");
+const coverageFunction = worker.slice(worker.indexOf("function hasBaselineForSource("), worker.indexOf("function needsMissingBaselineCompletion("));
+function coverageReader(root) {
+  const readJson = path => existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null;
+  return new Function("localBaselineEvidenceCache", "readJsonIfExists", "baselinePathForSource", "SOURCE_HTML_PROFILE",
+    "sourceHtmlBaselineEvidence", "archiveRoot", "inspectLocalBaselineEvidence", "baselineEvidenceStatus",
+    `${coverageFunction}\nreturn hasBaselineForSource;`)(new Map(), readJson,
+    id => join(root, "sources", id, "baseline.json"), SOURCE_HTML_PROFILE, sourceHtmlBaselineEvidence, root,
+    () => { throw new Error("Source HTML must not enter browser-only baseline inspection."); },
+    () => { throw new Error("Source HTML must use its actual artifact validator."); });
+}
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "awardping-source-state-")); dirs.push(root);
@@ -34,6 +45,27 @@ async function fixture() {
   return { root, capture, baseline };
 }
 describe("source-only local worker state", () => {
+  it("counts a complete source-only baseline using its actual three artifacts", async () => {
+    const { root, baseline } = await fixture();
+    writeFileSync(join(root, "sources", source.id, "baseline.json"), JSON.stringify(baseline));
+    expect(coverageReader(root)(source)).toBe(true);
+  });
+  it.each(["html", "meta", "text"])("does not count source-only coverage with corrupt %s bytes", async slot => {
+    const { root, capture, baseline } = await fixture();
+    writeFileSync(join(root, "sources", source.id, "baseline.json"), JSON.stringify(baseline));
+    writeFileSync(capture[`${slot}_path`], "corrupt");
+    expect(coverageReader(root)(source)).toBe(false);
+  });
+  it.each(["id", "shared_award_id", "url"])("does not count another source's baseline after %s drift", async field => {
+    const { root, baseline } = await fixture();
+    writeFileSync(join(root, "sources", source.id, "baseline.json"), JSON.stringify(baseline));
+    const changedSource = { ...source, [field]: field === "url" ? `${source.url}/different` : "30000000-0000-0000-0000-000000000001" };
+    if (field === "id") {
+      const changedBaseline = structuredClone(baseline); changedBaseline.source.id = changedSource.id;
+      writeFileSync(join(root, "sources", source.id, "baseline.json"), JSON.stringify(changedBaseline));
+      expect(coverageReader(root)(source)).toBe(false);
+    } else expect(coverageReader(root)(changedSource)).toBe(false);
+  });
   it("validates all3 raw artifacts without modifying metadata", async () => {
     const { root, capture, baseline } = await fixture();
     const original = readFileSync(capture.meta_path);

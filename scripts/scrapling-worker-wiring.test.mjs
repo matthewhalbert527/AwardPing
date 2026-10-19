@@ -88,6 +88,17 @@ describe("Scrapling semantic review outcomes", () => {
     expect(f.deps.enqueueVisualReviewCandidate).not.toHaveBeenCalled();
     expect(f.deps.saveReviewRecord).not.toHaveBeenCalled();
     expect(f.deps.console.log).toHaveBeenCalledWith(expect.stringContaining("html_source_semantics_only"));
+    expect(f.deps.removeGeneratedCaptureDir).toHaveBeenCalledWith("current");
+  });
+  it("retains both captures for a proven honeypot-only change during normal daily cleanup", async () => {
+    const f = fixture("unchanged");
+    Object.assign(f.comparison, { reason: "gravity_forms_honeypot_label_only", retain_both_captures: true });
+    await f.run();
+    expect(f.report.unchanged).toBe(1);
+    expect(f.deps.markSharedSourceVisualCheckSucceeded).toHaveBeenCalledOnce();
+    expect(f.deps.removeGeneratedCaptureDir).not.toHaveBeenCalled();
+    expect(f.deps.enqueueVisualReviewCandidate).not.toHaveBeenCalled();
+    expect(f.deps.saveReviewRecord).not.toHaveBeenCalled();
   });
   it("retains structural changes for manual review without noise rejection", async () => {
     const f = fixture("manual_review_required"); await f.run();

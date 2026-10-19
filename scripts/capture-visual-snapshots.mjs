@@ -5909,7 +5909,7 @@ async function processScraplingComparison(source, baseline, previous, capture, r
     report.unchanged += 1;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`UNCHANGED html_source_semantics_only ${sourceLabel(source)}`);
-    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    if (!keepUnchanged && !comparison.retain_both_captures) removeGeneratedCaptureDir(capture.dir);
     return;
   }
   const deterministic = {
@@ -15391,6 +15391,14 @@ function formatShardLabel() {
 function hasBaselineForSource(source) {
   if (localBaselineEvidenceCache.has(source.id)) {
     return localBaselineEvidenceCache.get(source.id);
+  }
+  const sourceHtmlBaseline = readJsonIfExists(baselinePathForSource(source.id));
+  if (sourceHtmlBaseline?.capture_profile === SOURCE_HTML_PROFILE) {
+    const complete = sourceHtmlBaseline.source?.id === source.id &&
+      sourceHtmlBaseline.source?.shared_award_id === source.shared_award_id && sourceHtmlBaseline.source?.url === source.url &&
+      sourceHtmlBaselineEvidence(sourceHtmlBaseline, { archiveRoot }).ok === true;
+    localBaselineEvidenceCache.set(source.id, complete);
+    return complete;
   }
   const inspection = inspectLocalBaselineEvidence({
     archiveRoot,
