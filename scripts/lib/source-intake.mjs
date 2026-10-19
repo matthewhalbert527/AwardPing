@@ -521,29 +521,31 @@ export function inferIntakePageType(input) {
   return "homepage";
 }
 
-// Native GenerateContent schema, in addition to the human-readable prompt.
-// Keep the existing output shape and immutable v2 replay contract: the full
-// schema/prompt are already sealed by generation-config/envelope hashes.
-function sourceIntakeResponseSchema() {
-  const text = { anyOf: [{ type: "string" }, { type: "null" }] };
-  const list = { type: "array", items: { type: "string" }, maxItems: 12 };
+// Gemini Schema for the documented 2.5 Flash-Lite GenerateContent contract.
+// Future envelopes use responseSchema, not a lossy JSON-Schema conversion.
+// Required keys plus maxProperties declare closed objects; nullable preserves
+// unknown scalar values. Int64 bounds use their documented JSON string form.
+// Historical v2 bindings still replay their original sealed envelope unchanged.
+function sourceIntakeGeminiResponseSchema() {
+  const text = { type: "STRING", nullable: true };
+  const list = { type: "ARRAY", items: { type: "STRING" }, maxItems: "12" };
   const properties = {
-    status: { type: "string", enum: ["accepted", "needs_review", "rejected"] },
+    status: { type: "STRING", enum: ["accepted", "needs_review", "rejected"] },
     detected_award_name: { ...text },
     detected_sponsor: { ...text },
-    source_relevance: { type: "string", enum: ["primary", "supporting", "generic_listing", "sibling_program", "unrelated", "unclear", "access_error"] },
-    cycle_relevance: { type: "string", enum: ["current_or_upcoming", "evergreen", "archived_or_past", "not_program_page", "unclear"] },
-    page_type: { type: "string", enum: ["homepage", "application", "deadline", "eligibility", "requirements", "faq", "pdf", "portal", "listing", "other"] },
-    officialness: { type: "string", enum: ["official", "likely_official", "third_party", "unclear"] },
-    confidence: { type: "string", enum: ["high", "medium", "low"] },
+    source_relevance: { type: "STRING", enum: ["primary", "supporting", "generic_listing", "sibling_program", "unrelated", "unclear", "access_error"] },
+    cycle_relevance: { type: "STRING", enum: ["current_or_upcoming", "evergreen", "archived_or_past", "not_program_page", "unclear"] },
+    page_type: { type: "STRING", enum: ["homepage", "application", "deadline", "eligibility", "requirements", "faq", "pdf", "portal", "listing", "other"] },
+    officialness: { type: "STRING", enum: ["official", "likely_official", "third_party", "unclear"] },
+    confidence: { type: "STRING", enum: ["high", "medium", "low"] },
     evidence_quotes: {
-      type: "array",
-      items: { type: "string", description: "Nonempty exact quote, at most 240 characters." },
-      maxItems: 8,
+      type: "ARRAY",
+      items: { type: "STRING", description: "Nonempty exact quote, at most 240 characters." },
+      maxItems: "8",
       description: "Required even when empty. Exact contiguous quotes from text_excerpt, including labels/qualifiers. Accepted requires at least one genuine quote; no evidence means needs_review/rejected and []. Never invent a quote to fill this field.",
     },
     facts: {
-      type: "object",
+      type: "OBJECT",
       properties: {
         description: { ...text },
         deadline: {
@@ -559,26 +561,26 @@ function sourceIntakeResponseSchema() {
         },
       },
       required: ["description", "deadline", "amount", "eligibility", "application_materials", "important_dates"],
-      additionalProperties: false,
+      maxProperties: "6",
     },
     suggested_sources: {
-      type: "array",
-      maxItems: 10,
+      type: "ARRAY",
+      maxItems: "10",
       items: {
-        type: "object",
+        type: "OBJECT",
         properties: {
-          url: { type: "string" }, title: { type: "string" },
-          page_type: { type: "string" }, reason: { type: "string" },
-          confidence: { type: "number", minimum: 0, maximum: 1 },
+          url: { type: "STRING" }, title: { type: "STRING" },
+          page_type: { type: "STRING" }, reason: { type: "STRING" },
+          confidence: { type: "NUMBER", minimum: 0, maximum: 1 },
         },
         required: ["url", "title", "page_type", "reason", "confidence"],
-        additionalProperties: false,
+        maxProperties: "5",
       },
     },
     rejection_reason: { ...text },
     manual_review_reason: { ...text },
   };
-  return { type: "object", properties, required: Object.keys(properties), additionalProperties: false, propertyOrdering: Object.keys(properties) };
+  return { type: "OBJECT", properties, required: Object.keys(properties), maxProperties: "13", propertyOrdering: Object.keys(properties) };
 }
 
 export function buildGeminiIntakeRequest(
@@ -627,7 +629,7 @@ export function buildGeminiIntakeRequest(
         maxOutputTokens: 1600,
         thinkingConfig: { thinkingBudget: 0 },
         responseMimeType: "application/json",
-        responseJsonSchema: sourceIntakeResponseSchema(),
+        responseSchema: sourceIntakeGeminiResponseSchema(),
       },
     },
     metadata: {
