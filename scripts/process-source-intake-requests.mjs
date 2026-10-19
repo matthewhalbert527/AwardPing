@@ -983,6 +983,8 @@ async function processCaptureStage(row) {
     report.captured += 1;
     const deterministicReview = deterministicSourceIntakeReview({
       url: capture.canonical_url || capture.final_url || normalizedUrl,
+      ok: capture.ok,
+      statusCode: capture.status_code,
       title: capture.title,
       text: capture.text,
       requestedAwardName: row.award_name,

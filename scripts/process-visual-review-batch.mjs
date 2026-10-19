@@ -294,6 +294,8 @@ const report = {
   retried_failed_candidates: 0,
   escalated_to_strong_model: 0,
   paid_retry_approvals_required: 0,
+  paid_retry_preflight_held: 0,
+  paid_retry_preflight_holds: [],
   paid_retry_request_drift_invalidated: 0,
   paid_retry_submission_authorization_failed: 0,
   provider_request_evidence_invalid: 0,
@@ -1127,16 +1129,49 @@ async function loadVisualSpendReservation(workerMetadata) {
 async function requeueRetryableFailures() {
   let approvalQuery = supabase
     .from("gemini_paid_retry_approvals")
-    .select("id,candidate_id,candidate_updated_at,status,expires_at,approved_at")
-    .eq("status", "approved");
+    .select("id,candidate_id,candidate_updated_at,lane_key,status,expires_at,approved_at")
+    .eq("status", "approved")
+    .gt("expires_at", new Date().toISOString());
   if (paidLane) approvalQuery = approvalQuery.eq("lane_key", paidLane);
   const { data, error } = await approvalQuery
     .order("approved_at", { ascending: true })
     .order("id", { ascending: true })
     .limit(Math.max(limit, 500));
   if (error) throw new Error(`Load approved paid visual-review retries failed: ${error.message}`);
+  if (!data?.length) return;
+
+  const candidatesById = new Map();
+  for (const ids of chunks(unique(data.map((approval) => approval.candidate_id)).filter(Boolean), 500)) {
+    const { data: candidates, error: candidateError } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .select("*")
+      .in("id", ids)
+      .eq("status", "failed");
+    if (candidateError) throw new Error(`Load approved paid retry candidates failed: ${candidateError.message}`);
+    for (const candidate of candidates || []) candidatesById.set(candidate.id, candidate);
+  }
+  const sourcesById = await loadSourcesById(
+    [...candidatesById.values()].map((candidate) => candidate.shared_award_source_id),
+  );
 
   for (const approval of data || []) {
+    const candidate = candidatesById.get(approval.candidate_id);
+    const source = sourcesById.get(candidate?.shared_award_source_id);
+    const preflight = paidRetryRequestPreflight(candidate, source, approval);
+    if (!preflight.allowed) {
+      // A stale approval is not permission to reset or refresh its failed row.
+      // Keep its prior response/batch/metadata and the approval itself untouched.
+      report.paid_retry_preflight_held += 1;
+      report.paid_retry_preflight_holds.push({
+        approval_id: approval.id,
+        candidate_id: approval.candidate_id,
+        reason: preflight.reason,
+        changed_fields: preflight.changed_fields || [],
+      });
+      continue;
+    }
+    // This read-only preflight is not a lock or authorization. The atomic
+    // consume RPC and later request/provider-boundary checks still own races.
     const { data: consumption, error: approvalError } = await supabase.rpc(
       "consume_visual_review_paid_retry_approval",
       {
@@ -1155,6 +1190,60 @@ async function requeueRetryableFailures() {
       report.paid_retry_approvals_required += 1;
     }
   }
+}
+
+function paidRetryRequestPreflight(candidate, source, approval, now = Date.now()) {
+  const hold = (reason, changedFields = []) => ({ allowed: false, reason, changed_fields: changedFields });
+  if (!candidate || !approval?.id || approval.status !== "approved" ||
+      candidate.id !== approval.candidate_id || candidate.status !== "failed" ||
+      !candidate.updated_at || candidate.updated_at !== approval.candidate_updated_at) {
+    return hold("paid_retry_candidate_version_unavailable");
+  }
+  const expiresAt = Date.parse(approval.expires_at);
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) return hold("paid_retry_approval_expired_or_invalid");
+  if (paidReviewLaneForCandidate(candidate) !== approval.lane_key ||
+      (paidLane && approval.lane_key !== paidLane)) {
+    return hold("paid_retry_lane_mismatch");
+  }
+  if (!source?.id || !source.shared_award_id || !cleanText(source.url)) {
+    return hold("paid_retry_source_unavailable");
+  }
+  if (source.id !== candidate.shared_award_source_id || source.shared_award_id !== candidate.shared_award_id) {
+    return hold("paid_retry_source_binding_changed");
+  }
+  const identity = visualReviewSourceIdentityFreshness(candidate, source);
+  if (!identity.allowed || !identity.captured_source_url || !identity.current_source_url) {
+    return hold(identity.allowed ? "paid_retry_source_identity_unavailable" : identity.reason);
+  }
+  const rejectReason = preSubmissionRejectReason(candidate, source);
+  if (rejectReason) return hold(rejectReason);
+
+  try {
+    // Match persistPendingCandidateForCurrentPolicy's exact rebuild/patch,
+    // without changing the stored candidate or claiming its existing approval.
+    const rebuilt = rebuildVisualReviewCandidateForCurrentPolicy(candidate, { source });
+    const current = {
+      candidate_signature: rebuilt.candidate_signature,
+      gemini_batch_request_key: rebuilt.candidate_signature,
+      source_url: rebuilt.source_context.url || candidate.source_url,
+      source_title: rebuilt.source_context.title || candidate.source_title,
+      source_page_type: rebuilt.source_context.page_type || candidate.source_page_type,
+      prompt_payload: rebuilt.prompt_payload,
+      prompt_context: rebuilt.prompt_context,
+    };
+    const changedFields = Object.keys(current).filter((key) =>
+      paidRetryCanonicalJson(candidate[key] ?? null) !== paidRetryCanonicalJson(current[key] ?? null));
+    if (changedFields.length) return hold("paid_retry_current_request_drift", changedFields);
+    return { allowed: true, reason: "current_request_atomic_approval_check_required", changed_fields: [] };
+  } catch {
+    return hold("paid_retry_current_request_rebuild_failed");
+  }
+}
+
+function paidRetryCanonicalJson(value) {
+  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]]))
+    : item);
 }
 
 async function persistPendingCandidateForCurrentPolicy(candidate, source) {

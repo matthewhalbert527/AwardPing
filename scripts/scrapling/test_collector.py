@@ -3,6 +3,8 @@
 import base64
 from contextlib import contextmanager
 import hashlib
+import io
+import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import logging
 from threading import Thread
@@ -11,12 +13,41 @@ from unittest.mock import patch
 
 from playwright.sync_api import Page, WebSocketRoute, sync_playwright
 
-from collector import CaptureFailure, EVIDENCE_PROFILE, capture, collect_stable, discover_html_links, jpeg_dimensions, observe, parse_projection, require_document_response_url, screenshot_bounds, validate_url
+from collector import CaptureFailure, EVIDENCE_PROFILE, capture, checked_screenshot_dimensions, collect_stable, discover_html_links, jpeg_dimensions, main, observe, parse_projection, require_document_response_url, screenshot_bounds, validate_url
 from html_document import extract_html_document
 
 
 BROWSER = "C:/Program Files/Google/Chrome/Application/chrome.exe"
 REQUEST = {"url": "https://example.com/award", "source_id": "fixture", "proxy_url": "http://127.0.0.1:1", "executable_path": BROWSER}
+
+
+class ScreenshotDiagnosticsTests(unittest.TestCase):
+    def test_diagnostics_are_allowlisted_numeric_dimensions_only(self):
+        error = CaptureFailure("screenshot_document_exceeds_viewport", diagnostics={
+            "stage": "fitted_pre_screenshot", "document": {"width": 1495, "height": 10553},
+            "viewport": {"width": 1280, "height": 900}, "url": "SECRET",
+            "browser_viewport": {"width": "SECRET", "height": 900},
+            "jpeg": {"width": True, "height": 900}})
+        self.assertEqual(error.diagnostics, {"stage": "fitted_pre_screenshot",
+            "document": {"width": 1495, "height": 10553}, "viewport": {"width": 1280, "height": 900}})
+        self.assertEqual(CaptureFailure(error).diagnostics, error.diagnostics)
+        self.assertIsNone(CaptureFailure("capture_failed", diagnostics={"stage": "SECRET"}).diagnostics)
+        output = io.StringIO()
+        with patch("collector.sys.stdin", io.TextIOWrapper(io.BytesIO(json.dumps(REQUEST).encode()))), \
+                patch("collector.sys.stdout", output), patch("collector.capture", side_effect=error):
+            self.assertEqual(main(), 2)
+        self.assertEqual(json.loads(output.getvalue()), {"error": str(error), "diagnostics": error.diagnostics})
+        self.assertNotIn("SECRET", output.getvalue())
+
+    def test_fitting_target_keeps_absolute_and_combined_pixel_limits(self):
+        self.assertEqual(checked_screenshot_dimensions({"width": 4000, "height": 6000}), {"width": 4000, "height": 6000})
+        self.assertEqual(checked_screenshot_dimensions({"width": 3000, "height": 8000}), {"width": 3000, "height": 8000})
+        for bounds in ({"width": 4000, "height": 8000}, {"width": 4097, "height": 100},
+                       {"width": 100, "height": 20001}, {"width": 0, "height": 100},
+                       {"width": True, "height": 100}):
+            with self.subTest(bounds=bounds), self.assertRaisesRegex(CaptureFailure, "^screenshot_dimension_limit$") as caught:
+                checked_screenshot_dimensions(bounds, stage="fitting_target")
+            self.assertEqual(caught.exception.diagnostics["stage"], "fitting_target")
 
 
 class ProjectionTests(unittest.TestCase):
@@ -519,7 +550,7 @@ class FetchTests(unittest.TestCase):
             self.assertEqual(result["screenshot"]["alignment"], "not_verified")
             self.assertEqual(result["screenshot"]["capture_method"], "document_fitting_viewport")
             self.assertEqual(result["screenshot"]["viewport"], {"width": 1280, "height": 1103})
-            self.assertTrue(any("viewport height was set once to fit the document" in item for item in result["screenshot"]["limitations"]))
+            self.assertTrue(any("viewport dimensions were set once to fit the document" in item for item in result["screenshot"]["limitations"]))
 
     def test_viewport_fallback_paints_bottom_and_uses_fresh_responsive_content(self):
         screenshot, resize = Page.screenshot, Page.set_viewport_size
@@ -578,15 +609,67 @@ class FetchTests(unittest.TestCase):
             return value
 
         with patch.object(Page, "screenshot", image), patch.object(Page, "set_viewport_size", resized), \
-                self.assertRaisesRegex(CaptureFailure, "^screenshot_document_exceeds_viewport$"):
+                self.assertRaisesRegex(CaptureFailure, "^screenshot_document_exceeds_viewport$") as caught:
             self.fetch_fixture('<style>body{margin:0}main{height:150vh}</style><main><h1>Award</h1>'
                                '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>', profile=EVIDENCE_PROFILE)
         self.assertEqual(len(images), 1)
         self.assertEqual(sizes, [{"width": 1280, "height": 1353}])
+        self.assertEqual(caught.exception.diagnostics["stage"], "fitted_pre_screenshot")
+        self.assertGreater(caught.exception.diagnostics["document"]["height"], sizes[0]["height"])
 
-    def test_horizontal_overflow_is_not_widened_for_viewport_fallback(self):
-        screenshot = Page.screenshot
-        images = []
+    def test_horizontal_overflow_fits_once_with_fresh_content_and_right_edge_pixels(self):
+        screenshot, resize = Page.screenshot, Page.set_viewport_size
+        images, sizes, options, edge_pixels = [], [], [], []
+
+        def resized(page, value):
+            sizes.append(value)
+            return resize(page, value)
+
+        def image(page, **kwargs):
+            options.append(kwargs)
+            value = screenshot(page, **kwargs)
+            images.append(value)
+            if len(images) == 1:
+                page.evaluate("document.body.style.paddingBottom='3px'")
+            else:
+                edge_pixels.append(page.evaluate("""async encoded => {
+                    const image = new Image(); image.src = 'data:image/jpeg;base64,' + encoded;
+                    await image.decode();
+                    const canvas = new OffscreenCanvas(image.width, image.height);
+                    const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+                    return Array.from(context.getImageData(image.width - 20, 20, 1, 1).data);
+                }""", base64.b64encode(value).decode("ascii")))
+            return value
+
+        body = '<style>body{margin:0}main{width:1400px;height:1100px;background:#0000ff}</style><main><h1>Award</h1>' \
+               '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>' \
+               '<script>addEventListener("resize",()=>{if(innerWidth>=1400)' \
+               'document.querySelector("p").textContent="Apply February 2, 2027. International applicants may apply."})</script>'
+        with patch.object(Page, "screenshot", image), patch.object(Page, "set_viewport_size", resized):
+            result, _ = self.fetch_fixture(body, profile=EVIDENCE_PROFILE)
+        self.assertEqual(sizes, [{"width": 1400, "height": 1103}])
+        self.assertEqual([item["full_page"] for item in options], [True, False])
+        self.assertEqual(result["screenshot"]["viewport"], sizes[0])
+        self.assertEqual((result["screenshot"]["width"], result["screenshot"]["height"]), (1400, 1103))
+        self.assertEqual(result["readiness"]["screenshot_attempts"], 2)
+        self.assertTrue(result["screenshot"]["full_page"])
+        self.assertTrue(result["screenshot"]["semantics_bracketed"])
+        self.assertEqual(result["screenshot"]["alignment"], "not_verified")
+        self.assertIn("International applicants", result["text"])
+        self.assertIn("International applicants", result["html_document"]["text"])
+        self.assertNotIn("Only U.S. citizens", result["text"])
+        self.assertEqual(len(edge_pixels), 1)
+        self.assertLess(edge_pixels[0][0], 10)
+        self.assertLess(edge_pixels[0][1], 10)
+        self.assertGreater(edge_pixels[0][2], 240)
+
+    def test_viewport_dependent_width_growth_is_not_clipped_or_retried_again(self):
+        screenshot, resize = Page.screenshot, Page.set_viewport_size
+        images, sizes = [], []
+
+        def resized(page, value):
+            sizes.append(value)
+            return resize(page, value)
 
         def image(page, **kwargs):
             value = screenshot(page, **kwargs)
@@ -594,12 +677,32 @@ class FetchTests(unittest.TestCase):
             page.evaluate("document.body.style.paddingBottom='3px'")
             return value
 
+        with patch.object(Page, "screenshot", image), patch.object(Page, "set_viewport_size", resized), \
+                self.assertRaisesRegex(CaptureFailure, "^screenshot_document_exceeds_viewport$") as caught:
+            self.fetch_fixture('<style>body{margin:0}main{width:calc(100vw + 100px);height:1100px}</style>'
+                               '<main><h1>Award</h1><p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>', profile=EVIDENCE_PROFILE)
+        self.assertEqual(len(images), 1)
+        self.assertEqual(sizes, [{"width": 1380, "height": 1103}])
+        self.assertEqual(caught.exception.diagnostics["stage"], "fitted_pre_screenshot")
+        self.assertEqual(caught.exception.diagnostics["document"], {"width": 1480, "height": 1103})
+
+    def test_combined_fitting_pixel_limit_is_checked_before_resize(self):
+        screenshot = Page.screenshot
+        images = []
+
+        def image(page, **kwargs):
+            value = screenshot(page, **kwargs)
+            images.append(value)
+            page.evaluate("document.querySelector('main').style.cssText='width:3000px;height:8000px'")
+            return value
+
         with patch.object(Page, "screenshot", image), patch.object(Page, "set_viewport_size") as resize, \
-                self.assertRaisesRegex(CaptureFailure, "^screenshot_document_exceeds_viewport$"):
-            self.fetch_fixture('<style>body{margin:0}main{width:1400px;height:1100px}</style><main><h1>Award</h1>'
+                self.assertRaisesRegex(CaptureFailure, "^screenshot_dimension_limit$") as caught:
+            self.fetch_fixture('<style>body{margin:0}main{width:4000px;height:6000px}</style><main><h1>Award</h1>'
                                '<p>Deadline January 1, 2027. Only U.S. citizens may apply.</p></main>', profile=EVIDENCE_PROFILE)
         self.assertEqual(len(images), 1)
         resize.assert_not_called()
+        self.assertEqual(caught.exception.diagnostics, {"stage": "fitting_target", "document": {"width": 4000, "height": 8000}})
 
     def test_persistent_screenshot_geometry_change_fails_after_two_attempts(self):
         screenshot = Page.screenshot

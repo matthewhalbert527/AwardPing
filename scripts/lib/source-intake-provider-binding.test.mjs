@@ -284,6 +284,69 @@ describe("source-intake provider result binding", () => {
   });
 });
 
+it("keeps the real v2 producer's pre-change prompt, envelope, input and result digests", () => {
+    const { request, capture, rawResult } = fixture();
+    const providerEnvelope = historical026Envelope();
+    const inputBinding = buildSourceIntakeProviderInputBinding({
+      request, capture, deterministicReview, providerEnvelope, model: "gemini-2.5-flash-lite",
+    });
+    const storedReview = reviewForBinding(request, capture, rawResult, inputBinding);
+    expect({
+      prompt: inputBinding.user_prompt_sha256,
+      envelope: inputBinding.provider_envelope_sha256,
+      input: inputBinding.digest_sha256,
+      result: storedReview.provider_result_binding.digest_sha256,
+    }).toEqual({
+      prompt: "87c4df5dfad76bca4f43dbc640e66f244c681cf50b0d74bc935be44d4384bb41",
+      envelope: "dd7cce4553134fa421147d3b8b614afbf982747cd8da11e9658991b4532d03a2",
+      input: "b2264bb752dbf15518bbabd4fdaca87e5a489a4a0ab19837f58dd538b5dea6e7",
+      result: "cd1f81660aa761eddf3efc0ab4918b22c5dc1c91e7bb0b18d8543d910372d3c9",
+    });
+    expect(validateSourceIntakeProviderReplayBinding({ request, capture, deterministicReview, storedReview }))
+      .toMatchObject({ inputBinding, resultBinding: storedReview.provider_result_binding });
+    expect(verifySourceIntakeProviderBindingForAdminApproval({ request, captureMetadata: capture, deterministicReview, aiReview: storedReview }))
+      .toMatchObject({ inputBinding, resultBinding: storedReview.provider_result_binding });
+    expect(buildGeminiIntakeRequest(request, capture, deterministicReview, "ignored-current-model", inputBinding))
+      .toEqual(providerEnvelope);
+  });
+
+// Literal 026 envelope. Preserve the four historical digest expectations.
+function historical026Envelope() {
+  const prompt = [
+    "Review this pasted source URL for AwardPing intake.",
+    "Strict output schema:",
+    '{"status":"accepted|needs_review|rejected","detected_award_name":"string|null","detected_sponsor":"string|null","source_relevance":"primary|supporting|generic_listing|sibling_program|unrelated|unclear|access_error","cycle_relevance":"current_or_upcoming|evergreen|archived_or_past|not_program_page|unclear","page_type":"homepage|application|deadline|eligibility|requirements|faq|pdf|portal|listing|other","officialness":"official|likely_official|third_party|unclear","confidence":"high|medium|low","evidence_quotes":["short exact quote"],"facts":{"description":"string|null","deadline":"string|null","amount":"string|null","eligibility":[],"application_materials":[],"important_dates":[]},"suggested_sources":[{"url":"string","title":"string","page_type":"string","reason":"string","confidence":0}],"rejection_reason":"string|null","manual_review_reason":"string|null"}',
+    "Submitted request:",
+    '{"id":"11111111-1111-4111-8111-111111111111","requested_award_name":"Marshall Scholarship","notes":"Review the current official application page.","submitted_url":"https://example.org/apply","normalized_url":"https://example.org/apply","intake_type":"official_source"}',
+    "Deterministic review:",
+    '{"status":"plausible","reason":"passes_deterministic_intake_gate","pageType":"application"}',
+    "Captured page:",
+    '{"retained_capture_identity":{"request_id":"11111111-1111-4111-8111-111111111111","retained_capture_sha256":"abd0c9bec830561391f07515bc7040a1daabe127d921801f2f743a3061110f1f","normalized_text_sha256":"232628623594d96e23e0e9ba2850d86c61951bc4cdb135c2b7c2427b06fc2e03","canonical_url":"https://example.org/apply","response_final_url":"https://example.org/apply?cycle=2027","content_type":"text/html; charset=utf-8","retained_capture_byte_length":84,"normalized_text_length":58,"captured_at":"2026-07-17T12:00:00.000Z"},"prompt_policy":{"name":"awardping-source-intake-review","version":2,"system_instruction_version":1,"output_schema_version":1,"text_excerpt_offset":0,"text_excerpt_max_chars":16000},"final_url":"https://example.org/apply?cycle=2027","canonical_url":"https://example.org/apply","content_type":"text/html; charset=utf-8","text_excerpt":"Marshall Scholarship eligibility and application guidance.","pdf_links":[],"links":[]}',
+  ].join("\n\n");
+  return {
+    request: {
+      systemInstruction: { parts: [{ text: "You are AwardPing's strict source-intake reviewer. Return JSON only. Default to needs_review or rejected when uncertain. Do not invent deadlines, cycles, award names, or facts. Classify sibling programs, broad sponsor pages, search/listing pages, access errors, jobs/careers, profiles, recipients, news, and payment pages conservatively. Accepted facts must cite exact evidence quotes from the supplied page text." }] },
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 1600, thinkingConfig: { thinkingBudget: 0 }, responseMimeType: "application/json" },
+    },
+    metadata: { key: "11111111-1111-4111-8111-111111111111", source_page_request_id: "11111111-1111-4111-8111-111111111111", model: "gemini-2.5-flash-lite" },
+  };
+}
+
+function reviewForBinding(request, capture, rawResult, inputBinding) {
+  const resultBinding = buildSourceIntakeProviderResultBinding({
+    request, capture, deterministicReview, inputBinding, rawResult,
+    batchName: "batches/source-intake-compatibility", batchRequestKey: request.id,
+    model: "gemini-2.5-flash-lite", acceptedAt,
+  });
+  return {
+    status: "accepted", raw: rawResult, completed_at: acceptedAt,
+    gemini_batch_name: resultBinding.provider_batch_name,
+    gemini_batch_request_key: request.id, model: "gemini-2.5-flash-lite",
+    provider_input_binding: inputBinding, provider_result_binding: resultBinding,
+  };
+}
+
 function fixture() {
   const text = "Marshall Scholarship eligibility and application guidance.";
   const fileBytes = Buffer.from("<html><body>Marshall Scholarship eligibility and application guidance.</body></html>");

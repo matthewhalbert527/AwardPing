@@ -65,6 +65,21 @@ HTML_LINK_SCRIPT = """() => {
 class CaptureFailure(Exception):
     """Bounded failure label; no source content or credentials in output."""
 
+    def __init__(self, reason, *, diagnostics=None):
+        if isinstance(reason, CaptureFailure) and diagnostics is None:
+            diagnostics = reason.diagnostics
+        super().__init__(str(reason))
+        self.diagnostics = None
+        stages = {"document_dimensions", "fitting_target", "fitted_pre_screenshot",
+                  "jpeg_dimensions", "post_screenshot_bounds", "post_screenshot_viewport"}
+        if isinstance(diagnostics, dict) and diagnostics.get("stage") in stages:
+            self.diagnostics = {"stage": diagnostics["stage"]}
+            for key in ("document", "previous_document", "viewport", "browser_viewport", "jpeg"):
+                value = diagnostics.get(key)
+                if (isinstance(value, dict) and set(value) == {"width", "height"} and
+                        all(type(value[axis]) is int and 0 <= value[axis] <= 1000000 for axis in ("width", "height"))):
+                    self.diagnostics[key] = dict(value)
+
 
 def normalize(value):
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -489,6 +504,14 @@ def observe(page):
     return observation, document, signal
 
 
+def checked_screenshot_dimensions(bounds, *, stage="document_dimensions"):
+    width, height = bounds["width"], bounds["height"]
+    if not (type(width) is int and type(height) is int and 0 < width <= 4096 and
+            0 < height <= 20000 and width * height <= MAX_SCREENSHOT_PIXELS):
+        raise CaptureFailure("screenshot_dimension_limit", diagnostics={"stage": stage, "document": bounds})
+    return bounds
+
+
 def screenshot_bounds(page):
     """Use the same full-page extent as Playwright, without changing the DOM."""
     bounds = page.evaluate("""() => {
@@ -499,11 +522,7 @@ def screenshot_bounds(page):
     }""")
     if not bounds:
         raise CaptureFailure("missing_document")
-    width, height = bounds["width"], bounds["height"]
-    if not (type(width) is int and type(height) is int and 0 < width <= 4096 and
-            0 < height <= 20000 and width * height <= MAX_SCREENSHOT_PIXELS):
-        raise CaptureFailure("screenshot_dimension_limit")
-    return bounds
+    return checked_screenshot_dimensions(bounds)
 
 
 def collect_stable(page, stable_ms=1000, max_ms=12000, *, geometry=False):
@@ -606,16 +625,19 @@ def capture_evidence(page, observed, *, viewport_capture=None):
     bounds = screenshot_bounds(page)
     width, height = bounds["width"], bounds["height"]
     if viewport_capture is not None:
+        browser_viewport = page.evaluate("() => ({width: innerWidth, height: innerHeight})")
         if (bounds != viewport_capture or page.viewport_size != viewport_capture or
-                page.evaluate("() => ({width: innerWidth, height: innerHeight})") != viewport_capture):
-            raise CaptureFailure("screenshot_document_exceeds_viewport")
+                browser_viewport != viewport_capture):
+            raise CaptureFailure("screenshot_document_exceeds_viewport", diagnostics={"stage": "fitted_pre_screenshot",
+                "document": bounds, "viewport": viewport_capture, "browser_viewport": browser_viewport})
     image = page.screenshot(type="jpeg", quality=80, full_page=viewport_capture is None, scale="css", animations="allow", caret="initial", timeout=15000)
     captured_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     if len(image) > MAX_SCREENSHOT_BYTES:
         raise CaptureFailure("screenshot_size_limit")
     image_width, image_height = jpeg_dimensions(image)
     if image_width != width or image_height != height:
-        raise CaptureFailure("screenshot_dimensions_changed")
+        raise CaptureFailure("screenshot_dimensions_changed", diagnostics={"stage": "jpeg_dimensions",
+            "document": bounds, "jpeg": {"width": image_width, "height": image_height}})
     after, after_document, _ = observe(page)
     try:
         after_html_document = extract_html_document(after["html"], after["url"])
@@ -627,11 +649,15 @@ def capture_evidence(page, observed, *, viewport_capture=None):
         raise CaptureFailure("screenshot_page_unreadable")
     if CHALLENGE.search(after_document["text"][:1000]):
         raise CaptureFailure("blocked_page_content")
-    if screenshot_bounds(page) != bounds:
-        raise CaptureFailure("screenshot_dimensions_changed")
-    if viewport_capture is not None and (page.viewport_size != viewport_capture or
-            page.evaluate("() => ({width: innerWidth, height: innerHeight})") != viewport_capture):
-        raise CaptureFailure("screenshot_dimensions_changed")
+    after_bounds = screenshot_bounds(page)
+    if after_bounds != bounds:
+        raise CaptureFailure("screenshot_dimensions_changed", diagnostics={"stage": "post_screenshot_bounds",
+            "previous_document": bounds, "document": after_bounds, "viewport": page.viewport_size})
+    if viewport_capture is not None:
+        browser_viewport = page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+        if page.viewport_size != viewport_capture or browser_viewport != viewport_capture:
+            raise CaptureFailure("screenshot_dimensions_changed", diagnostics={"stage": "post_screenshot_viewport",
+                "document": after_bounds, "viewport": viewport_capture, "browser_viewport": browser_viewport})
     after_links = discover_html_links(page)
     mismatches = (semantic_mismatches(document, after_document, "visible", ("title", "text", "blocks", "links"))
                   + semantic_mismatches(html_document, after_html_document, "html_source", ("title", "text", "blocks", "links", "base_hrefs"))
@@ -648,7 +674,7 @@ def capture_evidence(page, observed, *, viewport_capture=None):
             "No scrolling or section expansion; hidden HTML source text is not asserted to appear in this image.",
             "Image pixels, animation, embedded documents and lazy content were not independently stabilized.",
             "The pre-screenshot atomic HTML snapshot is primary; this later screenshot is supplementary."]
-            + (["After a full-page screenshot changed layout, the viewport height was set once to fit the document; primary HTML and visible content were observed again in that viewport."] if viewport_capture is not None else [])
+            + (["After a full-page screenshot changed layout, the viewport dimensions were set once to fit the document; primary HTML and visible content were observed again in that viewport."] if viewport_capture is not None else [])
             + (["Content changed during the supplementary screenshot; it must not be presented as matching the primary snapshot."] if mismatches else [])}}
 
 
@@ -759,7 +785,8 @@ def capture(request, fixture=None):
                     except CaptureFailure as error:
                         # Chromium's beyond-viewport screenshot temporarily resizes
                         # to 1x1 and can trigger a site's responsive JS. One bounded
-                        # fixed-width, document-fitting viewport avoids that path.
+                        # document-fitting viewport avoids that path, including
+                        # bounded horizontal overflow. Resize at most once.
                         # Discard the first shot and re-observe ALL primary content;
                         # no script suppression, DOM edits, or geometry tolerance.
                         if str(error) != "screenshot_dimensions_changed" or attempt:
@@ -767,10 +794,12 @@ def capture(request, fixture=None):
                         previous_bounds = state["observed"][2]["full_page_dimensions"]
                         current_bounds = screenshot_bounds(page)
                         viewport = page.viewport_size
-                        if not viewport or max(previous_bounds["width"], current_bounds["width"]) > viewport["width"]:
-                            raise CaptureFailure("screenshot_document_exceeds_viewport")
-                        viewport_capture = {"width": viewport["width"],
-                                            "height": max(previous_bounds["height"], current_bounds["height"], viewport["height"])}
+                        if not viewport:
+                            raise CaptureFailure("screenshot_document_exceeds_viewport", diagnostics={"stage": "fitting_target",
+                                "previous_document": previous_bounds, "document": current_bounds})
+                        viewport_capture = checked_screenshot_dimensions({
+                            axis: max(previous_bounds[axis], current_bounds[axis], viewport[axis])
+                            for axis in ("width", "height")}, stage="fitting_target")
                         page.set_viewport_size(viewport_capture)
                         continue
                     state["observed"][2]["screenshot_attempts"] = attempt + 1
@@ -780,7 +809,7 @@ def capture(request, fixture=None):
                 raise CaptureFailure("http_response_changed_during_capture")
             state["captured_response"] = response
         except CaptureFailure as error:
-            state["failure"] = str(error)
+            state["failure"] = error
         except Exception:
             state["failure"] = "document_capture_failed"
 
@@ -835,6 +864,7 @@ def capture(request, fixture=None):
 
 def main():
     logging.disable(logging.CRITICAL)
+    diagnostics = None
     try:
         raw = sys.stdin.buffer.read(16385)
         if len(raw) > 16384:
@@ -849,9 +879,10 @@ def main():
         return 0
     except CaptureFailure as error:
         reason = str(error) if SAFE_REASON.fullmatch(str(error)) else "capture_failed"
+        diagnostics = error.diagnostics
     except Exception:
         reason = "invalid_request_or_capture_failure"
-    print(json.dumps({"error": reason}))
+    print(json.dumps({"error": reason, **({"diagnostics": diagnostics} if diagnostics else {})}))
     return 2
 
 
