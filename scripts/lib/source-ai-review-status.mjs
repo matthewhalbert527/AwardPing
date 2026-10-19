@@ -258,6 +258,7 @@ function statusForRejectedSignal(signal) {
   ) {
     return "reviewed_rejected_generic_listing";
   }
+  if (key === "cycle-relevance-unclear") return "reviewed_unclear_needs_manual_review";
   return "reviewed_rejected_unrelated";
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   SourceAcquisitionKind,
   SourceAcquisitionNotificationMode,
@@ -18,6 +18,7 @@ import {
   sourceIntakeProtectedRecovery,
   sourceIntakeReconciliationRetryEligibility,
   sourceIntakeReviewExplanation,
+  type SourceIntakeOperatorAction,
 } from "@/lib/source-intake-operator-actions";
 
 export type SourceIntakeRequestView = {
@@ -51,6 +52,16 @@ export type SourceIntakeAwardOption = {
   slug: string | null;
 };
 
+type PaidRetryConfirmation = {
+  id: string;
+  action: SourceIntakeOperatorAction;
+  sharedAwardId?: string;
+  requestSnapshot: string;
+  initialRequestSnapshot: string;
+  awardLabel: string;
+  sourceUrl: string;
+};
+
 export function AdminSourceIntakePanel({
   initialRequests,
   awardOptions,
@@ -66,9 +77,24 @@ export function AdminSourceIntakePanel({
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+  const [paidRetryConfirmation, setPaidRetryConfirmation] = useState<PaidRetryConfirmation | null>(null);
+  const [initialRequestSnapshots] = useState(() => new Map(initialRequests.map((request) => [request.id, JSON.stringify(request)])));
+  const paidRetryRef = useRef<PaidRetryConfirmation | null>(null);
+  const actionInFlightRef = useRef(false);
+  const actionTriggerRef = useRef<{ element: HTMLElement; initialRequests: SourceIntakeRequestView[] } | null>(null);
   const awardById = useMemo(() => new Map(awardOptions.map((award) => [award.id, award])), [awardOptions]);
 
+  useEffect(() => {
+    if (paidRetryConfirmation || actionBusyId || paidRetryRef.current || actionInFlightRef.current) return;
+    const trigger = actionTriggerRef.current;
+    actionTriggerRef.current = null;
+    if (trigger?.initialRequests === initialRequests && trigger.element.isConnected && !trigger.element.matches(":disabled")) {
+      trigger.element.focus();
+    }
+  }, [paidRetryConfirmation, actionBusyId, initialRequests]);
+
   async function submit(dryRun = false) {
+    if (busy || actionInFlightRef.current || paidRetryRef.current) return;
     setBusy(true);
     setMessage("");
     try {
@@ -97,15 +123,61 @@ export function AdminSourceIntakePanel({
     }
   }
 
-  async function runAction(id: string, action: string, sharedAwardId?: string) {
-    if (
-      sourceIntakeActionRequiresPaidRetryConfirmation(action) &&
-      !window.confirm(
-        "This retry may create a Gemini charge in the $5/day new-page review lane. Continue with exactly this request?",
-      )
-    ) {
+  async function runAction(id: string, action: SourceIntakeOperatorAction, sharedAwardId?: string) {
+    if (busy || actionInFlightRef.current || paidRetryRef.current) return;
+    if (sourceIntakeActionRequiresPaidRetryConfirmation(action)) {
+      const request = requests.find((row) => row.id === id);
+      if (!request || !paidRetryAllowed(request, action)) {
+        setMessage("This request can no longer be retried. Reload and review its current status.");
+        return;
+      }
+      if (JSON.stringify(initialRequests.find((row) => row.id === id) || null) !== initialRequestSnapshots.get(id)) {
+        setMessage("This request was refreshed. Reload this page and review its current details before retrying.");
+        return;
+      }
+      actionTriggerRef.current = document.activeElement instanceof HTMLElement ? { element: document.activeElement, initialRequests } : null;
+      const awardId = sharedAwardId || request.matched_shared_award_id || request.created_shared_award_id;
+      const confirmation = {
+        id, action, sharedAwardId,
+        requestSnapshot: JSON.stringify(request),
+        initialRequestSnapshot: JSON.stringify(initialRequests.find((row) => row.id === id) || null),
+        awardLabel: awardId ? `${awardById.get(awardId)?.name || "Award"} (${awardId})` : "No award attached",
+        sourceUrl: request.normalized_url || request.homepage_url,
+      };
+      paidRetryRef.current = confirmation;
+      setPaidRetryConfirmation(confirmation);
+      setMessage("");
       return;
     }
+    await executeAction(id, action, sharedAwardId);
+  }
+
+  function cancelPaidRetry() {
+    if (actionInFlightRef.current) return;
+    paidRetryRef.current = null;
+    setPaidRetryConfirmation(null);
+    setMessage("Cancelled. No request was sent.");
+  }
+
+  async function confirmPaidRetry() {
+    const confirmation = paidRetryConfirmation;
+    if (!confirmation || paidRetryRef.current !== confirmation || actionInFlightRef.current) return;
+    // Consume once, synchronously, before React renders or any network work starts.
+    paidRetryRef.current = null;
+    setPaidRetryConfirmation(null);
+    const request = requests.find((row) => row.id === confirmation.id);
+    if (!request || JSON.stringify(request) !== confirmation.requestSnapshot ||
+      JSON.stringify(initialRequests.find((row) => row.id === confirmation.id) || null) !== confirmation.initialRequestSnapshot ||
+      !paidRetryAllowed(request, confirmation.action)) {
+      setMessage("This request changed. Reload and review its current status before retrying.");
+      return;
+    }
+    await executeAction(confirmation.id, confirmation.action, confirmation.sharedAwardId);
+  }
+
+  async function executeAction(id: string, action: SourceIntakeOperatorAction, sharedAwardId?: string) {
+    if (actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
     setActionBusyId(id);
     setMessage("");
     try {
@@ -121,6 +193,7 @@ export function AdminSourceIntakePanel({
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Action failed.");
     } finally {
+      actionInFlightRef.current = false;
       setActionBusyId(null);
     }
   }
@@ -180,10 +253,10 @@ export function AdminSourceIntakePanel({
             </label>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button className="button-primary" disabled={busy} type="button" onClick={() => submit(false)}>
+            <button className="button-primary" disabled={busy || actionBusyId !== null || paidRetryConfirmation !== null} type="button" onClick={() => submit(false)}>
               Queue intake
             </button>
-            <button className="button-secondary" disabled={busy} type="button" onClick={() => submit(true)}>
+            <button className="button-secondary" disabled={busy || actionBusyId !== null || paidRetryConfirmation !== null} type="button" onClick={() => submit(true)}>
               Dry-run validate
             </button>
           </div>
@@ -200,10 +273,36 @@ export function AdminSourceIntakePanel({
           </div>
           <span className="badge">{requests.length} shown</span>
         </div>
+        {paidRetryConfirmation && (
+          <section
+            aria-labelledby="paid-retry-heading"
+            aria-describedby="paid-retry-warning"
+            className="mt-5 grid gap-3 rounded-lg border border-[var(--brand-burgundy)] p-4"
+            role="region"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") { event.preventDefault(); cancelPaidRetry(); }
+            }}
+          >
+            <h3 id="paid-retry-heading" className="text-lg font-bold">Confirm paid review</h3>
+            <p id="paid-retry-warning" role="alert" className="text-sm font-semibold">
+              This retry may create a Gemini charge in the $5/day new-page review lane. Continue with exactly this request?
+            </p>
+            <dl className="grid gap-2 break-all text-sm">
+              <Detail label="Request" value={paidRetryConfirmation.id} />
+              <Detail label="Action" value={labelize(paidRetryConfirmation.action)} />
+              <Detail label="Source" value={paidRetryConfirmation.sourceUrl} />
+              <Detail label="Award" value={paidRetryConfirmation.awardLabel} />
+            </dl>
+            <div className="flex flex-wrap gap-3">
+              <button autoFocus className="button-secondary" type="button" onClick={cancelPaidRetry}>Cancel</button>
+              <button className="button-primary" type="button" onClick={confirmPaidRetry}>Confirm this paid retry</button>
+            </div>
+          </section>
+        )}
         <div className="mt-5 grid gap-3">
           {requests.map((request) => (
             <SourceIntakeRow
-              actionBusy={actionBusyId === request.id}
+              actionBusy={busy || actionBusyId !== null || paidRetryConfirmation !== null}
               awardById={awardById}
               awardOptions={awardOptions}
               key={request.id}
@@ -224,6 +323,14 @@ export function sourceIntakeActionRequiresPaidRetryConfirmation(action: string) 
   return action === "retry" || action === "rerun_capture" || action === "rerun_ai_review";
 }
 
+function paidRetryAllowed(request: SourceIntakeRequestView, action: SourceIntakeOperatorAction) {
+  return sourceIntakeActionAllowedWithContext(action, request.status, {
+    statusReason: request.status_reason, aiReview: request.ai_review, captureMetadata: request.capture_metadata,
+    requestId: request.id, acquisitionKind: request.acquisition_kind, notificationMode: request.notification_mode,
+    onboardingBatchId: request.onboarding_batch_id, matchedSharedAwardId: request.matched_shared_award_id,
+  });
+}
+
 function SourceIntakeRow({
   request,
   awardOptions,
@@ -235,7 +342,7 @@ function SourceIntakeRow({
   awardOptions: SourceIntakeAwardOption[];
   awardById: Map<string, SourceIntakeAwardOption>;
   actionBusy: boolean;
-  onAction: (id: string, action: string, sharedAwardId?: string) => Promise<void>;
+  onAction: (id: string, action: SourceIntakeOperatorAction, sharedAwardId?: string) => Promise<void>;
 }) {
   const [selectedAwardId, setSelectedAwardId] = useState(request.matched_shared_award_id || "");
   const deterministic = objectValue(request.deterministic_review);

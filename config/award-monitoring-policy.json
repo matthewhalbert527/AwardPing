@@ -23,7 +23,7 @@
       "src/lib/source-ai-review-status.ts",
       "src/lib/source-url-policy.ts"
     ],
-    "hash": "3e6ef98e462538f53d81e1a17361bb8532a45ffac466e01e05178e447255b5a8"
+    "hash": "70745343efab108399ffa9aeb29750e78a10a7ea245104eaf58958a656069448"
   },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",

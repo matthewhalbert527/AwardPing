@@ -9,6 +9,11 @@ import {
   sourceNeedsAiReview,
   sourceNeedsManualReview,
 } from "./lib/source-ai-review-status.mjs";
+import {
+  sourceMonitoringRestoreDecisionReason,
+  sourceMonitoringRestoreMarker,
+  sourceQualityDecision,
+} from "./lib/source-quality.mjs";
 
 const primaryCurrentFacts = {
   award_relevance: "primary",
@@ -173,5 +178,149 @@ describe("worker source AI review status", () => {
         }),
       ),
     ).toBe("review_failed");
+  });
+});
+
+function trumanLegacyRejection() {
+  return {
+    id: "49d67597-b5a4-490c-a05f-04331b043cc5",
+    shared_award_id: "bf04d4c1-4db3-4f4e-bf1b-e4dbca7bb7d3",
+    url: "https://www.truman.gov/apply/applying/eligibility",
+    title: "Eligibility",
+    page_type: "application",
+    admin_review_status: "review_later",
+    admin_review_note: "AI coverage backfill moved source out of open: unrelated_but_open; unrelated_but_open.",
+    admin_reviewed_at: "2026-07-14T03:33:11.218Z",
+    admin_reviewed_by: "open-source-ai-coverage-backfill",
+    page_metadata_generated_at: "2026-07-12T14:28:12.672Z",
+    page_metadata_model: "gemini-2.5-flash-lite",
+    page_metadata: {
+      kind: "source_page_outline",
+      model: "gemini-2.5-flash-lite",
+      version: 1,
+      provider: "gemini",
+      final_url: "https://www.truman.gov/apply/applying/eligibility",
+      generated_at: "2026-07-12T14:28:12.672Z",
+      quality_flags: [],
+      baseline_facts: null,
+      rejection_reason: "cycle_relevance_unclear",
+      baseline_facts_rejected: true,
+      baseline_facts_metadata: {
+        model: "gemini-2.5-flash-lite",
+        reason: "baseline_facts_backfill",
+        status: "succeeded",
+        extracted_at: "2026-06-26T13:08:01.380Z",
+      },
+      ai_review_coverage_backfill: {
+        at: "2026-07-14T03:33:11.218Z",
+        action: "move_to_review_later",
+        reason: "unrelated_but_open",
+      },
+    },
+  };
+}
+
+describe("legacy cycle-unclear rejection classification", () => {
+  it("classifies the retained Truman metadata shape without rewriting its verdict or opening monitoring", () => {
+    const held = trumanLegacyRejection();
+    const before = structuredClone(held);
+    expect(explainSourceAiReviewStatus(held)).toMatchObject({
+      status: "reviewed_unclear_needs_manual_review",
+      reason: "baseline_facts_rejected_cycle-relevance-unclear",
+      rejectionReason: "cycle_relevance_unclear",
+      complete: true,
+      needsManualReview: true,
+      needsAiReview: false,
+      canBeMonitored: false,
+      canContributePublicFacts: false,
+      hasBaselineFacts: false,
+      hasBaselineFactsRejected: true,
+    });
+    expect(sourceBaselineFacts(held)).toEqual({});
+    for (const purpose of ["monitoring", "facts", "public"]) {
+      expect(sourceQualityDecision(held, { purpose }).allowed).toBe(false);
+    }
+    expect(held).toEqual(before);
+  });
+
+  it.each(["cycle_relevance_unclear", "cycle-relevance-unclear", " CYCLE RELEVANCE UNCLEAR "])(
+    "recognizes only the exact normalized cycle-unclear key: %s",
+    (reason) => {
+      const held = trumanLegacyRejection();
+      held.page_metadata.rejection_reason = reason;
+      expect(getSourceAiReviewStatus(held)).toBe("reviewed_unclear_needs_manual_review");
+      expect(sourceCanBeMonitored(held)).toBe(false);
+      expect(sourceCanContributePublicFacts(held)).toBe(false);
+    },
+  );
+
+  it.each([
+    ["award_relevance_unclear", "reviewed_rejected_unrelated"],
+    ["cycle_unclear", "reviewed_rejected_unrelated"],
+    ["cycle_relevance_unclear_extra", "reviewed_rejected_unrelated"],
+    ["prefix_cycle_relevance_unclear", "reviewed_rejected_unrelated"],
+    ["unknown_rejection", "reviewed_rejected_unrelated"],
+    ["cycle_relevance_unclear_access_error", "reviewed_rejected_access_error"],
+    ["cycle_relevance_unclear_archived_or_past", "reviewed_rejected_archived_or_past"],
+    ["cycle_relevance_unclear_sibling_program", "reviewed_rejected_sibling_program"],
+    ["cycle_relevance_unclear_generic_listing", "reviewed_rejected_generic_listing"],
+  ])("does not weaken nearby, mixed or unknown rejection %s", (reason, expected) => {
+    const held = trumanLegacyRejection();
+    held.page_metadata.rejection_reason = reason;
+    expect(getSourceAiReviewStatus(held)).toBe(expected);
+    expect(sourceNeedsManualReview(held)).toBe(false);
+    expect(sourceCanBeMonitored(held)).toBe(false);
+    expect(sourceCanContributePublicFacts(held)).toBe(false);
+  });
+
+  it.each([
+    "source-mismatch", "spam", "job-board", "career-page", "search-results",
+    "generic-listing", "sibling-program", "access-error", "hacked-page",
+    "pharma-spam", "unrelated-program", "payment", "profile", "recipient",
+    "news", "not-program-page",
+  ])("retains hard-flag precedence for %s", (flag) => {
+    const held = trumanLegacyRejection();
+    held.page_metadata.quality_flags = [flag];
+    const result = explainSourceAiReviewStatus(held);
+    expect(result.reason).toBe("quality_flag_" + flag);
+    expect(result.status).not.toBe("reviewed_unclear_needs_manual_review");
+    expect(result.canBeMonitored).toBe(false);
+    expect(result.canContributePublicFacts).toBe(false);
+  });
+
+  it("does not let an unclear rejection bypass missing metadata or a failed review", () => {
+    const missingModel = {
+      ...trumanLegacyRejection(),
+      page_metadata_model: null,
+      page_metadata: {
+        ...trumanLegacyRejection().page_metadata,
+        model: null,
+        baseline_facts_metadata: { status: "succeeded" },
+      },
+    };
+    expect(getSourceAiReviewStatus(missingModel)).toBe("reviewed_invalid_or_incomplete");
+    const failed = trumanLegacyRejection();
+    failed.page_metadata.baseline_facts_metadata.status = "failed";
+    expect(getSourceAiReviewStatus(failed)).toBe("review_failed");
+  });
+
+  it("keeps the existing explicit restoration monitoring-only without changing AI metadata", () => {
+    const held = trumanLegacyRejection();
+    const restored = {
+      ...held,
+      admin_review_status: "open",
+      admin_review_note: sourceMonitoringRestoreMarker + ": Explicitly restored for monitoring only.",
+      admin_reviewed_at: "2026-10-19T21:00:00.000Z",
+      admin_reviewed_by: "operator@example.edu",
+    };
+    expect(sourceQualityDecision(restored, { purpose: "monitoring" })).toMatchObject({
+      allowed: true,
+      reason: sourceMonitoringRestoreDecisionReason,
+    });
+    expect(sourceCanBeMonitored(restored)).toBe(false);
+    expect(sourceQualityDecision(restored, { purpose: "facts" }).allowed).toBe(false);
+    expect(sourceQualityDecision(restored, { purpose: "public" }).allowed).toBe(false);
+    expect(restored.page_metadata).toBe(held.page_metadata);
+    expect(held.admin_review_status).toBe("review_later");
   });
 });
