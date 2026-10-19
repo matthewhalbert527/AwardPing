@@ -1,0 +1,76 @@
+{
+  "schema": "visual-review-compact-output-regression-v1",
+  "provenance": {
+    "observed_at": "2026-10-19 01:39:21.344941+00",
+    "candidate_id": "636a5340-4277-491e-9e53-06201bd51f74",
+    "source_id": "4f309479-d7d7-4abe-8b90-8d728a65ec0b",
+    "source_url": "https://goldwaterscholarship.gov/students/research-essay/",
+    "result_updated_at": "2026-10-18T23:17:14.789+00:00",
+    "retained_diagnostic": "tmp/scrapling-finalization-20261018/goldwater-max-tokens-actual-20261019.json",
+    "retained_diagnostic_sha256": "75b671ef694c6ba4db6d7295aeb5e086297185d455b3fdcb934b3d072317618d",
+    "raw_response_sha256": "a2753cc04e8c516ef56124d7b19f61cc0c0eaa76e62b1daa555d81611ed6a9f0",
+    "prompt_context_sha256": "60653aad94cb3447f9a7e582223a34a7d9f982581157afe777403f31ac0169bd",
+    "previous_excerpt_sha256": "9b2e01dce1ecf12fbf9954c6a672f12e2014e3acbd8d39ea261c81e53848e42b",
+    "new_excerpt_sha256": "40134c57abd0a3be7b72d1f52815bd0bc79a8b23e1c9174e1990a8fef87b918a",
+    "note": "Read-only retained production failure. Only short changed excerpts and output-shape metrics retained here; the complete failed response remains in the ignored diagnostic. Not a corrected model answer or a paid-model accuracy claim."
+  },
+  "completion": {
+    "finish_reason": "MAX_TOKENS",
+    "provider_candidate_count": 1,
+    "requested_model": "gemini-2.5-flash-lite",
+    "provider_model_version": "gemini-2.5-flash-lite",
+    "usage": {
+      "total_tokens": 15298,
+      "prompt_tokens": 13260,
+      "thoughts_tokens": 0,
+      "candidates_tokens": 2038,
+      "cached_content_tokens": 0
+    },
+    "escalation_declined": "paid_retry_bound_to_authorised_request"
+  },
+  "response_shape": {
+    "raw_text_chars": 9377,
+    "top_level_before_start": 954,
+    "top_level_after_start": 6752,
+    "complete_before_alias_chars": 5693,
+    "complete_before_alias_sha256": "50e1dc0eb9711f91db8fe9fb6586d58dd8668f7288572218972948f46df7fdbe",
+    "complete_before_alias_matches_entire_previous_main_page": true,
+    "truncated_inside_top_level_after": true
+  },
+  "deterministic_diff": {
+    "added_text": [
+      "Login Research Essay The research essay is the heart of your application."
+    ],
+    "date_changes": [],
+    "removed_text": [
+      "Research Essay The research essay is the heart of your application."
+    ],
+    "amount_changes": [],
+    "likely_section": "Application",
+    "source_context": {
+      "page_type": "application",
+      "award_name": "Barry Goldwater Scholarship",
+      "source_url": "https://goldwaterscholarship.gov/students/research-essay/",
+      "source_title": "Research Essay"
+    },
+    "new_text_length": 5449,
+    "text_length_delta": 6,
+    "changed_text_excerpt": "Login Research Essay The research essay is the heart of your application. Research Essay The research essay is the heart of your application.",
+    "previous_text_length": 5443
+  },
+  "failed_fact_excerpt": {
+    "fact": "Added introductory text to the Research Essay section.",
+    "before": null,
+    "after": "Login Research Essay The research essay is the heart of your application.",
+    "added_text": "Login Research Essay The research essay is the heart of your application.",
+    "removed_text": null,
+    "visual_evidence": "The text 'Login Research Essay The research essay is the heart of your application.' was added at the beginning of the Research Essay section."
+  },
+  "excerpt_comparison": {
+    "previous_prefix": "Skip to content\nResearch Essay\n\nThe research essay is the heart of your application.",
+    "current_prefix": "Skip to content\n Login\nResearch Essay\n\nThe research essay is the heart of your application.",
+    "previous_excerpt_chars": 5710,
+    "current_excerpt_chars": 5716,
+    "normalized_full_excerpts_equal_after_removing_single_navigation_login": true
+  }
+}
