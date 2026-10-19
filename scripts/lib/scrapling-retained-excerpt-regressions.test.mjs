@@ -64,7 +64,7 @@ afterEach(() => {
 
 describe("source-grounded retained excerpts, not live-capture/model benchmarks", () => {
   it("pins the literal excerpts and full-source provenance without requiring private archives in CI", () => {
-    expect(hash(bytes)).toBe("ded095f3e2c01ecdcdbcf517878beb42185b034221e3c79bef516f9aacc9e9d2");
+    expect(hash(bytes)).toBe("4fc399550d548db831464553247eb0f2b1474bc0f43c8745f896e8b556f48097");
     expect(corpus.schema).toBe("awardping.retained-excerpt-regressions.v1");
     expect(corpus.cases).toHaveLength(5);
     for (const example of corpus.cases) {
@@ -160,6 +160,7 @@ describe("source-grounded retained excerpts, not live-capture/model benchmarks",
 
   it("preserves Yenching jurisdiction, interview format and the loss of an exact August day in the real packet", () => {
     const example = fixture("yenching-interview-and-degree-precision"), { review, payload } = packet(example);
+    expect(example.blocks).toHaveLength(5);
     expect(review.status).toBe("changed_needs_review");
     expect(payload.text_evidence.removed_text).toEqual(example.blocks.map(block => block.before.text));
     expect(payload.text_evidence.added_text).toEqual(example.blocks.map(block => block.after.text));
@@ -169,6 +170,72 @@ describe("source-grounded retained excerpts, not live-capture/model benchmarks",
     expect(payload.text_evidence.added_text[1]).toContain("All Chinese candidates, including those from the HMT regions");
     expect(payload.text_evidence.added_text[1]).toContain("in person at Peking University");
     expect(payload.text_evidence.added_text[1]).toContain("International candidates will be interviewed online.");
+    expect(review).toMatchObject({ publishable: false, baseline_advance_allowed: false });
+  });
+
+  it("only appends the three missing literal Yenching passages without changing the original corpus", () => {
+    const original = structuredClone(corpus);
+    original.cases.find(example => example.id === "yenching-interview-and-degree-precision").blocks.length = 2;
+    expect(hash(`${JSON.stringify(original, null, 2)}\n`))
+      .toBe("ded095f3e2c01ecdcdbcf517878beb42185b034221e3c79bef516f9aacc9e9d2");
+    const example = fixture("yenching-interview-and-degree-precision");
+    expect(example.blocks.slice(2).map(block => [block.before.first_utf16_offset_in_normalized_text,
+      block.after.first_utf16_offset_in_normalized_text])).toEqual([[653, 626], [1588, 1531], [2127, 2036]]);
+  });
+
+  it("preserves the second Yenching degree answer as month-only August rather than a new exact deadline", () => {
+    const example = fixture("yenching-interview-and-degree-precision"), prepared = packet(example), degree = example.blocks[2];
+    expect(prepared.payload.text_evidence.removed_text[2]).toBe(degree.before.text);
+    expect(prepared.payload.text_evidence.added_text[2]).toBe(degree.after.text);
+    expect(degree.before.text).toContain("minimum of a Bachelor's degree in any field");
+    expect(degree.before.text).toContain("no later than August 31");
+    expect(degree.after.text).toContain("minimum of a Bachelor's degree in any field");
+    expect(degree.after.text).toContain("by August of the intended enrollment year");
+    expect(degree.after.text).not.toMatch(/August 31|202[0-9]/);
+    expect(check(prepared, suppliedResponse(degree.before.text, degree.after.text)).allowed).toBe(true);
+    for (const invented of ["Applicants must graduate by August 31, 2027.",
+      "The degree-completion deadline has been extended to September.",
+      "Applicants may remain enrolled in another degree program while studying at Peking University."]) {
+      expect(check(prepared, suppliedResponse(degree.before.text, invented)).allowed).toBe(false);
+    }
+  });
+
+  it("keeps Yenching regional interview timing separate from international versus Chinese/HMT modality", () => {
+    const example = fixture("yenching-interview-and-degree-precision"), prepared = packet(example), timing = example.blocks[3];
+    expect(prepared.payload.text_evidence.added_text[3]).toBe(timing.after.text);
+    expect(timing.after.text).toContain("Chinese Mainland will be interviewed in the summer or in September");
+    expect(timing.after.text).toContain("International finalists");
+    expect(timing.after.text).toContain("Hong Kong, Macao, and Taiwan (HMT) regions");
+    expect(timing.after.text).toContain("winter or early spring");
+    expect(prepared.payload.text_evidence.added_text[1]).toContain("in person at Peking University");
+    expect(prepared.payload.text_evidence.added_text[1]).toContain("International candidates will be interviewed online");
+    expect(check(prepared, suppliedResponse(timing.before.text, timing.after.text)).allowed).toBe(true);
+    for (const invented of ["All finalists will be interviewed in winter or early spring.",
+      "Candidates from the HMT regions will be interviewed online.",
+      "International candidates must attend their interview in person at Peking University."]) {
+      expect(check(prepared, suppliedResponse(timing.before.text, invented)).allowed).toBe(false);
+    }
+  });
+
+  it("preserves Yenching decision timing, internal pre-admission and final summer letter as distinct stages", () => {
+    const example = fixture("yenching-interview-and-degree-precision"), prepared = packet(example), stages = example.blocks[4];
+    expect(prepared.payload.text_evidence.removed_text[4]).toBe(stages.before.text);
+    expect(prepared.payload.text_evidence.added_text[4]).toBe(stages.after.text);
+    expect(stages.after.text).toContain("Chinese Mainland will receive their admission decisions no later than October");
+    expect(stages.after.text).toContain("international candidates and those from the HMT regions will be released around April");
+    expect(stages.after.text).toContain("must complete internal procedures at Peking University before being pre-admitted");
+    expect(stages.after.text).toContain("Final admission will be confirmed through the official Peking University acceptance letter");
+    expect(stages.after.text).toContain("issued in the summer prior to enrollment");
+    expect(stages.before.text).toContain("official acceptance letters in the summer before enrollment");
+    expect(check(prepared, suppliedResponse(stages.before.text, stages.after.text)).allowed).toBe(true);
+    // These hand-authored evidence probes test literal grounding, not model understanding.
+    for (const invented of ["All candidates receive their official acceptance letter in April.",
+      "Accepting an offer guarantees final admission before internal procedures are complete.",
+      "The official acceptance-letter deadline is April 1, 2027.",
+      "Candidates are pre-admitted before completing internal procedures."]) {
+      expect(check(prepared, suppliedResponse(stages.before.text, invented)).allowed).toBe(false);
+    }
+    expect(prepared.review).toMatchObject({ publishable: false, baseline_advance_allowed: false });
   });
 
   it("accepts grounded Yenching interview evidence but rejects an invented day or wrong jurisdiction in response evidence", () => {

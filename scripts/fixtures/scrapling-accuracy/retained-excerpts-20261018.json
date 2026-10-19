@@ -241,6 +241,42 @@
             "first_utf16_offset_in_normalized_text": 1769,
             "sha256": "3a28c2a946f95265606d0dc374b2316a74f5958bc9303ce9bdc9940de4bc76e2"
           }
+        },
+        {
+          "before": {
+            "text": "To be eligible to apply for the Yenching Academy, you must have a minimum of a Bachelor's degree in any field. Peking University does not allow students to study in other degree programs whilst studying at the university. Therefore, applicants must ensure that your currently enrolled degree program is awarded no later than August 31 of the year in which you wish to enroll.",
+            "first_utf16_offset_in_normalized_text": 653,
+            "sha256": "5d356d30b26868a8ad22d1a2ccaced1c556fd411299727422661b50b5057ecbe"
+          },
+          "after": {
+            "text": "To be eligible for the Yenching Academy, applicants must hold a minimum of a Bachelor's degree in any field. Peking University does not permit students to be concurrently enrolled in any other degree program. Therefore, applicants must be able to receive their diploma from their current degree program by August of the intended enrollment year.",
+            "first_utf16_offset_in_normalized_text": 626,
+            "sha256": "51cd2a2f4f3a24ffe633d1053a149b0a0977b2f9f3721ac5955baacd8be473af"
+          }
+        },
+        {
+          "before": {
+            "text": "Mainland Chinese finalists will be interviewed in the summer or in September. International finalists, as well as finalists from the Chinese regions of Hong Kong, Macao, and Taiwan, will be interviewed in the winter or early spring.",
+            "first_utf16_offset_in_normalized_text": 1588,
+            "sha256": "816039f5e989250bf427fdc8bf2e13417d6e1103ed142920ec3e592355aded46"
+          },
+          "after": {
+            "text": "Finalists from the Chinese Mainland will be interviewed in the summer or in September. International finalists, as well as those from China's Hong Kong, Macao, and Taiwan (HMT) regions, will be interviewed in the winter or early spring.",
+            "first_utf16_offset_in_normalized_text": 1531,
+            "sha256": "12d4956409202be5c79fe52ec292119bbcedc2285a6f3a29e0c228ca87adbed9"
+          }
+        },
+        {
+          "before": {
+            "text": "Candidates from the Chinese Mainland will receive admission decisions no later than October. Admission decisions for international candidates, as well as candidates from China’s Hong Kong, Macao and Taiwan Regions (HMT), will be made around April. Those who accept our offers will then be approved through an internal process at Peking University, and receive their official acceptance letters in the summer before enrollment.",
+            "first_utf16_offset_in_normalized_text": 2127,
+            "sha256": "b60c24076e2aabdcc7654895f60c3898757aeeb03842d37c2287563e272c71a9"
+          },
+          "after": {
+            "text": "Candidates from the Chinese Mainland will receive their admission decisions no later than October. Final admission decisions for international candidates and those from the HMT regions will be released around April. Candidates who accept our offers must complete internal procedures at Peking University before being pre-admitted. Final admission will be confirmed through the official Peking University acceptance letter, issued in the summer prior to enrollment.",
+            "first_utf16_offset_in_normalized_text": 2036,
+            "sha256": "f7b3df272c80357ac02d9a96427b430bb514521dbdc8642565418a01406cfcbf"
+          }
         }
       ]
     },

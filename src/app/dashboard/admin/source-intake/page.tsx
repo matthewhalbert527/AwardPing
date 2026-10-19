@@ -12,7 +12,11 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 
-export default async function AdminSourceIntakePage() {
+export default async function AdminSourceIntakePage({
+  searchParams = Promise.resolve({}),
+}: {
+  searchParams?: Promise<{ request?: string | string[] }>;
+} = {}) {
   if (!hasSupabaseConfig()) return <SetupNotice />;
 
   const user = await requireUser();
@@ -43,13 +47,33 @@ export default async function AdminSourceIntakePage() {
     );
   }
 
+  const requestParam = (await searchParams).request;
+  if (requestParam !== undefined && (typeof requestParam !== "string" || requestParam.length !== 36 ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestParam))) {
+    return (
+      <AdminSourceIntakeShell>
+        <section className="card p-6" role="alert">
+          <h1 className="admin-page-title">Source intake</h1>
+          <p className="mt-2 text-[var(--muted)]">
+            Enter exactly one valid request ID (UUID). No requests were loaded.
+          </p>
+          <Link className="button-secondary mt-4" href="/dashboard/admin/source-intake">
+            All recent requests
+          </Link>
+        </section>
+      </AdminSourceIntakeShell>
+    );
+  }
+  const requestId = requestParam?.toLowerCase();
+
   const admin = createSupabaseAdminClient();
+  let requestsQuery = admin
+    .from("source_page_requests")
+    .select("*")
+    .order("updated_at", { ascending: false });
+  requestsQuery = requestId ? requestsQuery.eq("id", requestId).limit(1) : requestsQuery.limit(100);
   const [requestsResult, awardsResult] = await Promise.all([
-    admin
-      .from("source_page_requests")
-      .select("*")
-      .order("updated_at", { ascending: false })
-      .limit(100),
+    requestsQuery,
     admin
       .from("shared_awards")
       .select("id,name,slug")
@@ -75,6 +99,22 @@ export default async function AdminSourceIntakePage() {
           Admin workflows
         </Link>
       </div>
+
+      {requestId && (
+        <section className="card flex flex-wrap items-center justify-between gap-3 p-4" aria-label="Request filter">
+          <div>
+            <h2 className="font-bold">Viewing one request</h2>
+            <p className="mt-1 break-all text-sm text-[var(--muted)]">{requestId}</p>
+          </div>
+          <Link className="button-secondary" href="/dashboard/admin/source-intake">
+            All recent requests
+          </Link>
+        </section>
+      )}
+
+      {requestId && !requestsResult.error && requests.length === 0 && (
+        <p className="card p-5 text-[var(--muted)]" role="status">No request found for this ID.</p>
+      )}
 
       {loadErrors.length > 0 && (
         <section className="card border-[var(--brand-pink)] p-5">

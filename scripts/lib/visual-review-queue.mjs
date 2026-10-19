@@ -1788,7 +1788,14 @@ function hasSiblingProgramSignal(source, value) {
     return true;
   }
 
-  const changedAwardishTitle = text.match(
+  // These grammatical enrollment references describe an applicant's existing
+  // degree, not a named sibling award. Ignore only their terminal title seed;
+  // keep all raw evidence and any separately named award/program unchanged.
+  const titleText = text.replace(
+    /\b(?:students to be concurrently enrolled in any other degree program(?=[.!?](?:\s|$)|$)|students to (?:be enrolled|study) in other degree programs(?= whilst studying at the university\b)|diploma from their current degree program(?= by\b)|your currently enrolled degree program(?= is awarded\b))\b/g,
+    (reference) => reference.replace(/\bprograms?$/, ""),
+  );
+  const changedAwardishTitle = titleText.match(
     /\b([a-z][a-z0-9&.' -]{6,80}\b(?:scholarship|fellowship|grant|award|program)s?)\b/i,
   )?.[1];
   if (!changedAwardishTitle || !awardName) return false;

@@ -1836,7 +1836,7 @@ function makePageData({
     changeDetails: Record<string, never>;
     detectedAt: string;
   }>;
-}) {
+}): PublicAwardPageData {
   return {
     award: {
       id: "award-1",
