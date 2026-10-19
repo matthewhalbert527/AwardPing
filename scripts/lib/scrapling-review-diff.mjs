@@ -175,6 +175,78 @@ function onlyOutsideMainHoneypotLabelChanged(previous, current) {
   return equal(restored, before);
 }
 
+function cloudflareEmailTokens(html) {
+  const $ = load(html), rows = [], seen = new Set();
+  const path = node => { const parts = []; for (let n = node; n.parent; n = n.parent)
+    parts.unshift(`${n.name || n.type}:${n.parent.children.indexOf(n)}`); return parts.join("/"); };
+  const decode = hex => {
+    if (!/^(?:[a-fA-F0-9]{2}){2,256}$/.test(hex || "")) return null;
+    const bytes = Buffer.from(hex, "hex"), decoded = Buffer.from(bytes.subarray(1).map(value => value ^ bytes[0]));
+    if (!decoded.every(value => value >= 33 && value <= 126)) return null;
+    const address = decoded.toString("ascii");
+    return /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}$/.test(address) ? address : null;
+  };
+  let valid = true;
+  $("*").each((_, node) => {
+    const element = $(node), attrs = node.attribs || {}, href = attrs.href;
+    const marker = Object.entries(attrs).some(([key, value]) => key === "data-cfemail" ||
+      value.includes("/cdn-cgi/l/email-protection") || (key === "class" && value.split(/\s+/).includes("__cf_email__")));
+    if (!marker) return;
+    const target = typeof href === "string" && /^\/cdn-cgi\/l\/email-protection#([a-fA-F0-9]+)$/.exec(href);
+    const kind = target ? "target" : "display", hex = target ? target[1] : attrs["data-cfemail"], address = decode(hex);
+    const row = { path: path(node), kind, raw: hex, href: href || null, address, node,
+      inMain: element.parents("main").length === 1, text: flow(element.text()), attrs: { ...attrs } };
+    rows.push(row);
+    if (!address || seen.has(`${kind}:${address}`) ||
+        Object.entries(attrs).some(([key, value]) => value.includes("/cdn-cgi/l/email-protection") && key !== "href") ||
+        (target && (node.name !== "a" || Object.hasOwn(attrs, "data-cfemail") || !row.text ||
+          element.children().length > 1 || (element.children().length === 1 && !element.children().is("span.__cf_email__[data-cfemail]")))) ||
+        (!target && (node.name !== "span" || !element.hasClass("__cf_email__") || element.children().length ||
+          element.parent().prop("tagName") !== "A" || !/^\/cdn-cgi\/l\/email-protection#[a-fA-F0-9]+$/.test(element.parent().attr("href") || "")))) valid = false;
+    seen.add(`${kind}:${address}`);
+  });
+  const signature = rows.map(({ node: _node, ...row }) => row);
+  if (valid) {
+    for (const [index, row] of rows.entries()) $(row.node).attr(row.kind === "target" ? "href" : "data-cfemail", `PROVEN_CF_${row.kind}_${index}`);
+    for (const row of rows) row.structure = $.html(row.node);
+  }
+  return { rows, signature, valid };
+}
+
+// This is the existing retained-semantic comparison boundary, not raw DOM
+// equality. Opaque form values/classes are not modeled by either path. Only
+// structurally proven CF tokens may explain ordered retained-link differences.
+function sourceCloudflareEmailChange(previous, current) {
+  const before = cloudflareEmailTokens(previous.record.html), after = cloudflareEmailTokens(current.record.html);
+  if (equal(before.signature, after.signature)) return { changed: false };
+  if (!before.valid || !after.valid || !before.rows.length || before.rows.length !== after.rows.length) return { changed: true, only: false };
+  for (const [index, old] of before.rows.entries()) {
+    const now = after.rows[index];
+    if (old.path !== now.path || old.kind !== now.kind || old.address !== now.address || old.inMain !== now.inMain || old.structure !== now.structure) return { changed: true, only: false };
+  }
+  for (const key of ["html_document", "source_main_document"]) {
+    const old = previous.record[key], now = current.record[key], main = key === "source_main_document";
+    if (old.links.length !== now.links.length) return { changed: true, only: false };
+    const replacements = new Map();
+    for (const [index, token] of before.rows.entries()) {
+      if (token.kind !== "target") continue;
+      const next = after.rows[index], expected = main && !token.inMain ? 0 : 1;
+      const oldIndices = old.links.flatMap((link, i) => link.raw_href === token.href && flow(link.text) === token.text ? [i] : []);
+      const newIndices = now.links.flatMap((link, i) => link.raw_href === next.href && flow(link.text) === next.text ? [i] : []);
+      if (oldIndices.length !== expected || newIndices.length !== expected || !equal(oldIndices, newIndices)) return { changed: true, only: false };
+      if (expected) replacements.set(newIndices[0], token.href);
+    }
+    const restored = { ...now, links: now.links.map((link, index) => replacements.has(index) ? { ...link, raw_href: replacements.get(index) } : link) };
+    if (!main && (Object.hasOwn(old, "counts") || Object.hasOwn(now, "counts"))) {
+      if (!object(old.counts) || !object(now.counts) || old.counts.html_bytes !== Buffer.byteLength(previous.record.html) ||
+          now.counts.html_bytes !== Buffer.byteLength(current.record.html)) return { changed: true, only: false };
+      restored.counts = { ...now.counts, html_bytes: old.counts.html_bytes };
+    }
+    if (!equal(restored, old)) return { changed: true, only: false };
+  }
+  return { changed: true, only: true };
+}
+
 function withoutBlockText(block) {
   return Object.fromEntries(Object.entries(block).filter(([key]) => key !== "text"));
 }
@@ -488,6 +560,12 @@ export function buildScraplingReviewDiff(input = {}, {
       previous_html_sha256: sourcePair[0].record.integrity.html_sha256,
       current_html_sha256: sourcePair[1].record.integrity.html_sha256,
       previous_source_main_sha256: sourcePair[0].sha256, current_source_main_sha256: sourcePair[1].sha256 });
+    const cf = sourceOnly ? sourceCloudflareEmailChange(...sourcePair) : null;
+    if (cf?.only) return { ...base, status: "unchanged", reason: "source_semantics_cloudflare_email_only", fields, evidence,
+      retain_both_captures: true, raw_dom_equality_verified: false,
+      limitations: ["Equality covers complete retained source semantics and proven Cloudflare email representations; unmodeled raw form state, classes and other attributes are not compared."] };
+    if (cf?.changed) return { ...base, status: "manual_review_required", reason: "cloudflare_email_change_requires_review", fields, evidence,
+      retain_both_captures: true, diff: null };
     if (!fields.length) {
       if (sourceOnly && sourcePair[0].record.integrity.main_document_sha256 !== sourcePair[1].record.integrity.main_document_sha256) {
         return { ...base, status: "manual_review_required", reason: "source_main_semantics_changed",
