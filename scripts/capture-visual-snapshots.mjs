@@ -6094,6 +6094,24 @@ async function processExpandableSectionComparison(
   );
   if (!previousSections.size) {
     if (!allowFirstBaseline) return { handled: false, reason: "missing_section_baseline_visible_change_pending" };
+    if (!promote) {
+      capture.persist_expansion_state_screenshots = true;
+      const reviewPath = saveReviewRecord({
+        source, baseline, previous, capture,
+        diff: { ...buildDiffSummary(previous.text || "", capture.text || "", source),
+          candidate_scope: "expandable_section_baseline", current_section_count: currentSections.length },
+        deterministic: { classification: "manual_review_required", reason: "section_baseline_requires_review",
+          previous_section_baseline_available: false, comparison_complete: false,
+          baseline_advance_allowed: false, retain_both_captures: true },
+        reason: "section_baseline_requires_review",
+        aiReview: { provider: "none", model: null, result: null, error: null },
+      });
+      report.review += 1;
+      report.review_paths.push(toArchiveRelative(reviewPath));
+      await markSharedSourceVisualCheckSucceeded(source, capture, report);
+      console.log(`REVIEW section_baseline_requires_review sections=${currentSections.length} ${sourceLabel(source)}`);
+      return { handled: true, reason: "section_baseline_requires_review" };
+    }
     const written = writeBaseline(source, capture, {
       reason: "section_baseline_created",
       previous_baseline: baseline || null,
