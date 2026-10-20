@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+
 const state = vi.hoisted(() => ({
   mode: "domain" as "domain" | "unexpected",
   providerMode: "ok" as "ok" | "domain" | "unexpected",

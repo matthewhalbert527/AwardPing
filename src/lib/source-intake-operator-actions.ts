@@ -1,4 +1,5 @@
 import type { Json } from "@/lib/database.types";
+import { hasTerminalFailedSourceIntakeResponse } from "../../scripts/lib/source-intake-terminal-response.mjs";
 
 export type SourceIntakeOperatorAction =
   | "retry"
@@ -18,6 +19,8 @@ export const FREE_RECONCILIATION_RETRY_REASON =
   "manual_reconciliation_retry_requested";
 export const POST_RETENTION_CAPTURE_PERSISTENCE_UNVERIFIED_REASON =
   "source_intake_post_retention_persistence_unverified_manual_only";
+export const SAVED_FIRST_OBSERVATION_RESTORED_REASON =
+  "saved_original_capture_restored_manual_review";
 export const SOURCE_BACKFILL_POLICY_VERSION = "low-coverage-source-backfill-v1";
 export const SOURCE_BACKFILL_ONBOARDING_BATCH_ID = "low-coverage-source-backfill-v1";
 export const SOURCE_BACKFILL_MANUAL_STATUS_REASON =
@@ -115,6 +118,8 @@ export function sourceIntakeActionAllowedWithContext(
   status: string,
   context: SourceIntakeOperatorActionContext = {},
 ): boolean {
+  if (context.statusReason === SAVED_FIRST_OBSERVATION_RESTORED_REASON &&
+      !RECOVERY_STATUSES.includes(status as (typeof RECOVERY_STATUSES)[number])) return false;
   const aiReview = objectValue(context.aiReview);
   const ambiguousProviderState = providerSubmissionStateAmbiguous(aiReview);
   if (
@@ -503,6 +508,24 @@ export function sourceIntakeProtectedRecovery(
   status: string,
   context: SourceIntakeOperatorActionContext,
 ): SourceIntakeProtectedRecovery {
+  // Restoring original evidence is not a new semantic review, even when an
+  // older accepted result becomes capture-bound again. Only a separately
+  // confirmed AI review (or rejection) may follow; never attach/replay it.
+  if (context.statusReason === SAVED_FIRST_OBSERVATION_RESTORED_REASON) {
+    const aiReview = objectValue(context.aiReview);
+    const capture = objectValue(context.captureMetadata);
+    const terminalFailure = hasTerminalFailedSourceIntakeResponse(aiReview, context.requestId, capture.capture_file_hash);
+    if (!RECOVERY_STATUSES.includes(status as (typeof RECOVERY_STATUSES)[number]) ||
+        providerSubmissionStateAmbiguous(aiReview) || (providerWorkWithoutResult(aiReview) && !terminalFailure) ||
+        !hasBoundRetainedCaptureArtifact(context.captureMetadata, context.requestId)) {
+      return protectedManualOnly("The restored capture or provider state needs manual verification. No automatic action is safe.");
+    }
+    return {
+      protected: true, mode: "rerun_ai_review_may_charge",
+      explanation: "The saved original capture was restored without an AI charge. A new, separately confirmed AI review is required before adding this page.",
+      apiCharge: "may_charge", refetchesPage: false, runsAiReview: true,
+    };
+  }
   if (!isProtectedLiveFirstCaptureRequest(status, context)) {
     return {
       protected: false,

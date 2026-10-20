@@ -44,6 +44,7 @@ export type SourceIntakeRequestView = {
   created_at: string;
   updated_at: string;
   processed_at: string | null;
+  worker_run_id?: string | null;
 };
 
 export type SourceIntakeAwardOption = {
@@ -62,6 +63,18 @@ type PaidRetryConfirmation = {
   sourceUrl: string;
 };
 
+type SavedCaptureRestoration = {
+  id: string;
+  sourceUrl: string;
+  expectedUpdatedAt: string;
+  requestSnapshot: string;
+  initialRequestSnapshot: string;
+  metadataJson: string;
+  metadata: Record<string, unknown> | null;
+};
+
+const savedCaptureMetadataByteLimit = 128 * 1024;
+
 export function AdminSourceIntakePanel({
   initialRequests,
   awardOptions,
@@ -79,22 +92,24 @@ export function AdminSourceIntakePanel({
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const [paidRetryConfirmation, setPaidRetryConfirmation] = useState<PaidRetryConfirmation | null>(null);
   const [initialRequestSnapshots] = useState(() => new Map(initialRequests.map((request) => [request.id, JSON.stringify(request)])));
+  const [savedCaptureRestoration, setSavedCaptureRestoration] = useState<SavedCaptureRestoration | null>(null);
   const paidRetryRef = useRef<PaidRetryConfirmation | null>(null);
   const actionInFlightRef = useRef(false);
   const actionTriggerRef = useRef<{ element: HTMLElement; initialRequests: SourceIntakeRequestView[] } | null>(null);
+  const savedCaptureRef = useRef<SavedCaptureRestoration | null>(null);
   const awardById = useMemo(() => new Map(awardOptions.map((award) => [award.id, award])), [awardOptions]);
 
   useEffect(() => {
-    if (paidRetryConfirmation || actionBusyId || paidRetryRef.current || actionInFlightRef.current) return;
+    if (paidRetryConfirmation || savedCaptureRestoration || actionBusyId || paidRetryRef.current || savedCaptureRef.current || actionInFlightRef.current) return;
     const trigger = actionTriggerRef.current;
     actionTriggerRef.current = null;
     if (trigger?.initialRequests === initialRequests && trigger.element.isConnected && !trigger.element.matches(":disabled")) {
       trigger.element.focus();
     }
-  }, [paidRetryConfirmation, actionBusyId, initialRequests]);
+  }, [paidRetryConfirmation, savedCaptureRestoration, actionBusyId, initialRequests]);
 
   async function submit(dryRun = false) {
-    if (busy || actionInFlightRef.current || paidRetryRef.current) return;
+    if (busy || actionInFlightRef.current || paidRetryRef.current || savedCaptureRef.current) return;
     setBusy(true);
     setMessage("");
     try {
@@ -124,7 +139,7 @@ export function AdminSourceIntakePanel({
   }
 
   async function runAction(id: string, action: SourceIntakeOperatorAction, sharedAwardId?: string) {
-    if (busy || actionInFlightRef.current || paidRetryRef.current) return;
+    if (busy || actionInFlightRef.current || paidRetryRef.current || savedCaptureRef.current) return;
     if (sourceIntakeActionRequiresPaidRetryConfirmation(action)) {
       const request = requests.find((row) => row.id === id);
       if (!request || !paidRetryAllowed(request, action)) {
@@ -198,6 +213,95 @@ export function AdminSourceIntakePanel({
     }
   }
 
+  function beginSavedCaptureRestoration(id: string) {
+    if (busy || actionInFlightRef.current || paidRetryRef.current || savedCaptureRef.current) return;
+    const request = requests.find((row) => row.id === id);
+    if (!request || !savedCaptureRestorationAllowed(request)) {
+      setMessage("Saved capture restoration is only available for an idle capture conflict. Reload and review this request.");
+      return;
+    }
+    const initialSnapshot = JSON.stringify(initialRequests.find((row) => row.id === id) || null);
+    if (initialSnapshot !== initialRequestSnapshots.get(id)) {
+      setMessage("This request was refreshed. Reload and review its current details before restoring a capture.");
+      return;
+    }
+    actionTriggerRef.current = document.activeElement instanceof HTMLElement ? { element: document.activeElement, initialRequests } : null;
+    const restoration: SavedCaptureRestoration = {
+      id, sourceUrl: request.normalized_url || request.homepage_url, expectedUpdatedAt: request.updated_at,
+      requestSnapshot: JSON.stringify(request), initialRequestSnapshot: initialSnapshot, metadataJson: "", metadata: null,
+    };
+    savedCaptureRef.current = restoration;
+    setSavedCaptureRestoration(restoration);
+    setMessage("");
+  }
+
+  function cancelSavedCaptureRestoration() {
+    if (!savedCaptureRestoration || savedCaptureRef.current !== savedCaptureRestoration || actionInFlightRef.current) return;
+    savedCaptureRef.current = null;
+    setSavedCaptureRestoration(null);
+    setMessage("Cancelled. No request was sent.");
+  }
+
+  function reviewSavedCaptureRestoration() {
+    const restoration = savedCaptureRestoration;
+    if (!restoration || savedCaptureRef.current !== restoration || restoration.metadata || actionInFlightRef.current) return;
+    if (restoration.metadataJson.length > savedCaptureMetadataByteLimit ||
+      new TextEncoder().encode(restoration.metadataJson).byteLength > savedCaptureMetadataByteLimit) {
+      setMessage("Capture metadata must be no larger than 128 KiB.");
+      return;
+    }
+    let metadata: unknown;
+    try { metadata = JSON.parse(restoration.metadataJson); } catch {
+      setMessage("Paste valid original capture_metadata JSON. Its contents were not sent.");
+      return;
+    }
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+      setMessage("Capture metadata must be a JSON object, not an array or a page body.");
+      return;
+    }
+    const confirmation = { ...restoration, metadata: metadata as Record<string, unknown> };
+    savedCaptureRef.current = confirmation;
+    setSavedCaptureRestoration(confirmation);
+    setMessage("");
+  }
+
+  async function confirmSavedCaptureRestoration() {
+    const restoration = savedCaptureRestoration;
+    if (!restoration?.metadata || savedCaptureRef.current !== restoration || actionInFlightRef.current) return;
+    // Consume this exact confirmation before starting the shared action flight.
+    savedCaptureRef.current = null;
+    setSavedCaptureRestoration(null);
+    const request = requests.find((row) => row.id === restoration.id);
+    if (!request || JSON.stringify(request) !== restoration.requestSnapshot ||
+      JSON.stringify(initialRequests.find((row) => row.id === restoration.id) || null) !== restoration.initialRequestSnapshot ||
+      !savedCaptureRestorationAllowed(request)) {
+      setMessage("This request changed. Reload and review its current status before restoring a capture.");
+      return;
+    }
+    actionInFlightRef.current = true;
+    setActionBusyId(restoration.id);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/admin/source-intake/${restoration.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "restore_saved_capture", savedCaptureMetadata: restoration.metadata, expectedUpdatedAt: restoration.expectedUpdatedAt }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(cleanText(payload.error) || "The saved capture could not be restored. Reload and review this request.");
+        return;
+      }
+      setRequests((current) => current.map((row) => row.id === restoration.id ? payload.request : row));
+      setMessage(cleanText(payload.message) || "Saved capture restored. The request stays held; AI review is a separate action.");
+    } catch {
+      setMessage("The saved capture could not be restored. Reload and review this request before trying again.");
+    } finally {
+      actionInFlightRef.current = false;
+      setActionBusyId(null);
+    }
+  }
+
   return (
     <div className="grid gap-6">
       <section className="card p-5">
@@ -253,10 +357,10 @@ export function AdminSourceIntakePanel({
             </label>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button className="button-primary" disabled={busy || actionBusyId !== null || paidRetryConfirmation !== null} type="button" onClick={() => submit(false)}>
+            <button className="button-primary" disabled={busy || actionBusyId !== null || paidRetryConfirmation !== null || savedCaptureRestoration !== null} type="button" onClick={() => submit(false)}>
               Queue intake
             </button>
-            <button className="button-secondary" disabled={busy || actionBusyId !== null || paidRetryConfirmation !== null} type="button" onClick={() => submit(true)}>
+            <button className="button-secondary" disabled={busy || actionBusyId !== null || paidRetryConfirmation !== null || savedCaptureRestoration !== null} type="button" onClick={() => submit(true)}>
               Dry-run validate
             </button>
           </div>
@@ -299,15 +403,68 @@ export function AdminSourceIntakePanel({
             </div>
           </section>
         )}
+        {savedCaptureRestoration && (
+          <section
+            aria-labelledby="saved-capture-heading"
+            aria-describedby="saved-capture-warning"
+            className="mt-5 grid gap-3 rounded-lg border border-[var(--brand-burgundy)] p-4"
+            role="region"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") { event.preventDefault(); cancelSavedCaptureRestoration(); }
+            }}
+          >
+            <h3 id="saved-capture-heading" className="text-lg font-bold">
+              {savedCaptureRestoration.metadata ? "Confirm saved capture restoration" : "Restore saved capture — no AI charge"}
+            </h3>
+            <p id="saved-capture-warning" className="text-sm font-semibold">
+              Paste the ORIGINAL completed capture_metadata JSON from the retained backup—not the page body or the newer failed capture.
+              The server verifies the saved objects before restoring their identity. This keeps the request held: no live page fetch,
+              AI review, source approval or publication. Any paid AI review requires a separate action and confirmation.
+            </p>
+            <dl className="grid gap-2 break-all text-sm">
+              <Detail label="Request" value={savedCaptureRestoration.id} />
+              <Detail label="Source" value={savedCaptureRestoration.sourceUrl} />
+            </dl>
+            <label className="grid gap-2 text-sm font-bold">
+              Original capture_metadata JSON (maximum 128 KiB)
+              <textarea
+                className="input min-h-40 font-mono text-sm"
+                value={savedCaptureRestoration.metadataJson}
+                readOnly={savedCaptureRestoration.metadata !== null}
+                maxLength={savedCaptureMetadataByteLimit}
+                spellCheck={false}
+                onChange={(event) => {
+                  if (savedCaptureRef.current !== savedCaptureRestoration || savedCaptureRestoration.metadata || actionInFlightRef.current) return;
+                  if (event.target.value.length > savedCaptureMetadataByteLimit ||
+                    new TextEncoder().encode(event.target.value).byteLength > savedCaptureMetadataByteLimit) {
+                    setMessage("Capture metadata must be no larger than 128 KiB.");
+                    return;
+                  }
+                  const next = { ...savedCaptureRestoration, metadataJson: event.target.value };
+                  savedCaptureRef.current = next;
+                  setSavedCaptureRestoration(next);
+                }}
+              />
+            </label>
+            {savedCaptureRestoration.metadata && <p className="text-sm font-bold">Restore this saved capture for exactly the request and source shown above, and keep it held?</p>}
+            <div className="flex flex-wrap gap-3">
+              <button autoFocus className="button-secondary" type="button" onClick={cancelSavedCaptureRestoration}>Cancel</button>
+              {savedCaptureRestoration.metadata
+                ? <button className="button-primary" type="button" onClick={confirmSavedCaptureRestoration}>Confirm restore — keep held</button>
+                : <button className="button-primary" type="button" onClick={reviewSavedCaptureRestoration}>Review saved capture restore</button>}
+            </div>
+          </section>
+        )}
         <div className="mt-5 grid gap-3">
           {requests.map((request) => (
             <SourceIntakeRow
-              actionBusy={busy || actionBusyId !== null || paidRetryConfirmation !== null}
+              actionBusy={busy || actionBusyId !== null || paidRetryConfirmation !== null || savedCaptureRestoration !== null}
               awardById={awardById}
               awardOptions={awardOptions}
               key={request.id}
               request={request}
               onAction={runAction}
+              onRestoreSavedCapture={beginSavedCaptureRestoration}
             />
           ))}
           {requests.length === 0 && (
@@ -331,18 +488,26 @@ function paidRetryAllowed(request: SourceIntakeRequestView, action: SourceIntake
   });
 }
 
+function savedCaptureRestorationAllowed(request: SourceIntakeRequestView) {
+  // Missing client claim data is not idle proof; the server checks the real row.
+  return (request.status === "failed" || request.status === "needs_manual_review") &&
+    request.status_reason === "intake_local_conflict" && request.worker_run_id == null;
+}
+
 function SourceIntakeRow({
   request,
   awardOptions,
   awardById,
   actionBusy,
   onAction,
+  onRestoreSavedCapture,
 }: {
   request: SourceIntakeRequestView;
   awardOptions: SourceIntakeAwardOption[];
   awardById: Map<string, SourceIntakeAwardOption>;
   actionBusy: boolean;
   onAction: (id: string, action: SourceIntakeOperatorAction, sharedAwardId?: string) => Promise<void>;
+  onRestoreSavedCapture: (id: string) => void;
 }) {
   const [selectedAwardId, setSelectedAwardId] = useState(request.matched_shared_award_id || "");
   const deterministic = objectValue(request.deterministic_review);
@@ -516,6 +681,15 @@ function SourceIntakeRow({
               Reject
             </button>
           </div>
+          {savedCaptureRestorationAllowed(request) && (
+            <details className="text-sm">
+              <summary className="cursor-pointer font-bold">Advanced recovery</summary>
+              <p className="my-2 text-[var(--muted)]">Restore the original saved capture only. Verification keeps this request held and does not charge for AI.</p>
+              <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onRestoreSavedCapture(request.id)}>
+                Restore saved capture — no AI charge
+              </button>
+            </details>
+          )}
         </div>
       </div>
     </article>

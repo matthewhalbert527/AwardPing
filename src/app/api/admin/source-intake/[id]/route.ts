@@ -23,6 +23,7 @@ import {
   verifySourceIntakeProviderBindingForAdminApproval,
 } from "@/lib/source-intake-provider-binding.server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { SavedCaptureRestoreError, savedCaptureRestorePatch } from "@/lib/source-intake-saved-capture.server";
 
 export const runtime = "nodejs";
 
@@ -55,7 +56,17 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (!access.ok) return access.response;
 
   const { id } = await context.params;
-  const parsed = actionSchema.safeParse(await request.json().catch(() => null));
+  let body: unknown;
+  try {
+    body = await readBoundedActionBody(request);
+  } catch {
+    return NextResponse.json({ ok: false, error: "Choose a valid source-intake action within the size limit." }, { status: 400 });
+  }
+  const restore = restoreSchema.safeParse(body);
+  if (restore.success) {
+    return restoreSavedCapture(id, restore.data, access.user.email || "");
+  }
+  const parsed = actionSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ ok: false, error: "Choose a valid source-intake action." }, { status: 400 });
   }
@@ -191,6 +202,65 @@ export async function PATCH(request: Request, context: RouteContext) {
     message: disclosure.message,
     retry: disclosure.retry,
   });
+}
+
+const restoreSchema = z.object({
+  action: z.literal("restore_saved_capture"),
+  savedCaptureMetadata: z.record(z.string(), z.unknown()),
+  expectedUpdatedAt: z.string().min(1).max(64),
+}).strict();
+
+async function readBoundedActionBody(request: Request): Promise<unknown> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("missing_action_body");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > 256 * 1024) throw new Error("action_body_limit");
+      chunks.push(value);
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
+async function restoreSavedCapture(
+  id: string,
+  data: z.infer<typeof restoreSchema>,
+  actorEmail: string,
+) {
+  const admin = createSupabaseAdminClient();
+  // The entire prior row is preserved in the recovery audit; partial SELECTs
+  // cannot prove idle ownership or retain failed evidence and raw responses.
+  const { data: current, error: loadError } = await admin.from("source_page_requests")
+    .select("*").eq("id", id).maybeSingle();
+  if (loadError) return NextResponse.json({ ok: false, error: "The source-intake request could not be loaded." }, { status: 500 });
+  if (!current) return NextResponse.json({ ok: false, error: "Source intake request not found." }, { status: 404 });
+  let patch: SourcePageRequestUpdate;
+  try {
+    patch = await savedCaptureRestorePatch({ current, savedCaptureMetadata: data.savedCaptureMetadata,
+      expectedUpdatedAt: data.expectedUpdatedAt, actorEmail, now: new Date().toISOString() });
+  } catch (error) {
+    if (error instanceof SavedCaptureRestoreError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: error.status });
+    }
+    console.error("[source-intake-admin] saved-capture verification failed");
+    return NextResponse.json({ ok: false, error: "The saved capture could not be restored. Nothing was changed." }, { status: 500 });
+  }
+  const { data: restored, error } = await admin.from("source_page_requests").update(patch)
+    .eq("id", id).eq("status", current.status).eq("status_reason", "intake_local_conflict")
+    .eq("updated_at", data.expectedUpdatedAt).is("worker_run_id", null).select("*").maybeSingle();
+  if (error) return NextResponse.json({ ok: false, error: "The saved capture could not be restored." }, { status: 500 });
+  if (!restored) return NextResponse.json({ ok: false, error: "This request changed during verification. Refresh before restoring it." }, { status: 409 });
+  return NextResponse.json({ ok: true, request: restored,
+    message: "Saved original capture restored. It is still held for a separate review. No page was fetched and no AI charge was created.",
+    retry: { api_charge: "none", creates_api_charge: false, refetches_page: false, runs_ai_review: false } });
 }
 
 function protectedActionDisclosure(

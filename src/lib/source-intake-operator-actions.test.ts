@@ -4,6 +4,7 @@ import {
   FREE_RECONCILIATION_PREFLIGHT_FAILURE_REASON,
   FREE_RECONCILIATION_RETRY_REASON,
   POST_RETENTION_CAPTURE_PERSISTENCE_UNVERIFIED_REASON,
+  SAVED_FIRST_OBSERVATION_RESTORED_REASON,
   sourceIntakeActionAllowed,
   sourceIntakeActionAllowedWithContext,
   sourceIntakeAllowedStatuses,
@@ -13,6 +14,53 @@ import {
 } from "@/lib/source-intake-operator-actions";
 
 describe("source intake operator actions", () => {
+  it("recognizes retained MAX_TOKENS markers only as a failed review requiring separate paid approval", () => {
+    const base = protectedContext();
+    const capture = base.captureMetadata as Record<string, unknown>;
+    const claim = "33333333-3333-4333-8333-333333333333";
+    const context = { ...base, acquisitionKind: "admin_intake", statusReason: SAVED_FIRST_OBSERVATION_RESTORED_REASON,
+      aiReview: { model: "gemini-2.5-flash-lite", submission_claim_token: claim, gemini_spend_attempt_token: claim,
+        gemini_batch_name: "batches/known_one", possible_external_batch_name: "batches/known_one",
+        gemini_batch_request_key: base.requestId, provider_batch_returned_at: "2026-10-19T01:00:00.000Z",
+        completion_error: "source_intake_provider_incomplete_ai_response",
+        provider_input_binding: { schema_version: 2, namespace: "source-intake-provider-input-v2", request_id: base.requestId,
+          retained_capture_sha256: capture.capture_file_hash, digest_sha256: "c".repeat(64), model: "gemini-2.5-flash-lite" },
+        provider_response: { modelVersion: "gemini-2.5-flash-lite", candidates: [{ finishReason: "MAX_TOKENS",
+          content: { parts: [{ text: '{"status":"accepted","facts":{' }] } }] } } };
+    expectOnlyProtectedActions(context, ["reject", "rerun_ai_review"]);
+    context.aiReview.possible_external_batch_name = "batches/different";
+    expectOnlyProtectedActions(context, ["reject"]);
+  });
+  it.each(["validating", "capturing", "ai_review_pending", "ai_review_submitted", "matching"])("permits no mutation of active %s even with a stale restored reason", status => {
+    const context = { ...protectedContext(), statusReason: SAVED_FIRST_OBSERVATION_RESTORED_REASON };
+    for (const action of ["retry","reject","retry_reconciliation","rerun_capture","rerun_ai_review","attach_to_award","approve_as_new_award","approve_backfill_source"] as const) {
+      expect(sourceIntakeActionAllowedWithContext(action, status, context)).toBe(false);
+    }
+  });
+  it.each(["admin_intake", "live_discovery"])("keeps restored %s evidence separate from source approval and result replay", acquisitionKind => {
+    const context = { ...protectedContext(), acquisitionKind,
+      statusReason: SAVED_FIRST_OBSERVATION_RESTORED_REASON };
+    // Even an apparently bound accepted OLD result is historical, not a new review.
+    expectOnlyProtectedActions(context, ["reject", "rerun_ai_review"]);
+    expect(sourceIntakeProtectedRecovery("needs_manual_review", context)).toMatchObject({
+      protected: true, mode: "rerun_ai_review_may_charge", refetchesPage: false, apiCharge: "may_charge",
+    });
+    expect(sourceIntakeActionAllowedWithContext("approve_backfill_source", "needs_manual_review", context)).toBe(false);
+  });
+  it.each([
+    { gemini_batch_name: "batches/unfinished" }, { submitted_at: "2026-10-19T01:00:00Z" },
+    { batch_create_started_at: "2026-10-19T01:00:00Z" }, { possible_external_batch_name: "batches/unknown" },
+    { submission_claim_token: "active" },
+  ])("holds restored evidence with unfinished or ambiguous provider work", aiReview => {
+    const context = { ...protectedContext({ aiReview }), acquisitionKind: "admin_intake",
+      statusReason: SAVED_FIRST_OBSERVATION_RESTORED_REASON };
+    expectOnlyProtectedActions(context, ["reject"]);
+  });
+  it("does not offer paid review when the restored capture binding is incomplete", () => {
+    const context = { ...protectedContext({ captureMetadata: {} }), acquisitionKind: "admin_intake",
+      statusReason: SAVED_FIRST_OBSERVATION_RESTORED_REASON };
+    expectOnlyProtectedActions(context, ["reject"]);
+  });
   it("blocks operator mutations while work or an external Batch is active", () => {
     for (const status of ["validating", "capturing", "ai_review_pending", "ai_review_submitted", "matching"]) {
       for (const action of ["retry", "retry_reconciliation", "reject", "attach_to_award", "rerun_capture", "rerun_ai_review"] as const) {
