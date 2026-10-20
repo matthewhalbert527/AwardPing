@@ -12,6 +12,7 @@ import {
 import { visualSnapshotArtifactManifest } from "./visual-review-queue.mjs";
 import { SOURCE_HTML_PROFILE, assertSourceHtmlArtifactIdentity } from "./source-html-evidence.mjs";
 import { sourceHtmlReviewPairingVerified } from "./source-html-review-contract.mjs";
+import { normalizeVisibleText } from "./capture-stability.mjs";
 
 export const PUBLISHED_VISUAL_EVIDENCE_PREFIX = "visual-snapshots/published";
 export const VISUAL_EVENT_EVIDENCE_SCHEMA_VERSION = "visual-event-evidence-v2";
@@ -54,6 +55,7 @@ export async function preparePublishedVisualEventEvidence({
         return await prepareSide({
           side,
           candidate,
+          source,
           changeDetails,
           archiveRoot,
           store,
@@ -775,6 +777,7 @@ function canonicalIsoTimestamp(value) {
 async function prepareSide({
   side,
   candidate,
+  source,
   changeDetails,
   archiveRoot,
   store,
@@ -888,6 +891,12 @@ async function prepareSide({
     throw new Error(`Candidate ${candidate.id} ${side} references an incomplete visual state.`);
   }
   if (!historical) validateNewWebpageStateReferences({ candidate, side, resolved });
+  const profileWithoutGeometry = !historical && main &&
+    explicitlyUncapturedScraplingGeometry({ candidate, side, resolved, state: main });
+  if (profileWithoutGeometry && (source?.id !== candidate.shared_award_source_id ||
+      source?.shared_award_id !== candidate.shared_award_id || source?.url !== candidate.source_url)) {
+    throw new DeterministicVisualArtifactError("The current source no longer matches the retained Scrapling capture.", "visual_profile_source_mismatch");
+  }
   if (!main?.image_path || !existsSync(main.image_path)) {
     if (!historical) throw new Error(`Candidate ${candidate.id} ${side} full screenshot is missing.`);
     return unavailableHistoricalSide(side, "unavailable_image_missing", "The historical full screenshot was not retained.");
@@ -902,6 +911,7 @@ async function prepareSide({
     expectedByteLength: main.image_ref?.byte_length,
     requireExpectedManifest: !historical,
     historical,
+    expectedDimensions: profileWithoutGeometry ? resolved.meta.dimensions : null,
   });
   const mainFull = mainImage.artifact;
   const retainedStates = [];
@@ -955,7 +965,7 @@ async function prepareSide({
       visualStateGeometryMatchesImage(state.geometry, retained?.image);
     return eligible ? [{ ...state, image_hash: retained.image.sha256 }] : [];
   });
-  const localization = localizeVisualEventSide({
+  let localization = localizeVisualEventSide({
     side,
     states: localizeStates,
     changeDetails,
@@ -963,6 +973,15 @@ async function prepareSide({
   });
   const required = !String(localization.status).startsWith("unavailable_not_required_") &&
     localization.status !== "unavailable_exact_text";
+  if (profileWithoutGeometry && required) {
+    localization = {
+      ...localization,
+      status: "unavailable_geometry_not_captured_by_profile",
+      exact_overlap: false,
+      semantic_verified: false,
+      reason: "This profile retains a supplementary full screenshot but does not capture verified text geometry; no crop or wording location is verified.",
+    };
+  }
   const selectedState = localization.status === "verified"
     ? resolved.states.find((state) => state.state_id === localization.state_id) || main
     : main;
@@ -1333,6 +1352,7 @@ async function uploadImageState({
   expectedByteLength = null,
   requireExpectedManifest = false,
   historical = false,
+  expectedDimensions = null,
 }) {
   const body = readVerifiedPathArtifact({
     path: state.image_path,
@@ -1343,8 +1363,15 @@ async function uploadImageState({
   });
   let metadata;
   try {
-    metadata = await sharp(body).metadata();
+    metadata = await (expectedDimensions ? sharp(body, { limitInputPixels: 25_000_000, failOn: "warning" }) : sharp(body)).metadata();
+    if (expectedDimensions) await sharp(body, { limitInputPixels: 25_000_000, failOn: "warning" }).stats();
   } catch (error) {
+    if (expectedDimensions) {
+      throw new DeterministicVisualArtifactError(
+        "The retained Scrapling screenshot does not fully decode within the profile's image bounds.",
+        "visual_profile_image_decode_invalid",
+      );
+    }
     if (historical) {
       throw new DeterministicVisualArtifactError(
         `Historical screenshot is unreadable: ${state.image_path}.`,
@@ -1352,6 +1379,13 @@ async function uploadImageState({
       );
     }
     throw error;
+  }
+  if (expectedDimensions && (metadata.format !== "jpeg" ||
+      metadata.width !== expectedDimensions.width || metadata.height !== expectedDimensions.height)) {
+    throw new DeterministicVisualArtifactError(
+      "The retained Scrapling screenshot type or decoded dimensions disagree with its sealed metadata.",
+      "visual_profile_image_dimensions_mismatch",
+    );
   }
   const artifact = await uploadBufferArtifact({
     store,
@@ -1752,7 +1786,8 @@ function validateNewWebpageStateReferences({ candidate, side, resolved }) {
       required: true,
     });
     if (!state.geometry_path) {
-      if (explicitlyUnavailableMainGeometry({ candidate, side, resolved, state })) continue;
+      if (explicitlyUnavailableMainGeometry({ candidate, side, resolved, state }) ||
+          explicitlyUncapturedScraplingGeometry({ candidate, side, resolved, state })) continue;
       throw new DeterministicVisualArtifactError(
         `Candidate ${candidate.id} ${side} visual state ${state.state_id} has no geometry artifact.`,
         "visual_state_geometry_missing",
@@ -1864,6 +1899,98 @@ function explicitlyUnavailableMainGeometry({ candidate, side, resolved, state })
     && textHash === ref.text_hash && ref.text_hash === meta.text_hash
     && Boolean(resolved.files.text)
     && /^[a-f0-9]{64}$/.test(cleanText(resolved.file_refs.text?.sha256));
+}
+
+// Browser Scrapling profiles deliberately never capture text geometry. This is
+// a distinct sealed producer contract, not the legacy zero-visible-node case.
+// Raw manifests/bytes and the normal state-reference checks still run first.
+function explicitlyUncapturedScraplingGeometry({ candidate, side, resolved, state }) {
+  const { ref, meta } = resolved;
+  const profile = meta?.capture_profile;
+  const version = profile === "scrapling-evidence-v1" ? 1 : profile === "scrapling-evidence-v2" ? 2 : null;
+  if (!version || !ref || !meta) return false;
+  // resolveCandidateVisualEvidenceSide parsed this file before raw preflight.
+  // Bind that parsed view to the verified bytes too, not a swapped earlier JSON.
+  let sealedMeta;
+  try {
+    const raw = readVerifiedPathArtifact({ path: resolved.files.meta,
+      expectedSha256: resolved.file_refs.meta.sha256, expectedByteLength: resolved.file_refs.meta.byte_length,
+      requireExpectedManifest: true, required: true });
+    sealedMeta = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
+  } catch { return false; }
+  if (stableManifestJson(meta) !== stableManifestJson(sealedMeta)) return false;
+  const prompt = objectValue(candidate.prompt_payload), worker = objectValue(candidate.worker_metadata);
+  const refMeta = objectValue(ref.metadata), native = objectValue(meta.scrapling), screenshot = objectValue(native.screenshot);
+  const projection = objectValue(meta.retained_artifact_projection), authority = objectValue(projection.authoritative);
+  const diagnostics = objectValue(projection.diagnostics), layout = objectValue(diagnostics.main_layout);
+  const stateRef = ref.visual_states?.[0], prefix = side === "previous" ? "previous" : "new";
+  const textHash = candidate[`${prefix}_text_hash`], imageHash = candidate[`${prefix}_image_hash`];
+  const empty = value => Array.isArray(value) && value.length === 0;
+  const unavailable = value => value && typeof value === "object" && !Array.isArray(value) &&
+    value.status === "evidence_only_geometry_unavailable" && value.exact === false && value.accounted_for === true &&
+    value.geometry_ready === false && value.geometry_hash === null && value.bound_image_hash === null;
+  const dimensions = value => value && Number.isSafeInteger(value.width) && value.width > 0 && value.width <= 4096 &&
+    Number.isSafeInteger(value.height) && value.height > 0 && value.height <= 20_000 && value.width * value.height <= 25_000_000;
+  const sameDimensions = value => dimensions(value) && value.width === meta.dimensions.width && value.height === meta.dimensions.height;
+  const capturedAt = Date.parse(meta.captured_at), screenshotAt = Date.parse(screenshot.captured_at);
+  if (!(meta.kind === "webpage" && meta.version === 1 && resolved.kind === "webpage" && ref.kind === "webpage" &&
+      meta.capture_behavior_name === profile && meta.capture_behavior_version === version &&
+      worker.capture_profile === profile && worker.capture_behavior_name === profile && worker.capture_behavior_version === version &&
+      prompt.behavior_name === profile && prompt.behavior_version === version &&
+      (ref.capture_profile == null || ref.capture_profile === profile) && (refMeta.capture_profile == null || refMeta.capture_profile === profile) &&
+      stableManifestJson(ref) === stableManifestJson(prompt[side === "previous" ? "previous_snapshot_ref" : "new_snapshot_ref"]) &&
+      meta.source?.id === candidate.shared_award_source_id && meta.source?.shared_award_id === candidate.shared_award_id &&
+      meta.source?.url === candidate.source_url && meta.source?.page_type === candidate.source_page_type &&
+      meta.page_title === ref.page_title &&
+      meta.final_url === ref.final_url && screenshot.source_url === meta.final_url && Boolean(cleanText(meta.final_url)) &&
+      prompt.previous_snapshot_ref?.final_url === prompt.new_snapshot_ref?.final_url &&
+      Date.parse(prompt.previous_snapshot_ref?.captured_at) < Date.parse(prompt.new_snapshot_ref?.captured_at) &&
+      Number.isFinite(capturedAt) && meta.captured_at === ref.captured_at && state.captured_at === meta.captured_at &&
+      meta.status_code === 200 && (refMeta.status_code === 200 || (side === "previous" && refMeta.status_code === null)) &&
+      /^[a-f0-9]{64}$/.test(textHash || "") && textHash === ref.text_hash && textHash === meta.text_hash && prompt.hashes?.[`${prefix}_text_hash`] === textHash &&
+      imageHash === meta.image_hash && imageHash === ref.image_hash && imageHash === resolved.expected_main_hash && prompt.hashes?.[`${prefix}_image_hash`] === imageHash &&
+      state.kind === "main" && state.state_id === "main" && resolved.states.length === 1 && ref.visual_states?.length === 1 &&
+      stateRef?.geometry_hash === null && stateRef.local_paths?.layout === null && ref.local_paths?.layout === null &&
+      meta.files?.layout === null && meta.layout_path == null && state.geometry_path === null &&
+      ref.layout_hash === null && meta.layout_hash === null && meta.text_geometry === null && refMeta.text_geometry === null &&
+      ["page", "thumb", "text", "meta"].every(role => typeof meta.files?.[role] === "string" &&
+        meta.files[role] === ref.local_paths?.[role]?.archive_relative) &&
+      !state.geometry_ref?.sha256 && state.geometry_ref?.byte_length === null &&
+      !resolved.file_refs.layout?.sha256 && resolved.file_refs.layout?.byte_length === null && !Object.keys(objectValue(state.geometry)).length &&
+      meta.expansion_state_count === 0 && empty(meta.expansion_state_screenshots) && empty(meta.files?.expansion_states) &&
+      empty(meta.expansion_state_failures) && (meta.persist_expansion_state_screenshots == null || meta.persist_expansion_state_screenshots === false) &&
+      projection.schema === "awardping.capture-retained-artifact-projection.v1" && projection.kind === "webpage" &&
+      projection.localization_status === "evidence_only_geometry_unavailable" && authority.layout_retained === false &&
+      authority.layout_hash === null && authority.expansion_state_count === 0 && diagnostics.authority === "diagnostic_only" &&
+      diagnostics.storage_scope === "local_capture_directory_only" && layout.present === false && layout.observed_geometry_hash === null &&
+      empty(diagnostics.expansion_states) && diagnostics.excluded_state_count === 0 &&
+      unavailable(meta.localization) && (unavailable(refMeta.localization) || (side === "previous" && refMeta.localization === null)) &&
+      dimensions(meta.dimensions) && sameDimensions(screenshot) &&
+      (sameDimensions(refMeta.dimensions) || (side === "previous" && refMeta.dimensions === null)) &&
+      native.evidence_scope === "html-source-main-document" && native.visibility_verified === false &&
+      native.screenshot_alignment === "not_verified" && native.visible_text_scope === "whole-visible-main-document" &&
+      meta.html_capture?.status === "captured" && meta.html_capture.source_url === meta.final_url &&
+      native.integrity?.html_sha256 === meta.html_capture.sha256 &&
+      stableManifestJson(meta.html_capture) === stableManifestJson(refMeta.html_capture) &&
+      typeof native.visible_title === "string" && typeof native.visible_text === "string" && Boolean(native.visible_text) &&
+      sha256Buffer(native.visible_text) === native.visible_text_sha256 && native.integrity?.text_sha256 === native.visible_text_sha256 &&
+      screenshot.schema === "awardping.scrapling-screenshot.v1" && screenshot.mime_type === "image/jpeg" &&
+      screenshot.full_page === true && screenshot.geometry_status === "unavailable" && screenshot.alignment === "not_verified" &&
+      screenshot.semantics_bracketed === true && screenshot.sha256 === imageHash && native.integrity?.screenshot_sha256 === imageHash &&
+      native.integrity?.screenshot_metadata_sha256 === sha256Buffer(JSON.stringify(screenshot)) &&
+      Number.isSafeInteger(screenshot.byte_length) && screenshot.byte_length > 0 && screenshot.byte_length <= 4 * 1024 * 1024 &&
+      screenshot.byte_length === resolved.file_refs.page.byte_length && meta.page_bytes === screenshot.byte_length &&
+      Number.isFinite(screenshotAt) && screenshotAt >= capturedAt && screenshotAt - capturedAt <= 90_000 &&
+      (screenshot.primary_html_captured_at == null || screenshot.primary_html_captured_at === meta.captured_at) &&
+      (screenshot.semantic_mismatches == null || empty(screenshot.semantic_mismatches)) &&
+      Boolean(resolved.files.text))) return false;
+  // Use the producer's existing semantic text-hash algorithm, never typography
+  // normalization or invented screenshot coordinates. Native text stays raw.
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(readVerifiedPathArtifact({
+    path: resolved.files.text, expectedSha256: resolved.file_refs.text.sha256,
+    expectedByteLength: resolved.file_refs.text.byte_length, requireExpectedManifest: true, required: true,
+  }));
+  return sha256Buffer(normalizeVisibleText(text)) === textHash;
 }
 
 function assertSemanticArtifactRef({

@@ -176,7 +176,7 @@ const conditionalApplicantSourceShapePattern =
 const alwaysBlockedApplicantSourceShapePattern =
   /\b(?:jobs?|careers?|employment|search results?|payment|bursar|1098t|security question|access denied|login|sign in)\b|\/(?:jobs?|careers?|employment|search|results|listing|list|directory|database|payment|payments|bursar|1098t|login|signin|sign-in)(?:[/?#]|$)/i;
 const strictApplicantFacingEvidencePattern =
-  /\b(?:application deadline|deadline|due date|opening date|applications? (?:open|close|are open|are due)|closing date|award amount|funding|stipend|tuition|eligib(?:ility|le)|application requirements?|award conditions?|letters? of recommendation|transcript|essay|nomination|application materials?|required documents?|how to apply|apply by|submit by|application portal|application instructions?|citizenship|gpa|interview)\b/i;
+  /\b(?:application deadline|deadline|due date|opening date|applications? (?:open|close|are open|are due)|closing date|award amount|funding|stipend|tuition|eligib(?:ility|le)|application requirements?|award conditions?|letters? of recommendation|transcript|essay|nomination|application materials?|required documents?|how to apply|apply by|submit by|submit (?:the )?(?:complete )?application by|application portal|application instructions?|citizenship|gpa|interview)\b/i;
 
 export const visualReviewEnqueueContexts = Object.freeze({
   capture: "capture_visual_snapshots",
