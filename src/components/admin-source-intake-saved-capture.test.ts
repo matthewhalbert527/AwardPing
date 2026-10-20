@@ -258,3 +258,56 @@ describe("advanced saved-capture restoration is separate from paid review", () =
     expect(text(render())).not.toContain("synthetic-original-only");
   });
 });
+
+describe("restored saved-capture requests show their current hold, not an old repair instruction", () => {
+  const restoredReason = "saved_original_capture_restored_manual_review";
+  const staleError = "The local capture_metadata path is missing. Retry to repair it.";
+
+  it("keeps the original error in the request while replacing its prominent display", () => {
+    const restored = { ...request, status_reason: restoredReason, error: staleError, capture_metadata: originalMetadata };
+    const before = JSON.stringify(restored);
+    const content = text(renderedRow([restored]));
+    expect(content).toContain("This request remains held for manual review.");
+    expect(content).toContain("The restored capture or provider state needs manual verification.");
+    expect(content).not.toContain(staleError);
+    expect(JSON.stringify(restored)).toBe(before);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not imply that incomplete restored evidence or old AI is ready for approval", () => {
+    const tree = renderedRow([{ ...request, status_reason: restoredReason, error: staleError, capture_metadata: {} }]);
+    const content = text(tree);
+    expect(content).toContain("No automatic action is safe.");
+    expect(content).toContain("This request remains held for manual review.");
+    expect(content.match(/The restored capture or provider state needs manual verification\./g)).toHaveLength(1);
+    expect(content).not.toContain(staleError);
+    expect(elements(tree).some(element => element.type === "button" && text(element.props.children) === "Attach")).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("uses the restored explanation immediately after the mocked authenticated response without another request", async () => {
+    send.mockResolvedValue({ ok: true, json: async () => ({ request: { ...request, status_reason: restoredReason,
+      error: staleError, capture_metadata: originalMetadata, updated_at: "2026-10-20T00:00:00.000Z" } }) });
+    await confirm(ready())();
+    const refreshed = row(render())!.props.request!;
+    expect(refreshed.error).toBe(staleError);
+    expect(refreshed.capture_metadata).toEqual(originalMetadata);
+    expect(text(renderedRow())).toContain("This request remains held for manual review.");
+    expect(text(renderedRow())).not.toContain(staleError);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["failed", "queued", "added"] as const)("keeps a %s row's error visible rather than masking a different current state", status => {
+    const content = text(renderedRow([{ ...request, status, status_reason: restoredReason, error: staleError }]));
+    expect(content).toContain(staleError);
+    expect(content).not.toContain("This request remains held for manual review.");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each(["intake_local_conflict", "saved_original_capture_restored_manual_review_extra", null])("preserves ordinary errors for reason %j", status_reason => {
+    const content = text(renderedRow([{ ...request, status_reason, error: staleError }]));
+    expect(content).toContain(staleError);
+    expect(content).not.toContain("This request remains held for manual review.");
+    expect(send).not.toHaveBeenCalled();
+  });
+});

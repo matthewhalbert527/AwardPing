@@ -36,6 +36,31 @@ function fixture(status, options = {}) {
 }
 
 describe("Scrapling daily worker dispatch", () => {
+  it("keeps both browser evidence profiles outside legacy HTML diagnostics and redirect rewriting", () => {
+    expect(worker).toContain("![SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2, SOURCE_HTML_PROFILE].includes(capture.capture_profile)");
+    const configured = body("captureConfiguredScraplingSource", "captureSource");
+    expect(configured).toContain("maybeRecordDiscoveredPdfSources(source, discovery, { profile: capture.capture_profile }, report)");
+    for (const profile of ["scrapling-evidence-v1", "scrapling-evidence-v2"]) {
+      const metadata = { captured_at: "2026-10-20T12:00:00.000Z", source: { id: "fixture" } };
+      const deps = {
+        SOURCE_HTML_PROFILE: "scrapling-source-html-v1",
+        SCRAPLING_WORKER_PROFILE: "scrapling-evidence-v1",
+        SCRAPLING_WORKER_PROFILE_V2: "scrapling-evidence-v2",
+        fromArchiveRelative: value => value,
+        compareRetainedHtmlCaptures: vi.fn(() => { throw new Error("legacy diagnostic must not run"); }),
+        readJsonIfExists: vi.fn(() => metadata), atomicWriteJson: vi.fn(), archiveRoot: "fixture", baselineRefresh: false,
+        incrementCounterObject: (obj, key) => { obj[key] = (obj[key] || 0) + 1; },
+      };
+      const invoke = new Function(...Object.keys(deps), `return ${body("attachHtmlComparisonDiagnostic", "captureR2Files")}`)(...Object.values(deps));
+      const capture = { kind: "webpage", capture_profile: profile, captured_at: metadata.captured_at, meta_path: "new-meta.json" };
+      const report = { html_comparison: { checked: 0, unavailable: 0, reasons: {} } };
+      invoke({ id: "fixture" }, null, capture, report);
+      expect(deps.compareRetainedHtmlCaptures).not.toHaveBeenCalled();
+      expect(capture.html_comparison).toEqual({ status: "unavailable", reason: "separate_scrapling_semantic_review", publishable: false });
+      expect(deps.atomicWriteJson).toHaveBeenCalledExactlyOnceWith("new-meta.json", { ...metadata, html_comparison: capture.html_comparison });
+      expect(report.html_comparison).toMatchObject({ checked: 1, unavailable: 1, reasons: { separate_scrapling_semantic_review: 1 } });
+    }
+  });
   it("verifies the exact installed runtime binding before loading an opt-in manifest", () => {
     const verification = worker.indexOf("verifyScraplingRuntimeBinding({ appDir: root, manifestPath: scraplingManifestPath, pythonPath: scraplingPythonPath })");
     expect(verification).toBeGreaterThan(worker.indexOf("const scraplingPythonPath ="));

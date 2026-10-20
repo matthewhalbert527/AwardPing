@@ -26,6 +26,8 @@ BOUNDARIES = {"address", "article", "aside", "blockquote", "br", "caption", "dd"
               "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li", "main",
               "nav", "ol", "p", "pre", "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul"}
 SEMANTIC = {"p", "li", "dt", "dd", "th", "td", "caption", "blockquote", "summary", "pre"}
+NEUTRAL_DIV_INLINE = {"a", "abbr", "b", "bdi", "bdo", "br", "cite", "code", "del", "dfn", "em", "i", "ins", "kbd",
+                      "mark", "q", "s", "samp", "small", "span", "strong", "sub", "sup", "time", "u", "var", "wbr"}
 
 
 class HtmlDocumentError(ValueError):
@@ -97,12 +99,15 @@ class Node:
         self.interactive_attrs = False
 
 
-def extract_html_document(html, url):
+def extract_html_document(html, url, *, neutral_div_blocks=False):
     """Extract all body source content, including hidden and closed sections.
 
     No fetching, script execution, adaptive matching, visibility assertion, URL
     resolution, or interpretation of which requirements are currently active.
+    The default retains v1 semantics; neutral DIV blocks are an explicit v2
+    producer option, never a heading, FAQ or visibility assertion.
     """
+    require(isinstance(neutral_div_blocks, bool), "invalid_neutral_div_option")
     require(isinstance(html, str) and html.strip() and "\x00" not in html, "invalid_html")
     try:
         html_bytes = len(html.encode("utf-8"))
@@ -220,6 +225,24 @@ def extract_html_document(html, url):
         sibling_buttons[ancestor] = result
         return result
 
+    def neutral_div(node, ancestors):
+        if not neutral_div_blocks or node.tag != "div" or not node.text:
+            return False
+        # An already emitted ancestor owns its complete text. Adding its child
+        # would duplicate that evidence; a structural DIV parent is not a leaf.
+        if any(ancestor.tag in SEMANTIC or re.fullmatch(r"h[1-6]", ancestor.tag)
+               or ancestor.attrs.get("role") == "heading" for ancestor in ancestors):
+            return False
+        pending = [node]
+        while pending:
+            child = pending.pop()
+            if (child is not node and child.tag != "#text" and child.tag not in NEUTRAL_DIV_INLINE
+                    or child.attrs.get("role") or child.interactive_attrs
+                    or child.element_count != sum(item.tag != "#text" for item in child.children)):
+                return False
+            pending.extend(child.children)
+        return True
+
     def visit(node, ancestors):
         nonlocal headings
         if node.tag == "#text":
@@ -256,7 +279,7 @@ def extract_html_document(html, url):
                     sibling_button_path.append(match[1])
         require(len(sibling_button_path) <= 100, "html_depth_limit")
         sibling_context = {"sibling_button_path": sibling_button_path} if sibling_button_path else {}
-        if node.text and (node.tag in SEMANTIC or level):
+        if node.text and (node.tag in SEMANTIC or level or neutral_div(node, ancestors)):
             row = next((ancestor for ancestor in reversed(ancestors) if ancestor.tag == "tr"), None)
             table_row = [child.text for child in row.children if child.tag in {"td", "th"}] if row else []
             block = {"kind": "heading" if level else node.tag, "text": node.text,
@@ -297,9 +320,12 @@ def main():
         raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
         require(len(raw) <= MAX_REQUEST_BYTES, "request_size_limit")
         request = json.loads(raw.decode("utf-8"))
-        require(isinstance(request, dict) and set(request) == {"html", "url"}, "invalid_request")
+        require(isinstance(request, dict) and (set(request) == {"html", "url"} or
+                set(request) == {"html", "url", "capture_profile"}
+                and request["capture_profile"] == "scrapling-evidence-v2"), "invalid_request")
         with contextlib.redirect_stdout(sys.stderr):
-            result = extract_html_document(request["html"], request["url"])
+            result = extract_html_document(request["html"], request["url"],
+                                           neutral_div_blocks=request.get("capture_profile") == "scrapling-evidence-v2")
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         return 0
     except HtmlDocumentError as error:

@@ -11,6 +11,7 @@ import { SOURCE_HTML_PROFILE, sourceHtmlEvidence, sourceHtmlArtifactProjection,
   sourceHtmlReviewText, validateSourceHtmlEvidence } from "./source-html-evidence.mjs";
 
 export const SCRAPLING_WORKER_PROFILE = "scrapling-evidence-v1";
+export const SCRAPLING_WORKER_PROFILE_V2 = "scrapling-evidence-v2";
 export const SCRAPLING_SOURCE_MANIFEST_SCHEMA = "awardping.scrapling-source-manifest.v1";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -50,7 +51,7 @@ export function validateScraplingSourceManifest(value) {
     const canonicalUrl = `${canonicalAwardId}\n${row?.url}`;
     if (!uuid.test(row?.id) || ids.has(row.id) || !value.award_ids.includes(canonicalAwardId) ||
         typeof row.url !== "string" || normalizePublicHttpUrl(row.url).href !== row.url || new URL(row.url).port ||
-        row.kind !== "html" || (row.capture_profile !== undefined && ![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(row.capture_profile)) ||
+        row.kind !== "html" || (row.capture_profile !== undefined && ![SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2, SOURCE_HTML_PROFILE].includes(row.capture_profile)) ||
         (row.capture_profile === SOURCE_HTML_PROFILE && !row.url.startsWith("https://")) || !Array.isArray(row.roles) || !row.roles.length ||
         row.roles.some(role => typeof role !== "string" || !/^[a-z_]{1,60}$/.test(role)) ||
         ownersByCanonicalUrl.get(canonicalUrl)?.has(row.award_id)) fail("invalid or duplicate source manifest entry");
@@ -86,8 +87,8 @@ export function selectScraplingSource(source, manifest) {
 /** No parser change, URL move or rollback may be mistaken for an award change. */
 export function assertScraplingBaselineCompatibility(baseline, { useScrapling, captureProfile = SCRAPLING_WORKER_PROFILE, baselineRefresh = false } = {}) {
   if (!baseline) return;
-  if (useScrapling && ![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(captureProfile)) fail("invalid capture profile");
-  const previousIsScrapling = [SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(baseline.capture_profile);
+  if (useScrapling && ![SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2, SOURCE_HTML_PROFILE].includes(captureProfile)) fail("invalid capture profile");
+  const previousIsScrapling = [SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2, SOURCE_HTML_PROFILE].includes(baseline.capture_profile);
   if ((previousIsScrapling !== Boolean(useScrapling) || (useScrapling && baseline.capture_profile !== captureProfile)) && !baselineRefresh) {
     fail("capture profile transition requires an explicit baseline-only maintenance run; old evidence is preserved");
   }
@@ -115,13 +116,13 @@ export async function captureScraplingWorkerSource(source, {
   capture = captureScraplingSource, captureProfile = SCRAPLING_WORKER_PROFILE,
 } = {}) {
   if (!uuid.test(source?.id) || !uuid.test(source?.shared_award_id)) fail("invalid source identity");
-  if (![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(captureProfile)) fail("invalid capture profile");
+  if (![SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2, SOURCE_HTML_PROFILE].includes(captureProfile)) fail("invalid capture profile");
   const root = realpathSync(archiveRoot);
   const record = validateScraplingCapture(await capture(source, { pythonPath, executablePath, timeoutMs,
     captureProfile }), { source });
   if (record.capture_profile !== captureProfile) fail("collector profile mismatch");
   if (captureProfile === SOURCE_HTML_PROFILE) return retainSourceHtmlCapture(source, record, root);
-  if (record.capture_profile !== SCRAPLING_WORKER_PROFILE || !record.html_document || !record.screenshot) fail("production evidence unavailable");
+  if (![SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2].includes(record.capture_profile) || !record.html_document || !record.screenshot) fail("production evidence unavailable");
   const text = scraplingReviewText(record.html_document);
   const page = Buffer.from(record.screenshot.base64, "base64");
   if (sha256(page) !== record.screenshot.sha256 || page.length !== record.screenshot.byte_length) fail("screenshot binding mismatch");
@@ -150,8 +151,8 @@ export async function captureScraplingWorkerSource(source, {
     capture_complete: false, raw_candidate_count_exact: false, logical_candidate_count_exact: false,
   }, { retainedStateCount: 0 });
   const metadata = {
-    version: 1, kind: "webpage", capture_behavior_version: 1, capture_behavior_name: SCRAPLING_WORKER_PROFILE,
-    capture_profile: SCRAPLING_WORKER_PROFILE,
+    version: 1, kind: "webpage", capture_behavior_version: captureProfile === SCRAPLING_WORKER_PROFILE_V2 ? 2 : 1, capture_behavior_name: captureProfile,
+    capture_profile: captureProfile,
     source: { id: source.id, shared_award_id: source.shared_award_id, url: source.url,
       title: source.title || null, page_type: source.page_type || null,
       award_name: source.shared_awards?.name || null },

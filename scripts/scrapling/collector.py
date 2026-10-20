@@ -25,6 +25,8 @@ from html_document import HtmlDocumentError, extract_html_document
 SCHEMA = "awardping.scrapling-capture.v1"
 PROFILE = "scrapling-visible-v1"
 EVIDENCE_PROFILE = "scrapling-evidence-v1"
+EVIDENCE_PROFILE_V2 = "scrapling-evidence-v2"
+EVIDENCE_PROFILES = (EVIDENCE_PROFILE, EVIDENCE_PROFILE_V2)
 SOURCE_HTML_PROFILE = "scrapling-source-html-v1"
 SCRIPT = Path(__file__).with_name("visible-document.js").read_text(encoding="utf-8")
 MAX_BYTES = 5 * 1024 * 1024
@@ -614,11 +616,14 @@ def semantic_mismatches(before, after, prefix, fields):
     return result
 
 
-def capture_evidence(page, observed, *, viewport_capture=None):
+def capture_evidence(page, observed, *, viewport_capture=None, profile=EVIDENCE_PROFILE):
     """Passive screenshot + source text, not fabricated geometry or visibility for HTML."""
+    if profile not in EVIDENCE_PROFILES:
+        raise CaptureFailure("invalid_capture_profile")
     observation, document, _ = observed
     try:
-        html_document = extract_html_document(observation["html"], observation["url"])
+        html_document = extract_html_document(observation["html"], observation["url"],
+                                              neutral_div_blocks=profile == EVIDENCE_PROFILE_V2)
     except HtmlDocumentError as error:
         raise CaptureFailure(str(error)) from None
     html_links = discover_html_links(page)
@@ -640,7 +645,8 @@ def capture_evidence(page, observed, *, viewport_capture=None):
             "document": bounds, "jpeg": {"width": image_width, "height": image_height}})
     after, after_document, _ = observe(page)
     try:
-        after_html_document = extract_html_document(after["html"], after["url"])
+        after_html_document = extract_html_document(after["html"], after["url"],
+                                                    neutral_div_blocks=profile == EVIDENCE_PROFILE_V2)
     except HtmlDocumentError as error:
         raise CaptureFailure(str(error)) from None
     if after["url"] != observation["url"] or after["ready_state"] != "complete" or after["fonts_status"] != "loaded":
@@ -682,7 +688,7 @@ def capture(request, fixture=None):
     """fixture is an in-process test seam, never accepted from CLI JSON."""
     url = validate_url(request["url"])
     profile = request.get("capture_profile", PROFILE)
-    if profile not in (PROFILE, EVIDENCE_PROFILE, SOURCE_HTML_PROFILE):
+    if profile not in (PROFILE, *EVIDENCE_PROFILES, SOURCE_HTML_PROFILE):
         raise CaptureFailure("invalid_capture_profile")
     source_id = request.get("source_id")
     if not isinstance(source_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", source_id):
@@ -775,13 +781,13 @@ def capture(request, fixture=None):
                 # An explicit upstream interstitial is unavailable, not an empty applicant page.
                 raise CaptureFailure("upstream_challenge_response")
             viewport_capture = None
-            for attempt in range(2 if profile == EVIDENCE_PROFILE else 1):
-                state["observed"] = (collect_stable(page, geometry=True) if profile == EVIDENCE_PROFILE
+            for attempt in range(2 if profile in EVIDENCE_PROFILES else 1):
+                state["observed"] = (collect_stable(page, geometry=True) if profile in EVIDENCE_PROFILES
                                      else collect_stable(page))
                 require_document_response_url(state["observed"][0]["url"], response)
-                if profile == EVIDENCE_PROFILE:
+                if profile in EVIDENCE_PROFILES:
                     try:
-                        state["evidence"] = capture_evidence(page, state["observed"], viewport_capture=viewport_capture)
+                        state["evidence"] = capture_evidence(page, state["observed"], viewport_capture=viewport_capture, profile=profile)
                     except CaptureFailure as error:
                         # Chromium's beyond-viewport screenshot temporarily resizes
                         # to 1x1 and can trigger a site's responsive JS. One bounded
@@ -853,7 +859,7 @@ def capture(request, fixture=None):
             "document": document, "capture_profile": profile, "readiness": readiness,
             "warnings": [], "telemetry": state["telemetry"],
             "engine": {"scrapling": version("scrapling"), "playwright": version("playwright"), "adaptive": False, "stealth": False}}
-    if profile == EVIDENCE_PROFILE:
+    if profile in EVIDENCE_PROFILES:
         result.update(state["evidence"])
         if not result["screenshot"]["semantics_bracketed"]:
             result["warnings"].append("supplementary_screenshot_semantics_changed_not_aligned")

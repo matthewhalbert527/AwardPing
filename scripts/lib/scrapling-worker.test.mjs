@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
-import { SCRAPLING_WORKER_PROFILE, validateScraplingSourceManifest, selectScraplingSource,
+import { SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2, validateScraplingSourceManifest, selectScraplingSource,
   assertScraplingBaselineCompatibility, scraplingReviewText, captureScraplingWorkerSource } from "./scrapling-worker.mjs";
 import { prepareR2CaptureArtifacts, collectR2CaptureArtifactFiles } from "./r2-capture-artifact-bindings.mjs";
 const hash = value => createHash("sha256").update(value).digest("hex");
@@ -182,5 +182,80 @@ describe("full HTML evidence contract",()=>{
       await expect(captureScraplingWorkerSource(source,{archiveRoot:root,capture:async()=>record()})).rejects.toThrow("escaped archive");
       expect(readdirSync(outside)).toEqual([]);
     } finally {rmSync(root,{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});}
+  });
+});
+
+describe("explicit evidence-v2 worker opt-in", () => {
+  function v2Manifest() {
+    const m = manifest();
+    m.award_ids = Array.from({ length: 25 }, (_, i) => `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`);
+    m.sources[0].capture_profile = SCRAPLING_WORKER_PROFILE_V2;
+    return m;
+  }
+  it("accepts only an explicit v2 row while the schema/header and omitted row default stay v1", () => {
+    const m = v2Manifest(), bytes = JSON.stringify(m);
+    expect(SCRAPLING_WORKER_PROFILE).toBe("scrapling-evidence-v1");
+    expect(validateScraplingSourceManifest(m)).toBe(m);
+    expect(JSON.stringify(m)).toBe(bytes);
+    expect(selectScraplingSource(source, m)).toMatchObject({ id: source.id, capture_profile: SCRAPLING_WORKER_PROFILE_V2 });
+    delete m.sources[0].capture_profile;
+    expect(validateScraplingSourceManifest(m).sources[0]).not.toHaveProperty("capture_profile");
+    m.profile = SCRAPLING_WORKER_PROFILE_V2;
+    expect(() => validateScraplingSourceManifest(m)).toThrow("invalid source manifest");
+  });
+  it.each(["scrapling-evidence-v20", "scrapling-evidence-v2 ", "SCRAPLING-EVIDENCE-V2"])("rejects nonliteral row profile %s", profile => {
+    const m = v2Manifest(); m.sources[0].capture_profile = profile;
+    expect(() => validateScraplingSourceManifest(m)).toThrow();
+  });
+  it.each(["stable-daily", SCRAPLING_WORKER_PROFILE, "scrapling-source-html-v1"])("requires an explicit baseline-only transition from %s to v2", oldProfile => {
+    const baseline = { capture_profile: oldProfile };
+    expect(() => assertScraplingBaselineCompatibility(baseline, { useScrapling: true, captureProfile: SCRAPLING_WORKER_PROFILE_V2 })).toThrow(/profile transition/);
+    expect(() => assertScraplingBaselineCompatibility(baseline, { useScrapling: true, captureProfile: SCRAPLING_WORKER_PROFILE_V2, baselineRefresh: true })).not.toThrow();
+  });
+  it.each([SCRAPLING_WORKER_PROFILE, "scrapling-source-html-v1"])("also fences v2 rollback to %s", captureProfile => {
+    const baseline = { capture_profile: SCRAPLING_WORKER_PROFILE_V2 };
+    expect(() => assertScraplingBaselineCompatibility(baseline, { useScrapling: true, captureProfile })).toThrow(/profile transition/);
+  });
+  it("recognizes v2 as Scrapling, not a legacy baseline", () => {
+    const baseline = { capture_profile: SCRAPLING_WORKER_PROFILE_V2 };
+    expect(() => assertScraplingBaselineCompatibility(baseline, { useScrapling: true, captureProfile: SCRAPLING_WORKER_PROFILE_V2 })).not.toThrow();
+    expect(() => assertScraplingBaselineCompatibility(baseline, { useScrapling: false })).toThrow(/profile transition/);
+    expect(() => assertScraplingBaselineCompatibility(baseline, { useScrapling: true })).toThrow(/profile transition/);
+    expect(() => assertScraplingBaselineCompatibility(baseline, { useScrapling: true, captureProfile: "scrapling-evidence-v3", baselineRefresh: true })).toThrow("invalid capture profile");
+  });
+  it("retains v2 with behavior2 and the identical existing artifact/authority contract", async () => {
+    const roots = [mkdtempSync(join(tmpdir(), "awardping-v1-control-")), mkdtempSync(join(tmpdir(), "awardping-v2-adapter-"))];
+    try {
+      const captures = [];
+      for (const [index, captureProfile] of [SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2].entries()) {
+        const input = { ...record(), capture_profile: captureProfile };
+        input.html_document.blocks[0].kind = "div";
+        let options;
+        const result = await captureScraplingWorkerSource(source, { archiveRoot: roots[index], captureProfile,
+          capture: async (_, value) => { options = value; return input; } });
+        expect(options.captureProfile).toBe(captureProfile);
+        expect(result).toMatchObject({ version: 1, capture_profile: captureProfile, capture_behavior_name: captureProfile,
+          capture_behavior_version: index + 1, layout_path: null });
+        expect(result.scrapling.integrity.html_document_sha256).toBe(hash(JSON.stringify(input.html_document)));
+        expect(result.scrapling.visible_text).toBe(input.text);
+        expect(hash(readFileSync(result.html_path))).toBe(result.html_capture.sha256);
+        expect(readFileSync(result.text_path, "utf8")).toBe(`${result.text}\n`);
+        expect(collectR2CaptureArtifactFiles(result).map(file => file.name)).toEqual(["page", "thumb", "text", "html", "meta"]);
+        expect(prepareR2CaptureArtifacts(collectR2CaptureArtifactFiles(result), { readFile: readFileSync })).toBeTruthy();
+        const meta = JSON.parse(readFileSync(result.meta_path, "utf8"));
+        expect(meta.source).toMatchObject({ id: source.id, shared_award_id: source.shared_award_id, url: source.url });
+        delete meta.capture_profile; delete meta.capture_behavior_name; delete meta.capture_behavior_version;
+        captures.push(meta);
+      }
+      expect(captures[1]).toEqual(captures[0]);
+    } finally { for (const root of roots) rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each([[SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2], [SCRAPLING_WORKER_PROFILE_V2, SCRAPLING_WORKER_PROFILE]])("refuses returned profile %s when %s was requested before writes", async (returned, requested) => {
+    const root = mkdtempSync(join(tmpdir(), "awardping-v2-profile-mismatch-"));
+    try {
+      await expect(captureScraplingWorkerSource(source, { archiveRoot: root, captureProfile: requested,
+        capture: async () => ({ ...record(), capture_profile: returned }) })).rejects.toThrow("collector profile mismatch");
+      expect(readdirSync(root)).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

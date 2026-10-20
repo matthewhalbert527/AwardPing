@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
-import { compareScraplingCaptures, scraplingEvidenceProfile, validateScraplingCapture } from "./scrapling-capture.mjs";
+import { compareScraplingCaptures, scraplingEvidenceProfile, scraplingEvidenceProfileV2, validateScraplingCapture } from "./scrapling-capture.mjs";
 
 const source = { id: "award-source", url: "https://example.edu/award" };
 const firstTime = "2026-10-15T12:00:00.000Z";
@@ -442,5 +442,55 @@ describe("Scrapling evidence comparison", () => {
 
   it("requires evidence integrity rather than comparing arbitrary collector JSON", () => {
     expectHeld(compareScraplingCaptures(...pair()));
+  });
+});
+
+describe("explicit evidence-v2 capture records", () => {
+  const v2 = (time = firstTime) => ({ ...evidenceFixture(time), capture_profile: scraplingEvidenceProfileV2 });
+  it("keeps schema1, full context and unchanged v1 defaults without mutating the record", () => {
+    const record = v2(), original = structuredClone(record);
+    record.html_document.blocks[1].kind = "div";
+    original.html_document.blocks[1].kind = "div";
+    const result = validateScraplingCapture(record, { source });
+    expect(scraplingEvidenceProfile).toBe("scrapling-evidence-v1");
+    expect(scraplingEvidenceProfileV2).toBe("scrapling-evidence-v2");
+    expect(record).toEqual(original);
+    expect(result).toMatchObject({ schema: "awardping.scrapling-capture.v1", capture_profile: scraplingEvidenceProfileV2, publishable: false });
+    expect(result.html_document).toEqual(record.html_document);
+    expect(result.integrity.html_document_sha256).toBe(hash(JSON.stringify(record.html_document)));
+    expect(result.integrity.screenshot_sha256).toBe(hash(jpeg));
+    const v1 = validateScraplingCapture(evidenceFixture(), { source });
+    expect(Object.keys(result.integrity)).toEqual(Object.keys(v1.integrity));
+  });
+  it.each([
+    ["missing screenshot", r => { delete r.screenshot; }],
+    ["missing HTML document", r => { delete r.html_document; }],
+    ["missing discovery links", r => { delete r.html_links; }],
+    ["wrong image hash", r => { r.screenshot.sha256 = "0".repeat(64); }],
+    ["false visibility", r => { r.html_document.visibility_verified = true; }],
+    ["false geometry", r => { r.screenshot.geometry_status = "available"; }],
+    ["unbracketed image", r => { r.screenshot.semantics_bracketed = false; }],
+  ])("does not weaken evidence validation for v2: %s", (_, mutate) => {
+    const record = v2(); mutate(record);
+    expect(() => validateScraplingCapture(record, { source })).toThrow();
+  });
+  it.each(["scrapling-evidence-v20", "scrapling-evidence-v2 ", "SCRAPLING-EVIDENCE-V2"])("rejects near-match profile %s", profile => {
+    expect(() => validateScraplingCapture({ ...v2(), capture_profile: profile }, { source })).toThrow("invalid_capture_identity");
+  });
+  it("keeps v2 evidence sealed after retention", () => {
+    const result = validateScraplingCapture(v2(), { source });
+    result.html_document.blocks[1].text += " Different eligibility condition.";
+    expect(() => validateScraplingCapture(result, { source })).toThrow("capture_integrity_mismatch");
+  });
+  it.each([false, true])("holds v1/v2 comparisons in either order (reverse=%s)", reverse => {
+    const a = evidenceFixture(firstTime), b = v2(secondTime);
+    if (reverse) [a.capture_profile, b.capture_profile] = [b.capture_profile, a.capture_profile];
+    expect(compare(a, b)).toMatchObject({ status: "unavailable", reason: "capture_profile_mismatch", publishable: false });
+  });
+  it("accepts same-v2 visible comparison without changing its visible-only scope", () => {
+    expect(compare(v2(firstTime), v2(secondTime))).toMatchObject({ status: "unchanged", scope: "observed_visible_main_document", publishable: false });
+    const current = v2(secondTime);
+    replaceText(current, "October 31, 2026", "November 15, 2026");
+    expect(compare(v2(firstTime), current)).toMatchObject({ status: "changed_needs_review", publishable: false });
   });
 });

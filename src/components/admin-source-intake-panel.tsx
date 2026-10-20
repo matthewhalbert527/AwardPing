@@ -11,6 +11,7 @@ import { sourceIntakeTypes } from "@/lib/source-intake";
 import { formatCentralDateTime } from "@/lib/time-zone";
 import {
   FREE_RECONCILIATION_FAILURE_REASON,
+  SAVED_FIRST_OBSERVATION_RESTORED_REASON,
   isApprovedBackfillSourceActivationRetry,
   isManualBackfillSourceActivationRequest,
   isSourceIntakeReconciliationOnlyRecovery,
@@ -541,6 +542,8 @@ function SourceIntakeRow({
   const canRerunAi = sourceIntakeActionAllowedWithContext("rerun_ai_review", request.status, actionContext);
   const canReject = sourceIntakeActionAllowedWithContext("reject", request.status, actionContext);
   const protectedRecovery = sourceIntakeProtectedRecovery(request.status, actionContext);
+  const savedCaptureRestored = request.status === "needs_manual_review" &&
+    request.status_reason === SAVED_FIRST_OBSERVATION_RESTORED_REASON;
   const restrictedRecovery = isSourceIntakeReconciliationOnlyRecovery(request.status, actionContext);
   const reconciliationRetry = sourceIntakeReconciliationRetryEligibility(request.status, actionContext);
   const canRetryReconciliation = sourceIntakeActionAllowedWithContext(
@@ -578,8 +581,12 @@ function SourceIntakeRow({
             <Detail label="Matched award" value={matchedAward?.name || request.created_shared_award_id || "None yet"} />
             <Detail label="Updated" value={formatCentralDateTime(request.updated_at)} />
           </dl>
-          {request.error && <p className="mt-3 text-sm font-bold text-[var(--brand-burgundy)]">{request.error}</p>}
-          {restrictedRecovery && (
+          {savedCaptureRestored ? (
+            <p className="mt-3 text-sm font-bold text-[var(--brand-burgundy)]">
+              {protectedRecovery.explanation} This request remains held for manual review.
+            </p>
+          ) : request.error ? <p className="mt-3 text-sm font-bold text-[var(--brand-burgundy)]">{request.error}</p> : null}
+          {restrictedRecovery && !savedCaptureRestored && (
             <p className={`mt-3 text-sm font-bold ${protectedRecovery.mode !== "manual_only" ? "text-[var(--brand-green)]" : "text-[var(--brand-burgundy)]"}`}>
               {protectedRecovery.protected
                 ? protectedRecovery.explanation

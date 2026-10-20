@@ -5,6 +5,7 @@ import { normalizePublicHttpUrl } from "./public-network-safety.mjs";
 import { SOURCE_HTML_PROFILE, validateSourceHtmlEvidence, sourceHtmlReviewText } from "./source-html-evidence.mjs";
 
 const PROFILE = "scrapling-evidence-v1";
+const PROFILE_V2 = "scrapling-evidence-v2";
 const MARKER = "HTML source context and link attributes (may include hidden or stale content; not screenshot locations):";
 const MAX_ARTIFACT_BYTES = 6 * 1024 * 1024;
 // Keep compact packets unchanged, but allow complete long-page context through
@@ -85,7 +86,7 @@ export function parseScraplingReviewText(value, { finalUrl, maxArtifactBytes = M
 
 function identities({ source, baseline, previous, capture }) {
   const profile = capture?.capture_profile;
-  if (!source?.id || !source.shared_award_id || ![PROFILE, SOURCE_HTML_PROFILE].includes(profile) || baseline?.capture_profile !== profile) {
+  if (!source?.id || !source.shared_award_id || ![PROFILE, PROFILE_V2, SOURCE_HTML_PROFILE].includes(profile) || baseline?.capture_profile !== profile) {
     fail("capture_profile_mismatch");
   }
   publicUrl(source.url);

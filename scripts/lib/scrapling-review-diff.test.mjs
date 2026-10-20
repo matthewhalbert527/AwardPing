@@ -871,3 +871,62 @@ describe("identity, integrity and bounded fail-closed behavior", () => {
     expect(buildScraplingReviewDiff(inputs(), options).reason).toBe("invalid_limits");
   });
 });
+
+describe("same-profile evidence-v2 neutral answer review", () => {
+  function v2Inputs(changed = true) {
+    const a = document();
+    const question = "Who may apply?", path = [{ level: 3, text: question }];
+    a.blocks = [{ ...block(question), kind: "h3", heading_path: path },
+      { ...block(sentence), kind: "div", heading_path: path }];
+    a.text = `${question} ${sentence}`;
+    const b = structuredClone(a);
+    if (changed) { b.blocks[1].text = b.blocks[1].text.replace("October 31", "November 15"); b.text = `${question} ${b.blocks[1].text}`; }
+    const input = inputs(a, b);
+    for (const meta of [input.baseline, input.previous.meta, input.capture]) Object.assign(meta, {
+      capture_profile: "scrapling-evidence-v2", capture_behavior_name: "scrapling-evidence-v2", capture_behavior_version: 2,
+    });
+    return { a, b, input };
+  }
+  it("compares complete same-v2 semantics unchanged without advancing or publishing", () => {
+    expect(buildScraplingReviewDiff(v2Inputs(false).input)).toMatchObject({ status: "unchanged", reason: "complete_semantics_equal",
+      publishable: false, baseline_advance_allowed: false });
+  });
+  it("retains the entire changed div answer and its audience/heading context", () => {
+    const { a, b, input } = v2Inputs(), result = buildScraplingReviewDiff(input);
+    expect(result).toMatchObject({ status: "changed_needs_review", reason: "complete_bounded_prose_change",
+      publishable: false, baseline_advance_allowed: false, visible_prose_corroborated: true });
+    expect(result.diff.removed_text).toEqual([a.blocks[1].text]);
+    expect(result.diff.added_text).toEqual([b.blocks[1].text]);
+    expect(result.diff.scrapling_semantics.changed_block_indices).toEqual([1]);
+    expect(result.diff.scrapling_semantics.previous_context.blocks).toEqual(a.blocks);
+    expect(result.diff.scrapling_semantics.current_context.blocks).toEqual(b.blocks);
+    expect(result.diff.added_text[0]).toContain("International applicants have a different deadline.");
+    expect(result.diff.scrapling_semantics.version).toBe(2);
+  });
+  it("does not change the existing complete diff representation for the same evidence", () => {
+    const { input } = v2Inputs(), v1 = structuredClone(input);
+    for (const meta of [v1.baseline, v1.previous.meta, v1.capture]) Object.assign(meta, {
+      capture_profile: "scrapling-evidence-v1", capture_behavior_name: "scrapling-evidence-v1", capture_behavior_version: 1,
+    });
+    expect(buildScraplingReviewDiff(input)).toEqual(buildScraplingReviewDiff(v1));
+  });
+  it.each([
+    ["v1 baseline", i => { i.baseline.capture_profile = "scrapling-evidence-v1"; }],
+    ["v1 current", i => { i.capture.capture_profile = "scrapling-evidence-v1"; }],
+    ["v1 previous metadata", i => { i.previous.meta.capture_profile = "scrapling-evidence-v1"; }],
+    ["source-only baseline", i => { i.baseline.capture_profile = "scrapling-source-html-v1"; }],
+    ["unknown profile", i => { for (const meta of [i.baseline, i.previous.meta, i.capture]) meta.capture_profile = "scrapling-evidence-v20"; }],
+  ])("holds mixed or unsupported profiles: %s", (_, mutate) => {
+    const { input } = v2Inputs(); mutate(input);
+    expect(buildScraplingReviewDiff(input)).toMatchObject({ status: "unavailable", reason: "capture_profile_mismatch",
+      publishable: false, baseline_advance_allowed: false, retain_both_captures: true, diff: null });
+  });
+  it.each([
+    ["missing visible answer", i => { setVisible(i, "Who may apply? Read the official application instructions.", "Who may apply? Read the official application instructions."); }, "changed_block_not_uniquely_visible"],
+    ["unpaired image", i => { i.capture.scrapling.screenshot.semantics_bracketed = false; }, "supplementary_screenshot_semantics_changed"],
+    ["wrong text hash", i => { i.capture.text_hash = "0".repeat(64); }, "text_integrity_mismatch"],
+  ])("retains the existing %s hold for v2", (_, mutate, reason) => {
+    const { input } = v2Inputs(); mutate(input);
+    expect(buildScraplingReviewDiff(input)).toMatchObject({ reason, publishable: false, baseline_advance_allowed: false, diff: null });
+  });
+});

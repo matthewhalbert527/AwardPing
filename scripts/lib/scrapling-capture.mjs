@@ -6,6 +6,7 @@ import { finalizeCaptureNetworkBoundary } from "./capture-resource-limits.mjs";
 
 export const scraplingCaptureProfile = "scrapling-visible-v1";
 export const scraplingEvidenceProfile = "scrapling-evidence-v1";
+export const scraplingEvidenceProfileV2 = "scrapling-evidence-v2";
 export const scraplingSourceHtmlProfile = "scrapling-source-html-v1";
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const fail = (reason) => { throw Object.assign(new Error(reason), { pilotReason: reason }); };
@@ -155,7 +156,7 @@ function validateSourceHtmlCapture(record) {
 
 /** Validate a collector record before retaining it. Does not authorize publishing. */
 export function validateScraplingCapture(record, { source }) {
-  if (!record || record.schema !== "awardping.scrapling-capture.v1" || ![scraplingCaptureProfile, scraplingEvidenceProfile, scraplingSourceHtmlProfile].includes(record.capture_profile) ||
+  if (!record || record.schema !== "awardping.scrapling-capture.v1" || ![scraplingCaptureProfile, scraplingEvidenceProfile, scraplingEvidenceProfileV2, scraplingSourceHtmlProfile].includes(record.capture_profile) ||
       !/^[A-Za-z0-9._-]{1,160}$/.test(record.source_id || "") ||
       record.source_id !== source?.id || record.url !== source?.url || publicUrl(record.url) !== source.url ||
       !Number.isInteger(record.status_code) || record.status_code < 200 || record.status_code >= 300 ||
@@ -188,7 +189,7 @@ export function validateScraplingCapture(record, { source }) {
   const semantic = { title: doc.title, text: doc.text, blocks: doc.blocks, links: doc.links };
   const integrity = { html_sha256: digest(record.html), visible_html_sha256: digest(record.visible_html), text_sha256: digest(record.text),
     document_sha256: digest(JSON.stringify(semantic)) };
-  if (record.capture_profile === scraplingEvidenceProfile) Object.assign(integrity, validateEvidence(record));
+  if ([scraplingEvidenceProfile, scraplingEvidenceProfileV2].includes(record.capture_profile)) Object.assign(integrity, validateEvidence(record));
   else if (Object.hasOwn(record, "screenshot") || Object.hasOwn(record, "html_document") || Object.hasOwn(record, "html_links")) fail("unexpected_evidence_profile");
   if (Buffer.byteLength(JSON.stringify(record), "utf8") >= 24 * 1024 * 1024) fail("collector_output_limit");
   if (record.integrity && Object.entries(integrity).some(([key, value]) => record.integrity[key] !== value)) fail("capture_integrity_mismatch");
@@ -230,7 +231,7 @@ export async function captureScraplingSource(source, { pythonPath, executablePat
   publicUrl(source.url);
   const sourceOnly = captureProfile === scraplingSourceHtmlProfile;
   if (!pythonPath || (!sourceOnly && !executablePath) || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000 ||
-      ![scraplingCaptureProfile, scraplingEvidenceProfile, scraplingSourceHtmlProfile].includes(captureProfile)) fail("invalid_runtime_options");
+      ![scraplingCaptureProfile, scraplingEvidenceProfile, scraplingEvidenceProfileV2, scraplingSourceHtmlProfile].includes(captureProfile)) fail("invalid_runtime_options");
   if (sourceOnly && !source.url.startsWith("https://")) fail("source_html_https_identity_required");
   const maxBytes = (sourceOnly ? 6 : 60) * 1024 * 1024;
   const proxy = await startPublicNetworkProxy({ timeoutMs: 15000, maxResponseBytes: maxBytes });

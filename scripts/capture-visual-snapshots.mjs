@@ -98,6 +98,7 @@ import { captureRenderedHtml } from "./lib/rendered-html-capture.mjs";
 import { compareRetainedHtmlCaptures } from "./lib/rendered-html-comparison.mjs";
 import {
   SCRAPLING_WORKER_PROFILE,
+  SCRAPLING_WORKER_PROFILE_V2,
   loadScraplingSourceManifest,
   selectScraplingSource,
   assertScraplingBaselineCompatibility,
@@ -8008,7 +8009,7 @@ async function captureConfiguredScraplingSource(source, context, browserMeta, re
     discovery.incompleteReasons = ["scrapling_passive_main_document_only"];
     report.discovery_pdf_incomplete_scans += 1;
     incrementCounterObject(report.discovery_pdf_incomplete_reasons, discovery.incompleteReasons[0]);
-    await maybeRecordDiscoveredPdfSources(source, discovery, { profile: SCRAPLING_WORKER_PROFILE }, report);
+    await maybeRecordDiscoveredPdfSources(source, discovery, { profile: capture.capture_profile }, report);
   }
   return capture;
 }
@@ -11973,7 +11974,7 @@ async function markSharedSourceVisualCheckSucceeded(
     return false;
   }
 
-  if (!preserveReviewedUrl && ![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(capture.capture_profile)) {
+  if (!preserveReviewedUrl && ![SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2, SOURCE_HTML_PROFILE].includes(capture.capture_profile)) {
     await maybeUpdateSafeRedirectUrl(source, capture, now, report);
   }
   return true;
@@ -13344,7 +13345,7 @@ function attachHtmlComparisonDiagnostic(source, baseline, capture, report) {
     text_path: previousFiles.text ? fromArchiveRelative(previousFiles.text) : null,
     meta_path: previousFiles.meta ? fromArchiveRelative(previousFiles.meta) : null,
   } : null;
-  const diagnostic = capture.capture_profile === "scrapling-evidence-v1"
+  const diagnostic = [SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2].includes(capture.capture_profile)
     ? { status: "unavailable", reason: "separate_scrapling_semantic_review", publishable: false }
     : compareRetainedHtmlCaptures({
     previous,
