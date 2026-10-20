@@ -862,9 +862,26 @@ async function reconcileStoredSucceededCandidates(
   return policyRefreshedPriorityCandidateIds;
 }
 
-async function submitPendingCandidates() {
-  await recoverStaleSubmissionClaims();
-  await requeueRetryableFailures();
+async function loadPendingCandidatesForSubmission() {
+  const prioritySourceIds = paidLane === GEMINI_PAID_LANES.CHANGED_PAGE_REVIEW &&
+    stage1Manifest?.available === true && stage1Manifest.sourceIds?.size
+    ? [...stage1Manifest.sourceIds].sort()
+    : [];
+  let priorityCandidates = [];
+  if (prioritySourceIds.length) {
+    let priorityQuery = supabase
+      .from("shared_award_visual_review_candidates")
+      .select("*")
+      .eq("status", "pending")
+      .in("shared_award_source_id", prioritySourceIds);
+    priorityQuery = applyPaidLaneCandidateScopeFilter(priorityQuery);
+    const { data, error } = await priorityQuery
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(limit);
+    if (error) throw new Error(`Load priority pending visual review candidates failed: ${error.message}`);
+    priorityCandidates = data || [];
+  }
 
   let pendingQuery = supabase
     .from("shared_award_visual_review_candidates")
@@ -873,11 +890,29 @@ async function submitPendingCandidates() {
   pendingQuery = applyPaidLaneCandidateScopeFilter(pendingQuery);
   const { data, error, count } = await pendingQuery
     .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
     .limit(limit);
   if (error) throw new Error(`Load pending visual review candidates failed: ${error.message}`);
 
-  report.pending_visual_reviews = count || 0;
-  const candidates = data || [];
+  const seen = new Set();
+  const candidates = [];
+  for (const candidate of [...priorityCandidates, ...(data || [])]) {
+    if (seen.has(candidate.id)) continue;
+    seen.add(candidate.id);
+    candidates.push(candidate);
+    if (candidates.length === limit) break;
+  }
+  // This prioritizes selection, not model submission or budget precedence.
+  // The existing fleet-first model partition and every submission gate remain.
+  return { candidates, count: count || 0 };
+}
+
+async function submitPendingCandidates() {
+  await recoverStaleSubmissionClaims();
+  await requeueRetryableFailures();
+
+  const { candidates, count } = await loadPendingCandidatesForSubmission();
+  report.pending_visual_reviews = count;
   if (!candidates.length) {
     console.log("VISUAL_REVIEW_BATCH no_pending_candidates");
     return;

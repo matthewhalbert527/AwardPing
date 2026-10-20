@@ -139,6 +139,76 @@ describe("latest-only visual snapshot pointer replacement", () => {
   });
 });
 
+const fixedSourceId = "11111111-1111-4111-8111-111111111111";
+const fixedKey = (generation, filename) => `visual-snapshots/sources/${fixedSourceId}/${generation}/${filename}`;
+const modernKey = (generation, filename = "page.jpg") =>
+  `visual-snapshots/sources/${fixedSourceId}/captures/${generation}/${filename}`;
+
+describe("fixed legacy retention in latest-only cleanup debt", () => {
+  it("records displaced legacy latest originals as protected, never eligible or deferred cleanup", () => {
+    const legacy = [fixedKey("latest", "page.jpg"), fixedKey("latest", "meta.json"),
+      fixedKey("previous", "document.pdf"), fixedKey("previous", "expansion-state-99-layout.json")];
+    const published = "visual-snapshots/published/immutable/main/full.jpg";
+    const modern = modernKey("old");
+    const approved = `visual-snapshots/sources/${fixedSourceId}/approved/old/meta.json`;
+    const existing = pointer({ shared_award_source_id: fixedSourceId,
+      latest_object_keys: Object.fromEntries([...legacy, published, modern, approved].map((key, index) => [String(index), key])) });
+    const before = structuredClone(existing);
+    const proposed = candidate(existing, { latest_object_keys: { page: modernKey("new") } });
+    const result = planLatestOnlyVisualSnapshotPointerReconciliation({ existing, candidate: proposed,
+      current: proposed, outcome: "committed", uploadedKeys: proposed.latest_object_keys });
+    expect(result.classification).toBe("candidate");
+    expect(result.cleanup_debt).toMatchObject({ delete_performed: false, eligible_keys: [], eligible_count: 0,
+      protected_keys: [...legacy, published].sort(), deferred_keys: [modern, approved].sort(),
+      requires_published_reference_graph_check: true });
+    expect(existing).toEqual(before);
+    expect(proposed.previous_object_keys).toEqual(before.previous_object_keys);
+  });
+
+  it.each(["cas_lost", "failed_before_cas"])("keeps unreferenced fixed uploads protected after %s and exact old readback", (outcome) => {
+    const existing = pointer({ shared_award_source_id: fixedSourceId });
+    const legacy = [fixedKey("latest", "text.txt"), fixedKey("previous", "page.html.txt"),
+      fixedKey("latest", "expansion-state-01.jpg"), fixedKey("previous", "expansion-state-10-layout.json")];
+    const published = "visual-snapshots/published/immutable/current/main/full.jpg";
+    const ordinary = modernKey("uncommitted");
+    const approved = `visual-snapshots/sources/${fixedSourceId}/approved/uncommitted/meta.json`;
+    const proposed = candidate(existing, {
+      latest_object_keys: Object.fromEntries([...legacy, published, ordinary, approved].map((key, index) => [String(index), key])),
+    });
+    const before = structuredClone({ existing, proposed });
+    const result = planLatestOnlyVisualSnapshotPointerReconciliation({ existing, candidate: proposed,
+      current: existing, outcome, uploadedKeys: proposed.latest_object_keys });
+    expect(result.classification).toBe("old");
+    expect(result.cleanup_debt).toMatchObject({ protected_keys: [...legacy, published].sort(),
+      eligible_keys: [ordinary, approved].sort(), eligible_count: 2, deferred_keys: [],
+      requires_authoritative_recheck: false, delete_performed: false });
+    expect({ existing, proposed }).toEqual(before);
+  });
+
+  it("defers only non-protected uploads when an ambiguous outcome has no authoritative readback", () => {
+    const existing = pointer({ shared_award_source_id: fixedSourceId });
+    const legacy = fixedKey("previous", "thumb.jpg"), ordinary = modernKey("ambiguous");
+    const proposed = candidate(existing, { latest_object_keys: { legacy, ordinary } });
+    const result = planLatestOnlyVisualSnapshotPointerReconciliation({ existing, candidate: proposed,
+      outcome: "ambiguous_error", uploadedKeys: proposed.latest_object_keys });
+    expect(result.classification).toBe("ambiguous");
+    expect(result.cleanup_debt).toMatchObject({ protected_keys: [legacy, ordinary].sort(), eligible_keys: [],
+      eligible_count: 0, deferred_keys: [ordinary], requires_authoritative_recheck: true, delete_performed: false });
+  });
+
+  it("uses the existing normalized-key view for retention without rewriting pointer bytes", () => {
+    const existing = pointer({ shared_award_source_id: fixedSourceId });
+    const legacy = fixedKey("latest", "layout.json");
+    const proposed = candidate(existing, { latest_object_keys: { legacy: ` ${legacy} ` } });
+    const before = structuredClone(proposed);
+    const result = planLatestOnlyVisualSnapshotPointerReconciliation({ existing, candidate: proposed,
+      current: existing, outcome: "cas_lost", uploadedKeys: proposed.latest_object_keys });
+    expect(result.cleanup_debt).toMatchObject({ protected_keys: [legacy], candidate_keys: [legacy],
+      eligible_keys: [], eligible_count: 0, deferred_keys: [], delete_performed: false });
+    expect(proposed).toEqual(before);
+  });
+});
+
 describe("latest-only visual snapshot reconciliation planning", () => {
   it("classifies a confirmed commit as candidate and records only superseded latest debt", () => {
     const existing = pointer();

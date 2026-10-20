@@ -1,4 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { buildLegacyParagraphReviewDiff } from "../../scripts/lib/legacy-review-completeness.mjs";
+import { buildVisualReviewPromptPayload, normalizeVisualBatchResult, changeDetailsFromVisualBatchResult,
+  validateVisualBatchReview } from "../../scripts/lib/visual-review-queue.mjs";
+import { parseChangeDetails, FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY } from "@/lib/change-details";
 import {
   changeSummaryDisplayParts,
   changeSummaryPresentation,
@@ -8,6 +14,211 @@ import {
   isUsefulChangeForAward,
   isUsefulChangeSummary,
 } from "@/lib/change-summary";
+
+describe("complete bounded public fact presentation, not repaired summary prefixes", () => {
+  const unavailable = "A complete concise summary is unavailable. Review the official source.";
+  const fixtureBytes = readFileSync(new URL("../../scripts/fixtures/scrapling-accuracy/yenching-complete-retained-pair-20261018.json", import.meta.url));
+  const fixture = JSON.parse(fixtureBytes.toString("utf8"));
+  const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+  const fact = (before: string, after: string) => ({ fact: "Application requirements", before, after,
+    removed_text: before, added_text: after, visual_evidence: null });
+  const details = (facts = [fact("Applicants must submit the original essay.", "Applicants must submit the revised essay.")]) => ({
+    reader_summary: "The stored application requirements changed. Review the official source.",
+    generation_status: "generated", is_alert_worthy: true, confidence: "high", quality_flags: [], change_type: "requirements",
+    before: facts[0]?.before ?? null, after: facts[0]?.after ?? null,
+    changed_facts: facts, structured_diff: { removed_text: facts.map(value => value.before), added_text: facts.map(value => value.after) },
+  });
+  const compactFacts = () => [
+    fact("no later than August 31 of the year in which you wish to enroll.", "no later than August of the intended enrollment year."),
+    fact("International candidates can attend interviews online or in person.", "International candidates will be interviewed online."),
+    fact("Those who accept our offers will then be approved through an internal process at Peking University, and receive their official acceptance letters in the summer before enrollment.",
+      "Candidates who accept our offers must complete internal procedures at Peking University before being pre-admitted. Final admission will be confirmed through the official Peking University acceptance letter, issued in the summer prior to enrollment."),
+  ];
+  function projectedYenching(compact = false) {
+    const source = { ...fixture.source, admin_review_status: "open", page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+      page_metadata_model: "synthetic-test", page_metadata: { baseline_facts: { award_relevance: "primary", cycle_relevance: "current_or_upcoming", quality_flags: [] } } };
+    const previous = { text: fixture.before.text + "\n" }, capture = { text: fixture.after.text, text_hash: digest(fixture.after.text), kind: "html" };
+    const baseline = { text_hash: digest(fixture.before.text) };
+    // Native MJS destructuring infers an incomplete TS input type. Invoke the
+    // unchanged pure function; retain and narrow its actual returned union.
+    const diff = Reflect.apply(buildLegacyParagraphReviewDiff, undefined,
+      [{ source, previousText: previous.text, currentText: capture.text }]) as ReturnType<typeof buildLegacyParagraphReviewDiff>;
+    if (!diff) throw new Error("The complete retained fixture must produce its five paired paragraphs.");
+    const candidate = { id: "synthetic-public-presentation-only", shared_award_source_id: source.id, shared_award_id: source.shared_award_id,
+      source_url: source.url, source_title: source.title, source_page_type: source.page_type, previous_text_hash: baseline.text_hash,
+      new_text_hash: capture.text_hash, deterministic_diff: diff, prompt_payload: buildVisualReviewPromptPayload({ source, previous, capture, baseline, diff,
+        deterministic: null, behaviorVersion: null, behaviorName: null }) };
+    const indices = [0, 1, 3, 4];
+    const snippets = compactFacts();
+    const quoted = [snippets[0], fact("no later than August 31 of the year in which you wish to enroll.",
+      "receive their diploma from their current degree program by August of the intended enrollment year."), snippets[1], snippets[2]];
+    const raw = { is_true_change: true, is_alert_worthy: true, confidence: "high", source_relevance: "primary",
+      changed_facts: indices.map((block_index, i) => ({ ...(compact ? quoted[i] : fact(diff.removed_text[block_index], diff.added_text[block_index])), block_index })),
+      exact_before: diff.removed_text[3], exact_after: diff.added_text[3], structured_diff: null,
+      block_reviews: diff.added_text.map((_text: string, block_index: number) => ({ block_index,
+        disposition: indices.includes(block_index) ? "applicant_change" : "wording_only",
+        reason: "Synthetic presentation verdict only, not an actual provider review or current website claim." })) };
+    const normalized = Reflect.apply(normalizeVisualBatchResult, undefined, [raw, { candidate, source }]) as ReturnType<typeof normalizeVisualBatchResult>;
+    const result = { ...normalized, finish_reason: "STOP", provider_candidate_count: 1 };
+    expect(validateVisualBatchReview({ candidate, source, result }).allowed).toBe(true);
+    const projected = changeDetailsFromVisualBatchResult({ candidate, source, result, model: null });
+    if (!("structured_diff" in projected)) throw new Error("The synthetic complete verdict must not return a held public projection.");
+    return { source, projected, diff };
+  }
+  it("reproduces the actual producer's1475-character four-fact fixture, but never renders the parser's cut-off international requirement", () => {
+    expect(digest(fixtureBytes)).toBe("9500cc222600232839335772e887650db5b69effe82b2edc67cf1a50960c8122");
+    const { source, projected } = projectedYenching(), original = JSON.stringify(projected);
+    expect(projected.reader_summary).toHaveLength(1475); expect(projected.changed_facts).toHaveLength(4);
+    expect(parseChangeDetails(projected)?.reader_summary).toHaveLength(1200);
+    expect(parseChangeDetails(projected)?.reader_summary).toMatch(/International candida$/);
+    const presentation = changeSummaryPresentation(null, source.url, source.title, projected);
+    expect(presentation).toMatchObject({ text: unavailable, paragraphs: [unavailable], condensed: false });
+    expect(presentation.text).not.toMatch(/International candida|complete comparison|four changes shown/i);
+    expect(JSON.stringify(projected)).toBe(original);
+  });
+  it("retains compact facts from the actual inert public projection with its ORIGINAL complete v2 five-paragraph diff", () => {
+    const { source, projected, diff } = projectedYenching(true), original = JSON.stringify(projected);
+    expect(diff.added_text).toHaveLength(5); expect(diff.removed_text).toHaveLength(5);
+    expect(projected.structured_diff.added_text).toEqual(diff.added_text);
+    expect(projected.structured_diff.removed_text).toEqual(diff.removed_text);
+    expect(projected.changed_facts).toHaveLength(4);
+    const presentation = changeSummaryPresentation(null, source.url, source.title, projected);
+    expect(presentation.condensed).toBe(true); expect(presentation.paragraphs).toHaveLength(4);
+    expect(presentation.text.length).toBeLessThanOrEqual(1200);
+    expect(presentation.paragraphs[0].split("Now: ")[1]).toContain("no later than August of the intended enrollment year.");
+    expect(presentation.paragraphs[1]).toContain("receive their diploma from their current degree program by August of the intended enrollment year.");
+    expect(presentation.paragraphs[2]).toContain("International candidates will be interviewed online.");
+    expect(presentation.paragraphs[3]).toContain("before being pre-admitted. Final admission will be confirmed through the official Peking University acceptance letter, issued in the summer prior to enrollment.");
+    expect(JSON.stringify(projected)).toBe(original);
+  });
+  it("keeps all compact month-only, international-audience and pre-admission/final-letter qualifications verbatim", () => {
+    const facts = compactFacts();
+    for (const record of facts) {
+      expect(fixture.before.text).toContain(record.before); expect(fixture.after.text).toContain(record.after);
+    }
+    const value = details(facts), original = structuredClone(value), presentation = changeSummaryPresentation(null, null, null, value);
+    expect(presentation.condensed).toBe(true); expect(presentation.paragraphs).toHaveLength(3);
+    expect(presentation.text.length).toBeLessThanOrEqual(1200);
+    expect(presentation.paragraphs).toEqual(facts.map(record => `Award information — previously: ${record.before} Now: ${record.after}`));
+    expect(presentation.paragraphs[0].split("Now: ")[1]).not.toContain("August 31");
+    expect(presentation.paragraphs[1]).toContain("International candidates will be interviewed online.");
+    expect(presentation.paragraphs[2]).toContain("must complete internal procedures at Peking University before being pre-admitted");
+    expect(presentation.paragraphs[2]).toContain("Final admission will be confirmed through the official Peking University acceptance letter, issued in the summer prior to enrollment.");
+    expect(value).toEqual(original);
+  });
+  it("renders all four complete short facts, never a first-three prefix", () => {
+    const value = details(Array.from({ length: 4 }, (_, i) => fact(`Applicants must submit original item ${i}.`, `Applicants must submit revised item ${i}.`)));
+    const result = changeSummaryPresentation(null, null, null, value);
+    expect(result.paragraphs).toHaveLength(4); expect(result.text).toContain("revised item 3"); expect(result.text.length).toBeLessThan(1200);
+  });
+  it("preserves an existing stored public pair when directional evidence counts and positions differ, without certifying a new pairing", () => {
+    const value = details();
+    value.structured_diff.removed_text.unshift("Other retained applicant guidance was removed.");
+    const original = structuredClone(value), result = changeSummaryPresentation(null, null, null, value);
+    expect(value.structured_diff.removed_text).toHaveLength(2); expect(value.structured_diff.added_text).toHaveLength(1);
+    expect(result.paragraphs).toEqual(["Award information — previously: Applicants must submit the original essay. Now: Applicants must submit the revised essay."]);
+    expect(value).toEqual(original);
+  });
+  it.each([0, 1])("uses the whole1200-character presentation boundary without cutting a requirement (+%i)", extra => {
+    const before = "Applicants must submit the original essay.", stem = "Applicants must submit the revised essay ";
+    const paddingLength = 1200 - `Award information — previously: ${before} Now: ${stem}.`.length + extra;
+    const padding = "listed materials ".repeat(Math.ceil(paddingLength / 17)).slice(0, paddingLength).replace(/ $/, "s");
+    const after = `${stem}${padding}.`, value = details([fact(before, after)]);
+    const result = changeSummaryPresentation(null, null, null, value);
+    if (extra) expect(result).toMatchObject({ text: unavailable, condensed: false });
+    else { expect(result.text).toHaveLength(1200); expect(result.text).toContain(after); expect(result.condensed).toBe(true); }
+  });
+  it.each(["missing evidence", "empty evidence", "opposite direction", "unchanged quote", "unsupported quote",
+    "missing side", "padded quote", "ellipsis", "invalid tail", "mixed tail", "extra field", "missing field", "mismatched alias", "array alias conflict", "canonical invalid", "too many", "visual claim"])("does not drop or repair %s", kind => {
+    const value = details([fact("Applicants must submit the original essay.", "Applicants must submit the revised essay."),
+      fact("International candidates must attend the original interview.", "International candidates must attend the revised interview.")]);
+    const raw = value as unknown as Record<string, unknown>, records = raw.changed_facts as Record<string, unknown>[];
+    if (kind === "missing evidence") delete raw.structured_diff;
+    if (kind === "empty evidence") raw.structured_diff = { added_text: [], removed_text: [] };
+    if (kind === "opposite direction") raw.structured_diff = { added_text: value.structured_diff.removed_text, removed_text: value.structured_diff.added_text };
+    if (kind === "unchanged quote") { records[0].before = records[0].removed_text = "Applicants must submit"; }
+    if (kind === "unsupported quote") records[0].after = records[0].added_text = "Applicants are guaranteed admission.";
+    if (kind === "missing side") records[0].before = records[0].removed_text = null;
+    if (kind === "padded quote") records[0].after = records[0].added_text = ` ${String(records[0].after)} `;
+    if (kind === "ellipsis") records[0].after = records[0].added_text = "Applicants must submit…";
+    if (kind === "invalid tail") records.push(null as unknown as Record<string, unknown>);
+    if (kind === "mixed tail") records.push("Unstructured claim" as unknown as Record<string, unknown>);
+    if (kind === "extra field") records[0].unreviewed_condition = "Only if approved";
+    if (kind === "missing field") delete records[0].removed_text;
+    if (kind === "mismatched alias") records[0].removed_text = "original essay";
+    if (kind === "array alias conflict") raw.changed_award_facts = structuredClone(value.changed_facts).slice(0, 1);
+    if (kind === "canonical invalid") { raw.changed_award_facts = structuredClone(value.changed_facts); raw.changed_facts = "Not an array"; }
+    if (kind === "too many") raw.changed_facts = Array.from({ length: 13 }, () => structuredClone(records[0]));
+    if (kind === "visual claim") records[0].visual_evidence = "A screenshot shows a changed requirement.";
+    const original = JSON.stringify(value);
+    expect(changeSummaryPresentation(null, null, null, value)).toMatchObject({ text: unavailable, paragraphs: [unavailable], condensed: false });
+    expect(JSON.stringify(value)).toBe(original);
+  });
+  it("accepts equivalent JSONB key order and aliases without changing record order or evidence", () => {
+    const value = details(compactFacts());
+    const aliases = value.changed_facts.map(record => Object.fromEntries(Object.entries(record).reverse()));
+    const original = { ...value, changed_award_facts: aliases };
+    expect(changeSummaryPresentation(null, null, null, JSON.stringify(original)).paragraphs).toHaveLength(3);
+  });
+  it.each([
+    ["Applicants must hold a B1 language certificate.", "Applicants must hold a B2 language certificate."],
+    ["Only H1B applicants must submit the original application.", "Only H1B applicants must submit the revised application."],
+    ["Applicants must complete the original 5 min read of https://example.edu/B1/H1B?route=old before applying.",
+      "Applicants must complete the revised 5 min read of https://example.edu/B2/H1B?route=new before applying."],
+    ["Applicants must submit B1/C1 evidence — marked “original”; do not use D.O.B. codes.",
+      "Applicants must submit B2/C2 evidence — marked “revised”; do not use D.O.B. codes."],
+    ["2026 Eligibility Requirements", "2027 Eligibility Requirements"],
+  ])("keeps recovered original codes, wording, URLs and internal punctuation verbatim: %s", (before, after) => {
+    const value = { ...details([fact(before, after)]), changed_award_facts: [fact(before, after)] }, original = structuredClone(value);
+    const result = changeSummaryPresentation(null, null, null, value);
+    const sentence = (text: string) => /[.!?]$/.test(text) ? text : `${text}.`;
+    expect(result.paragraphs).toEqual([`Award information — previously: ${sentence(before)} Now: ${sentence(after)}`]);
+    expect(result.condensed).toBe(true); expect(value).toEqual(original);
+    expect(result.text).not.toMatch(/\bB [12]\b|\bH 1 B\b|criteria now cover/);
+    if (after.includes("5 min read")) expect(result.text).toContain("5 min read");
+  });
+  it.each([
+    ["Applicants must submit the original B1 form", "Applicants must submit the revised B2 form"],
+    ["Must H1B applicants submit the original B1 form?", "H1B applicants must submit the revised B2 form!"],
+  ])("adds only missing terminal punctuation to recovered fact sides: %s", (before, after) => {
+    const result = changeSummaryPresentation(null, null, null, details([fact(before, after)]));
+    expect(result.text).toBe(`Award information — previously: ${before}${/[.!?]$/.test(before) ? "" : "."} Now: ${after}${/[.!?]$/.test(after) ? "" : "."}`);
+  });
+  it.each(["missing generated", "missing alertworthy", "missing quality", "rejected", "uncertain"])("does not promote %s state through raw-fact recovery", kind => {
+    const value = details(), raw = value as unknown as Record<string, unknown>;
+    if (kind === "missing generated") delete raw.generation_status;
+    if (kind === "missing alertworthy") delete raw.is_alert_worthy;
+    if (kind === "missing quality") delete raw.quality_flags;
+    if (kind === "rejected") raw.generation_status = "rejected";
+    if (kind === "uncertain") raw.quality_flags = ["uncertain"];
+    const result = changeSummaryPresentation(null, null, null, value);
+    expect(result.text).toBe(value.reader_summary); expect(result.condensed).toBe(false); expect(result.text).not.toContain("revised essay");
+    raw.reader_summary = "Applicants must complete the listed requirements. ".repeat(30);
+    expect(changeSummaryPresentation(null, null, null, raw)).toMatchObject({ text: unavailable, condensed: false });
+  });
+  it("does not expose an original oversized legacy summary prefix even when complete fact records are absent", () => {
+    const original = "Applicants must complete the listed requirements, unless an exception applies. ".repeat(25);
+    for (const value of [{ reader_summary: original }, { reader_summary: original, generation_status: "rejected" }]) {
+      expect(changeSummaryPresentation(null, null, null, value)).toMatchObject({ text: unavailable, condensed: false });
+      expect(changeSummaryPresentation(null, null, null, JSON.stringify(value))).toMatchObject({ text: unavailable, condensed: false });
+    }
+    expect(changeSummaryPresentation(original)).toMatchObject({ text: unavailable, condensed: false });
+  });
+  it("does not mistake an exactly1200-character old prefix or a known generated ellipsis for completeness", () => {
+    const stem = "Applicants must submit the required application materials. ";
+    const prefix = `${stem}${"x".repeat(1200 - stem.length)}`;
+    expect(prefix).toHaveLength(1200);
+    expect(changeSummaryPresentation(null, null, null, { reader_summary: prefix })).toMatchObject({ text: unavailable, condensed: false });
+    expect(changeSummaryPresentation(null, null, null, { generation_status: "generated", is_alert_worthy: true,
+      reader_summary: "Application instructions changed from “Applicants may apply only if…” to “All applicants are eligible”." }))
+      .toMatchObject({ text: unavailable, condensed: false });
+  });
+  it("keeps the first-recorded-document disclaimer ahead of every overflow or malformed record", () => {
+    const value = { ...details(), event_kind: "new_official_document", reader_summary: "New document published today. ".repeat(60), changed_facts: [null] };
+    expect(changeSummaryPresentation(null, null, null, value)).toMatchObject({ title: "Official document first recorded",
+      text: FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY, condensed: false });
+  });
+});
 
 describe("concise public change presentation", () => {
   const before = [

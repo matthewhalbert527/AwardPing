@@ -9,6 +9,7 @@ import {
 } from "./legacy-r2-retained-projection-provenance.mjs";
 import {
   canonicalExpansionStateCaptureCoverage,
+  expansionStateCaptureCoverage,
   hasExpansionStateCaptureCoverageClaim,
   legacyExpansionStateCaptureCoverageFromMetadata,
   sameExpansionStateCaptureCoverage,
@@ -184,6 +185,7 @@ export async function inspectLegacyR2SnapshotPointer({
   if (requiredText(objectStore.bucket, "object store bucket") !== snapshot.bucket) {
     fail("snapshot_bucket_mismatch", "The snapshot pointer names a different R2 bucket.");
   }
+  validateHistoricalPreviousLatestBinding(snapshot);
   const bodies = new Map();
   const generations = {};
   let legacyGenerationCount = 0;
@@ -774,6 +776,7 @@ function validateGenerationKeySet({ sourceId, kind, generationName, capturedAt, 
   }
   if (!capturedAt) fail("generation_captured_at_missing", `${generationName} object keys lack captured_at.`);
   const states = new Set();
+  let legacyFamily = null;
   let immutableFamily = null;
   let immutableVersion = null;
   const keys = new Set();
@@ -791,8 +794,16 @@ function validateGenerationKeySet({ sourceId, kind, generationName, capturedAt, 
     if (!key.startsWith(prefix)) fail("object_key_source_mismatch", `${generationName} ${slot} belongs to another source.`);
     const remainder = key.slice(prefix.length);
     const parts = remainder.split("/");
-    if (parts.length === 2 && parts[0] === generationName && parts[1] === definition.fileName) {
+    if (
+      parts.length === 2
+      && (parts[0] === generationName || (generationName === "previous" && parts[0] === "latest"))
+      && parts[1] === definition.fileName
+    ) {
       states.add("legacy");
+      if (legacyFamily && legacyFamily !== parts[0]) {
+        fail("generation_mixed_legacy_families", `${generationName} mixes mutable key families.`);
+      }
+      legacyFamily = parts[0];
     } else if (parts.length === 3 && parts[0] === "approved") {
       fail(
         "object_key_approved_family_not_stage1",
@@ -823,10 +834,68 @@ function validateGenerationKeySet({ sourceId, kind, generationName, capturedAt, 
   const state = states.has("legacy") ? "legacy" : "immutable";
   return {
     state,
+    legacyFamily: state === "legacy" ? legacyFamily : null,
     family: state === "immutable" ? immutableFamily : null,
     version: state === "immutable" ? immutableVersion : null,
     entries: manifestEntries,
   };
+}
+
+function validateHistoricalPreviousLatestBinding(snapshot, item = null) {
+  // Rotation retained the prior keys verbatim; /latest/ is not renamed /previous/.
+  if (!Object.values(snapshot.previous_object_keys).some((key) => (
+    typeof key === "string" && key.includes("/latest/")
+  ))) return;
+  const manifests = Object.fromEntries(["latest", "previous"].map((name) => [name, validateGenerationKeySet({
+    sourceId: snapshot.shared_award_source_id,
+    kind: snapshot.kind,
+    generationName: name,
+    capturedAt: snapshot[`${name}_captured_at`],
+    objectKeys: snapshot[`${name}_object_keys`],
+  })]));
+  if (manifests.latest.state !== "immutable" || manifests.latest.family !== "captures") {
+    fail("historical_previous_latest_requires_immutable_latest", "Historical previous /latest/ keys require a present immutable latest generation.");
+  }
+  if (manifests.previous.state !== "legacy" || manifests.previous.legacyFamily !== "latest") {
+    fail("historical_previous_latest_family_invalid", "Historical previous keys must all use the exact legacy /latest/ family.");
+  }
+  if (!(Date.parse(snapshot.previous_captured_at) < Date.parse(snapshot.latest_captured_at))) {
+    fail("historical_previous_latest_order_invalid", "Historical previous capture must be strictly older than latest.");
+  }
+  const latestKeys = new Set(manifests.latest.entries.map((entry) => entry.key));
+  if (manifests.previous.entries.some((entry) => latestKeys.has(entry.key))) {
+    fail("historical_previous_latest_key_collision", "Historical generations must not share source object keys.");
+  }
+  if (!item) return;
+  for (const name of ["latest", "previous"]) {
+    const generation = item.generations?.[name];
+    const manifest = manifests[name];
+    const previous = name === "previous";
+    const artifacts = previous ? generation?.artifacts : generation?.verified_artifacts;
+    const sourceKeys = previous ? generation?.object_keys_before : generation?.object_keys;
+    const version = previous ? legacyR2CaptureVersion({
+      capturedAt: snapshot.previous_captured_at, hashes: snapshot.previous_hashes,
+    }) : manifest.version;
+    if (
+      generation?.state !== (previous ? "migrate_legacy_mutable" : "already_immutable")
+      || generation.family !== "captures" || generation.version !== version
+      || generation.captured_at !== snapshot[`${name}_captured_at`]
+      || stableJson(generation.hashes) !== stableJson(snapshot[`${name}_hashes`])
+      || stableJson(sourceKeys) !== stableJson(snapshot[`${name}_object_keys`])
+      || !Array.isArray(artifacts) || artifacts.length !== manifest.entries.length
+      || new Set(artifacts.map((artifact) => artifact?.slot)).size !== manifest.entries.length
+      || manifest.entries.some((entry) => artifacts.find((artifact) => artifact?.slot === entry.slot)?.[
+        previous ? "legacy_key" : "source_key"
+      ] !== entry.key)
+      || (previous && manifest.entries.some((entry) => artifacts.find((artifact) => artifact?.slot === entry.slot)
+        ?.immutable_key !== generation.object_keys_after?.[entry.slot]))
+      || (previous && stableJson(generation.object_keys_after) !== stableJson(Object.fromEntries(
+        manifest.entries.map((entry) => [entry.slot, `visual-snapshots/sources/${snapshot.shared_award_source_id}/captures/${version}/${entry.fileName}`]),
+      )))
+    ) {
+      fail("plan_historical_previous_latest_binding_invalid", `Plan ${name} historical key binding differs from its exact pointer manifest.`);
+    }
+  }
 }
 
 function validateRequiredSlots(kind, entries, generationName) {
@@ -2209,6 +2278,7 @@ function validatePlanItem(item) {
   )) {
     fail("plan_preserved_fields_hash_invalid", "Plan preserved-fields hash is invalid.");
   }
+  validateHistoricalPreviousLatestBinding(expected, item);
   if (!isObject(item.next_object_keys) || !isObject(item.next_metadata)) {
     fail("plan_next_pointer_invalid", "Plan next object keys and metadata must be objects.");
   }
@@ -2403,7 +2473,9 @@ function validateMetadataTransition({ before, after, updateExpected, generationN
   if (!additions.length) {
     fail("plan_metadata_addition_missing", `Plan ${generationName} marks unchanged metadata for update.`);
   }
-  for (const addition of additions) validateDerivedMetadataAddition(addition, generationName);
+  for (const addition of additions) {
+    validateDerivedMetadataAddition(addition, generationName, canonicalAfter);
+  }
 }
 
 function addedJsonPaths(before, after) {
@@ -2442,7 +2514,7 @@ function metadataAdditionAnalysis(before, after, generationName, prefix = "") {
   return additions.toSorted((left, right) => left.path.localeCompare(right.path));
 }
 
-function validateDerivedMetadataAddition({ path, value }, generationName) {
+function validateDerivedMetadataAddition({ path, value }, generationName, metadataAfter) {
   const canonicalLocalization = {
     status: "evidence_only_geometry_unavailable",
     geometry_ready: false,
@@ -2455,6 +2527,32 @@ function validateDerivedMetadataAddition({ path, value }, generationName) {
     if (value === 0) return;
   } else if (path === "expansion_state_screenshots") {
     if (Array.isArray(value) && value.length === 0) return;
+  } else if (path === "expansion_state_capture_coverage") {
+    const retainedStateCount = nonNegativeInteger(metadataAfter.expansion_state_count);
+    const projectionCount = nonNegativeInteger(
+      metadataAfter.retained_artifact_projection?.authoritative?.expansion_state_count,
+    );
+    const canonical = canonicalExpansionStateCaptureCoverage(value, {
+      expectedRetainedStateCount: retainedStateCount,
+    });
+    if (retainedStateCount !== null && projectionCount === retainedStateCount && canonical) {
+      // Match the existing scalar-history bridge, not a new completeness claim.
+      const conservative = expansionStateCaptureCoverage({
+        raw_candidates: canonical.raw_candidate_count,
+        raw_candidate_count_exact: false,
+        candidates: canonical.logical_candidate_count,
+        candidate_count_exact: false,
+        attempted: canonical.attempted_count,
+        capture_limit: canonical.capture_limit,
+        capture_complete: false,
+        capture_status: "incomplete_discovery",
+        truncated: canonical.truncated,
+        truncated_count: canonical.truncated_count,
+        truncated_count_exact: false,
+        failure_count: canonical.failure_count,
+      }, { retainedStateCount });
+      if (stableJson(value) === stableJson(conservative)) return;
+    }
   } else if (path === "artifact_bindings_schema") {
     if (value === ARTIFACT_BINDINGS_SCHEMA) return;
   } else if (path === "artifact_bindings") {

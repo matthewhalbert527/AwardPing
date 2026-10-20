@@ -15,9 +15,12 @@ import {
   legacyR2CaptureVersion,
   migrationFailureQuarantineEvidence,
   sha256Bytes,
+  snapshotRowFingerprint,
+  snapshotPreservedFieldsFingerprint,
   snapshotPostconditionFingerprint,
 } from "./legacy-r2-snapshot-pointer-migration.mjs";
 import { bindVisualTextGeometry } from "./visual-event-localization.mjs";
+import { rotatedVisualSnapshotHistory } from "./visual-snapshot-history.mjs";
 import {
   createR2ObjectStore,
   parseLegacyR2PointerMigrationArgs,
@@ -638,6 +641,284 @@ async function inspectedFixture() {
   return { ...value, objectStore, inspected };
 }
 
+function legacyScalarCoverageFixture(modern = false) {
+  const value = fixture();
+  const key = value.latest.objectKeys.meta;
+  const raw = JSON.parse(value.objects.get(key).body.toString("utf8"));
+  Object.assign(raw, {
+    expansion_state_candidates: 0,
+    expansion_state_attempted: 0,
+    expansion_state_capture_limit: 24,
+    expansion_state_capture_complete: true,
+    expansion_state_truncated: false,
+    expansion_state_truncated_count: 0,
+    expansion_state_failures: [],
+    expansion_state_count: 0,
+    expansion_state_screenshots: [],
+    ...(modern ? {
+      expansion_state_capture_status: "verified_complete",
+      expansion_state_raw_candidates: 0,
+      expansion_state_candidate_count_exact: true,
+      expansion_state_truncated_count_exact: true,
+    } : {}),
+  });
+  value.objects.set(key, objectRecord(
+    Buffer.from(JSON.stringify(raw), "utf8"),
+    "application/json; charset=utf-8",
+  ));
+  applyArtifactBindings(value.row.latest_metadata, value.latest.objectKeys, value.objects);
+  return value;
+}
+
+function historicalPreviousLatestFixture({ absentClaims = false, sameContent = false } = {}) {
+  const value = fixture();
+  const objectStore = fakeObjectStore(value.objects);
+  seedLatestAsImmutable(value, objectStore);
+  const previous = generationFixture("latest", value.row.previous_captured_at, sameContent ? "latest" : "historical");
+  if (absentClaims) {
+    const raw = JSON.parse(previous.objects.get(previous.objectKeys.meta).body.toString("utf8"));
+    delete raw.capture_profile;
+    delete raw.retained_artifact_projection;
+    previous.objects.set(previous.objectKeys.meta, objectRecord(Buffer.from(JSON.stringify(raw)), writerContentType("meta")));
+    for (const field of ["capture_profile", "artifact_bindings_schema", "artifact_bindings", "retained_artifact_projection"]) {
+      delete previous.metadata[field];
+    }
+  }
+  for (const [key, record] of previous.objects) objectStore.objects.set(key, record);
+  Object.assign(value.row, rotatedVisualSnapshotHistory({
+    latest_captured_at: previous.capturedAt,
+    latest_object_keys: previous.objectKeys,
+    latest_hashes: previous.hashes,
+    latest_metadata: previous.metadata,
+  }, value.row.latest_object_keys));
+  return { ...value, previous, objectStore };
+}
+
+function resealHistoricalItem(item) {
+  item.expected_snapshot_sha256 = snapshotRowFingerprint(item.expected_snapshot);
+  item.expected_preserved_fields_sha256 = snapshotPreservedFieldsFingerprint(item.expected_snapshot);
+  item.expected_postcondition_sha256 = snapshotPostconditionFingerprint({
+    ...item.expected_snapshot,
+    latest_object_keys: item.next_object_keys.latest,
+    previous_object_keys: item.next_object_keys.previous,
+    latest_metadata: item.next_metadata.latest,
+    previous_metadata: item.next_metadata.previous,
+  });
+  item.execution_binding_sha256 = executionBindingForTest(item);
+  return item;
+}
+
+describe("exact historical previous /latest/ rotation", () => {
+  it("inspects, confirms, copies and readbacks exact originals without inventing absent producer claims", async () => {
+    const value = historicalPreviousLatestFixture({ absentClaims: true });
+    const before = structuredClone(value.row);
+    const raw = Buffer.from(value.objectStore.objects.get(before.previous_object_keys.meta).body);
+    const { item, bodies } = await inspectLegacyR2SnapshotPointer(value);
+    expect(item.generations.latest.state).toBe("already_immutable");
+    expect(item.generations.previous.state).toBe("migrate_legacy_mutable");
+    expect(item.generations.previous.object_keys_before).toEqual(before.previous_object_keys);
+    expect(item.next_object_keys.latest).toEqual(before.latest_object_keys);
+    expect(bodies.get(before.previous_object_keys.meta)).toEqual(raw);
+    for (const artifact of item.generations.previous.artifacts) {
+      expect(artifact.legacy_key).toBe(before.previous_object_keys[artifact.slot]);
+      expect(artifact.legacy_key).toContain("/latest/");
+      expect(artifact.immutable_key).toContain("/captures/");
+    }
+    for (const field of ["capture_profile", "expansion_state_capture_coverage", "baseline_facts"]) {
+      expect(item.next_metadata.previous).not.toHaveProperty(field);
+    }
+    expect(item.next_metadata.previous.legacy_retained_artifact_projection_provenance)
+      .toMatchObject({ raw_meta_projection_present: false, raw_meta_sha256: sha256(raw) });
+    const plan = buildLegacyR2PointerMigrationPlan({
+      items: [item], selector: { mode: "exact_allowlist", source_ids: [sourceId], source_count: 1 }, builtAt,
+    });
+    const reviewed = assertLegacyR2PointerMigrationPlan(plan, plan.confirmation.plan_sha256, {
+      now: "2026-08-10T16:00:00.000Z",
+    }).items[0];
+    let current = structuredClone(before);
+    const compareAndSetObjectKeys = vi.fn(async (input) => {
+      expect(input.expectedUpdatedAt).toBe(before.updated_at);
+      current = { ...current, latest_object_keys: input.latestObjectKeys,
+        previous_object_keys: input.previousObjectKeys, ...input.metadataUpdates, updated_at: builtAt };
+      return { advanced: true }; // Exercise the authoritative reload, not a trusted CAS projection.
+    });
+    const loadCurrentRow = vi.fn(async () => current);
+    const receipt = await applyLegacyR2SnapshotPointerItem({
+      planItem: reviewed, currentRow: before, source: value.source, objectStore: value.objectStore,
+      compareAndSetObjectKeys, loadCurrentRow,
+    });
+    expect(receipt).toMatchObject({ status: "applied", immutable_objects_uploaded: 4, paid_api_calls: 0,
+      public_event_writes: 0, baseline_refreshes: 0, legacy_objects_deleted: 0 });
+    expect(loadCurrentRow).toHaveBeenCalledTimes(1);
+    expect(current.latest_captured_at).toBe(before.latest_captured_at);
+    expect(current.previous_captured_at).toBe(before.previous_captured_at);
+    expect(current.latest_hashes).toEqual(before.latest_hashes);
+    expect(current.previous_hashes).toEqual(before.previous_hashes);
+    expect(current.latest_object_keys).toEqual(before.latest_object_keys);
+    expect(value.objectStore.objects.get(current.previous_object_keys.meta).body).toEqual(raw);
+    expect(value.objectStore.objects.get(before.previous_object_keys.meta).body).toEqual(raw);
+    expect(JSON.parse(raw.toString("utf8"))).not.toHaveProperty("capture_profile");
+    expect(JSON.parse(raw.toString("utf8"))).not.toHaveProperty("expansion_state_capture_coverage");
+    for (const field of ["capture_profile", "expansion_state_capture_coverage", "baseline_facts"]) {
+      expect(current.previous_metadata).not.toHaveProperty(field);
+    }
+    const again = await applyLegacyR2SnapshotPointerItem({
+      planItem: reviewed, currentRow: current, source: value.source, objectStore: value.objectStore,
+      compareAndSetObjectKeys, loadCurrentRow,
+    });
+    expect(again.status).toBe("already_applied");
+    expect(value.objectStore.puts).toHaveLength(4);
+    expect(compareAndSetObjectKeys).toHaveBeenCalledTimes(1);
+    expect(value.row).toEqual(before);
+  });
+
+  it("keeps equal-content generations separate by their actual metadata bytes and timestamps", async () => {
+    const value = historicalPreviousLatestFixture({ sameContent: true });
+    expect(value.row.previous_hashes).toEqual(value.row.latest_hashes);
+    const { item, bodies } = await inspectLegacyR2SnapshotPointer(value);
+    const previousMeta = bodies.get(value.row.previous_object_keys.meta);
+    const latestMeta = bodies.get(value.row.latest_object_keys.meta);
+    expect(previousMeta).not.toEqual(latestMeta);
+    expect(JSON.parse(previousMeta).captured_at).toBe(value.row.previous_captured_at);
+    expect(JSON.parse(latestMeta).captured_at).toBe(value.row.latest_captured_at);
+    expect(item.generations.previous.version).not.toBe(item.generations.latest.version);
+    expect(item.generations.previous.artifacts.find((artifact) => artifact.slot === "meta").sha256)
+      .not.toBe(item.generations.latest.verified_artifacts.find((artifact) => artifact.slot === "meta").sha256);
+  });
+
+  it.each([
+    ["mutable latest", (v) => { v.row.latest_object_keys = v.latest.objectKeys; }, "historical_previous_latest_requires_immutable_latest"],
+    ["absent latest", (v) => { v.row.latest_object_keys = {}; v.row.latest_captured_at = null; }, "historical_previous_latest_requires_immutable_latest"],
+    ["equal timestamp", (v) => { v.row.previous_captured_at = v.row.latest_captured_at; }, "historical_previous_latest_order_invalid"],
+    ["newer previous", (v) => { v.row.previous_captured_at = "2026-07-04T00:00:00.000Z"; }, "historical_previous_latest_order_invalid"],
+    ["mixed mutable families", (v) => { v.row.previous_object_keys.thumb = v.row.previous_object_keys.thumb.replace("/latest/", "/previous/"); }, "generation_mixed_legacy_families"],
+    ["shared cross-generation key", (v) => { v.row.previous_object_keys.page = v.row.latest_object_keys.page; }, "generation_mixed_legacy_immutable"],
+    ["cross-source key", (v) => { v.row.previous_object_keys.page = v.row.previous_object_keys.page.replace(sourceId, awardId); }, "object_key_source_mismatch"],
+    ["slot alias", (v) => { v.row.previous_object_keys.thumb = v.row.previous_object_keys.page; }, "generation_duplicate_key"],
+    ["reverse latest alias", (v) => { v.row.latest_object_keys = Object.fromEntries(Object.entries(v.latest.objectKeys).map(([slot, key]) => [slot, key.replace("/latest/", "/previous/")])); }, "object_key_malformed"],
+    ["approved latest family", (v) => { v.row.latest_object_keys = Object.fromEntries(Object.entries(v.row.latest_object_keys).map(([slot, key]) => [slot, key.replace("/captures/", "/approved/")])); }, "object_key_approved_family_not_stage1"],
+  ])("rejects %s before reading objects or writing", async (_name, mutate, code) => {
+    const value = historicalPreviousLatestFixture();
+    mutate(value);
+    const readObject = vi.spyOn(value.objectStore, "readObject");
+    await expect(inspectLegacyR2SnapshotPointer(value)).rejects.toMatchObject({ code });
+    expect(readObject).not.toHaveBeenCalled();
+    expect(value.objectStore.puts).toHaveLength(0);
+  });
+
+  it.each([
+    ["previous raw source", (meta) => { meta.source.id = awardId; }, "r2_meta_source_mismatch"],
+    ["previous raw award", (meta) => { meta.source.shared_award_id = sourceId; }, "r2_meta_award_mismatch"],
+    ["previous raw URL", (meta) => { meta.source.url += "wrong"; }, "r2_meta_source_url_mismatch"],
+    ["previous raw timestamp", (meta) => { meta.captured_at = "2026-06-24T00:00:00.000Z"; }, "r2_meta_captured_at_mismatch"],
+    ["previous raw hash", (meta) => { meta.image_hash = "f".repeat(64); }, "r2_meta_core_hash_mismatch"],
+    ["one-sided profile", (meta) => { meta.capture_profile = "desktop"; }, "r2_meta_identity_binding_missing"],
+    ["partial producer coverage", (meta) => { Object.assign(meta, { expansion_state_candidates: 0, expansion_state_screenshots: [], expansion_state_error: null }); }, "r2_expansion_coverage_source_invalid"],
+  ])("still holds %s without writes", async (_name, mutate, code) => {
+    const value = historicalPreviousLatestFixture({ absentClaims: true });
+    const key = value.row.previous_object_keys.meta;
+    const meta = JSON.parse(value.objectStore.objects.get(key).body.toString("utf8"));
+    mutate(meta);
+    value.objectStore.objects.set(key, objectRecord(Buffer.from(JSON.stringify(meta)), writerContentType("meta")));
+    await expect(inspectLegacyR2SnapshotPointer(value)).rejects.toMatchObject({ code });
+    expect(value.objectStore.puts).toHaveLength(0);
+  });
+
+  it.each(["source", "URL", "timestamp", "hash"])("requires the immutable latest payload's actual %s proof too", async (field) => {
+    const value = historicalPreviousLatestFixture();
+    const key = value.row.latest_object_keys.meta;
+    const meta = JSON.parse(value.objectStore.objects.get(key).body.toString("utf8"));
+    if (field === "source") meta.source.id = awardId;
+    if (field === "URL") meta.source.url += "wrong";
+    if (field === "timestamp") meta.captured_at = value.row.previous_captured_at;
+    if (field === "hash") meta.image_hash = "e".repeat(64);
+    value.objectStore.objects.set(key, objectRecord(Buffer.from(JSON.stringify(meta)), writerContentType("meta")));
+    await expect(inspectLegacyR2SnapshotPointer(value)).rejects.toBeInstanceOf(Error);
+    expect(value.objectStore.puts).toHaveLength(0);
+  });
+
+  it.each([
+    ["source keys", (item) => { item.generations.previous.object_keys_before.meta = item.expected_snapshot.latest_object_keys.meta; }],
+    ["artifact source key", (item) => { item.generations.previous.artifacts[0].legacy_key += "wrong"; }],
+    ["artifact slot alias", (item) => { item.generations.previous.artifacts[0].slot = item.generations.previous.artifacts[1].slot; }],
+    ["immutable latest source key", (item) => { item.generations.latest.verified_artifacts[0].source_key += "wrong"; }],
+    ["previous version", (item) => { item.generations.previous.version = "a".repeat(32); }],
+    ["previous destination", (item) => { item.generations.previous.object_keys_after.meta = item.expected_snapshot.latest_object_keys.meta; }],
+    ["artifact destination", (item) => { item.generations.previous.artifacts[0].immutable_key = item.expected_snapshot.latest_object_keys.meta; }],
+    ["previous recorded time", (item) => { item.generations.previous.captured_at = item.expected_snapshot.latest_captured_at; }],
+    ["previous recorded hashes", (item) => { item.generations.previous.hashes.text_hash = "f".repeat(64); }],
+    ["latest state", (item) => { item.generations.latest.state = "migrate_legacy_mutable"; }],
+  ])("rejects a hash-resealed plan with forged %s", async (_name, mutate) => {
+    const value = historicalPreviousLatestFixture();
+    const { item } = await inspectLegacyR2SnapshotPointer(value);
+    mutate(item); resealHistoricalItem(item);
+    expect(() => buildLegacyR2PointerMigrationPlan({
+      items: [item], selector: { mode: "exact_allowlist", source_ids: [sourceId], source_count: 1 }, builtAt,
+    })).toThrow(/historical key binding/);
+    const compareAndSetObjectKeys = vi.fn();
+    await expect(applyLegacyR2SnapshotPointerItem({ planItem: item, currentRow: value.row, source: value.source,
+      objectStore: value.objectStore, compareAndSetObjectKeys, loadCurrentRow: async () => value.row,
+    })).rejects.toMatchObject({ code: "plan_historical_previous_latest_binding_invalid" });
+    expect(value.objectStore.puts).toHaveLength(0);
+    expect(compareAndSetObjectKeys).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["not older", (item) => { item.expected_snapshot.previous_captured_at = item.expected_snapshot.latest_captured_at; }],
+    ["mixed previous families", (item) => { item.expected_snapshot.previous_object_keys.meta = item.expected_snapshot.previous_object_keys.meta.replace("/latest/", "/previous/"); }],
+    ["not immutable latest", (item) => { item.expected_snapshot.latest_object_keys = item.expected_snapshot.previous_object_keys; }],
+  ])("rejects a re-confirmed plan whose original pointer is %s", async (_name, mutate) => {
+    const value = historicalPreviousLatestFixture();
+    const { item } = await inspectLegacyR2SnapshotPointer(value);
+    const plan = buildLegacyR2PointerMigrationPlan({
+      items: [item], selector: { mode: "exact_allowlist", source_ids: [sourceId], source_count: 1 }, builtAt,
+    });
+    mutate(plan.items[0]); resealHistoricalItem(plan.items[0]);
+    const unsigned = structuredClone(plan); delete unsigned.confirmation;
+    plan.confirmation.plan_sha256 = sha256(stableJson(unsigned));
+    plan.confirmation.exact_confirmation_phrase = `Apply legacy R2 pointer migration plan ${plan.confirmation.plan_sha256}`;
+    expect(() => assertLegacyR2PointerMigrationPlan(plan, plan.confirmation.plan_sha256, {
+      now: "2026-08-10T16:00:00.000Z",
+    })).toThrow();
+    expect(value.objectStore.puts).toHaveLength(0);
+  });
+
+  it("does not overwrite an occupied historical destination or advance the pointer", async () => {
+    const value = historicalPreviousLatestFixture({ absentClaims: true });
+    const { item } = await inspectLegacyR2SnapshotPointer(value);
+    const artifact = item.generations.previous.artifacts[0];
+    const occupied = Buffer.from("different original generation");
+    value.objectStore.seedImmutable(artifact.immutable_key, occupied, artifact.content_type);
+    const compareAndSetObjectKeys = vi.fn();
+    await expect(applyLegacyR2SnapshotPointerItem({ planItem: item, currentRow: value.row, source: value.source,
+      objectStore: value.objectStore, compareAndSetObjectKeys, loadCurrentRow: async () => value.row,
+    })).rejects.toMatchObject({ code: "immutable_destination_mismatch" });
+    expect(value.objectStore.objects.get(artifact.immutable_key).body).toEqual(occupied);
+    expect(compareAndSetObjectKeys).not.toHaveBeenCalled();
+  });
+
+  it.each(["source bytes", "source ETag", "pointer"])("reinspection refuses changed %s before any PUT or CAS", async (changed) => {
+    const value = historicalPreviousLatestFixture({ absentClaims: true });
+    const { item } = await inspectLegacyR2SnapshotPointer(value);
+    if (changed === "pointer") value.row.updated_at = builtAt;
+    else if (changed === "source bytes") {
+      const key = value.row.previous_object_keys.meta;
+      const meta = JSON.parse(value.objectStore.objects.get(key).body.toString("utf8"));
+      meta.synthetic_later_annotation = "not the reviewed bytes";
+      value.objectStore.objects.set(key, objectRecord(Buffer.from(JSON.stringify(meta)), writerContentType("meta")));
+    } else {
+      const original = value.objectStore.readObject;
+      value.objectStore.readObject = async (input) => ({ ...await original(input), etag: '"multipart-changed-2"' });
+    }
+    const compareAndSetObjectKeys = vi.fn();
+    await expect(applyLegacyR2SnapshotPointerItem({ planItem: item, currentRow: value.row, source: value.source,
+      objectStore: value.objectStore, compareAndSetObjectKeys, loadCurrentRow: async () => value.row,
+    })).rejects.toMatchObject({ code: changed === "pointer" ? "snapshot_pointer_precondition_changed" : "legacy_r2_evidence_changed" });
+    expect(value.objectStore.puts).toHaveLength(0);
+    expect(compareAndSetObjectKeys).not.toHaveBeenCalled();
+  });
+});
+
 describe("legacy R2 snapshot pointer inspection", () => {
   it("uses the normal uploader's deterministic capture-version formula", () => {
     const { latest } = fixture();
@@ -811,6 +1092,13 @@ describe("legacy R2 snapshot pointer inspection", () => {
     ["a partial scalar coverage claim", (meta) => {
       meta.expansion_state_capture_status = "verified_complete";
     }],
+    ["a legacy candidate count without complete producer accounting", (meta) => {
+      Object.assign(meta, {
+        expansion_state_candidates: 0,
+        expansion_state_screenshots: [],
+        expansion_state_error: null,
+      });
+    }],
   ])("quarantines %s instead of preserving it as absent", async (_name, mutate) => {
     const value = fixture();
     const metaKey = value.latest.objectKeys.meta;
@@ -824,12 +1112,14 @@ describe("legacy R2 snapshot pointer inspection", () => {
       ),
     );
     applyArtifactBindings(value.row.latest_metadata, value.latest.objectKeys, value.objects);
+    const objectStore = fakeObjectStore(value.objects);
 
     await expect(inspectLegacyR2SnapshotPointer({
       row: value.row,
       source: value.source,
-      objectStore: fakeObjectStore(value.objects),
+      objectStore,
     })).rejects.toMatchObject({ code: "r2_expansion_coverage_source_invalid" });
+    expect(objectStore.puts).toHaveLength(0);
   });
 
   it("migrates exact retained PDF evidence without introducing webpage artifacts", async () => {
@@ -1404,6 +1694,52 @@ describe("legacy R2 snapshot pointer inspection", () => {
 });
 
 describe("reviewed migration plans", () => {
+  it.each([
+    ["complete coverage", (metadata) => {
+      Object.assign(metadata.expansion_state_capture_coverage, {
+        complete: true,
+        status: "verified_complete",
+        raw_candidate_count_exact: true,
+        logical_candidate_count_exact: true,
+        truncated_count_exact: true,
+      });
+    }],
+    ["partial coverage", (metadata) => {
+      delete metadata.expansion_state_capture_coverage.complete;
+    }],
+    ["wrong retained count", (metadata) => {
+      Object.assign(metadata.expansion_state_capture_coverage, {
+        raw_candidate_count: 1,
+        logical_candidate_count: 1,
+        attempted_count: 1,
+        retained_state_count: 1,
+      });
+    }],
+    ["wrong projection count", (metadata) => {
+      metadata.retained_artifact_projection.authoritative.expansion_state_count = 1;
+    }],
+    ["unreviewed coverage property", (metadata) => {
+      metadata.expansion_state_capture_coverage.reviewed = true;
+    }],
+    ["new baseline facts", (metadata) => {
+      metadata.baseline_facts = { synthetic: "not authorized" };
+    }],
+  ])("rejects derived %s instead of broadening metadata permission", async (_name, mutate) => {
+    const value = legacyScalarCoverageFixture();
+    delete value.row.latest_metadata.retained_artifact_projection;
+    const { item } = await inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore: fakeObjectStore(value.objects),
+    });
+    mutate(item.next_metadata.latest);
+    expect(() => buildLegacyR2PointerMigrationPlan({
+      items: [item],
+      selector: { mode: "exact_allowlist", source_ids: [sourceId], source_count: 1 },
+      builtAt,
+    })).toThrow(expect.objectContaining({ code: "plan_metadata_derived_field_invalid" }));
+  });
+
   it("requires the exact untampered, unexpired plan hash", async () => {
     const { inspected } = await inspectedFixture();
     const plan = buildLegacyR2PointerMigrationPlan({
@@ -1477,6 +1813,162 @@ describe("reviewed migration plans", () => {
 });
 
 describe("legacy R2 snapshot pointer apply", () => {
+  it.each([
+    ["legacy zero states", false, 0, 0, 0, 24, 0, 0],
+    ["modern zero states", true, 0, 0, 0, 24, 0, 0],
+    ["retained expansion state", false, 1, 1, 1, 24, 0, 0],
+    ["truncated discovery", false, 0, 2, 1, 1, 1, 0],
+    ["failed capture", false, 0, 1, 1, 24, 0, 1],
+  ])("plans and applies scalar-only coverage conservatively: %s", async (
+    _name, modern, retainedCount, candidates, attempted, captureLimit, truncatedCount, failureCount,
+  ) => {
+    const value = legacyScalarCoverageFixture(modern);
+    if (retainedCount) addExpansionStateEvidence(value);
+    const raw = JSON.parse(value.objects.get(value.latest.objectKeys.meta).body.toString("utf8"));
+    Object.assign(raw, {
+      expansion_state_candidates: candidates,
+      expansion_state_attempted: attempted,
+      expansion_state_capture_limit: captureLimit,
+      expansion_state_truncated: truncatedCount > 0,
+      expansion_state_truncated_count: truncatedCount,
+      expansion_state_failures: failureCount ? [{ index: 0, reason: "synthetic capture failure" }] : [],
+    });
+    value.objects.set(value.latest.objectKeys.meta, objectRecord(
+      Buffer.from(JSON.stringify(raw), "utf8"),
+      "application/json; charset=utf-8",
+    ));
+    applyArtifactBindings(value.row.latest_metadata, value.latest.objectKeys, value.objects);
+    const expectedCoverage = {
+      schema: "awardping.expansion-state-capture-coverage.v1",
+      complete: false,
+      status: "incomplete_discovery",
+      raw_candidate_count: candidates,
+      raw_candidate_count_exact: false,
+      logical_candidate_count: candidates,
+      logical_candidate_count_exact: false,
+      attempted_count: attempted,
+      retained_state_count: retainedCount,
+      capture_limit: captureLimit,
+      truncated: truncatedCount > 0,
+      truncated_count: truncatedCount,
+      truncated_count_exact: false,
+      failure_count: failureCount,
+      inert_count: 0,
+    };
+    const before = structuredClone(value.row);
+    const rawMeta = Buffer.from(value.objects.get(value.latest.objectKeys.meta).body);
+    const objectStore = fakeObjectStore(value.objects);
+    const { item } = await inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore,
+    });
+    const plan = buildLegacyR2PointerMigrationPlan({
+      items: [item],
+      selector: { mode: "exact_allowlist", source_ids: [sourceId], source_count: 1 },
+      builtAt,
+    });
+    const reviewed = assertLegacyR2PointerMigrationPlan(plan, plan.confirmation.plan_sha256, {
+      now: "2026-08-10T16:00:00.000Z",
+    }).items[0];
+    expect(reviewed.next_metadata.latest.expansion_state_capture_coverage).toEqual(expectedCoverage);
+    expect(reviewed.next_metadata.latest.retained_artifact_projection.authoritative.expansion_state_count)
+      .toBe(retainedCount);
+    let current = structuredClone(value.row);
+    const compareAndSetObjectKeys = vi.fn(async (input) => {
+      expect(input.metadataUpdates.latest_metadata.expansion_state_capture_coverage).toEqual(expectedCoverage);
+      current = {
+        ...current,
+        latest_object_keys: input.latestObjectKeys,
+        previous_object_keys: input.previousObjectKeys,
+        ...input.metadataUpdates,
+        updated_at: "2026-08-10T16:01:00.000Z",
+      };
+      return { advanced: true }; // Require the authoritative post-CAS readback.
+    });
+    const loadCurrentRow = vi.fn(async () => current);
+    const receipt = await applyLegacyR2SnapshotPointerItem({
+      planItem: reviewed,
+      currentRow: value.row,
+      source: value.source,
+      objectStore,
+      compareAndSetObjectKeys,
+      loadCurrentRow,
+    });
+    expect(receipt.status).toBe("applied");
+    expect(compareAndSetObjectKeys).toHaveBeenCalledTimes(1);
+    expect(loadCurrentRow).toHaveBeenCalledTimes(1);
+    expect(current.latest_captured_at).toBe(before.latest_captured_at);
+    expect(current.previous_captured_at).toBe(before.previous_captured_at);
+    expect(current.latest_hashes).toEqual(before.latest_hashes);
+    expect(current.previous_hashes).toEqual(before.previous_hashes);
+    expect(current.latest_metadata.localization.geometry_ready).toBe(retainedCount > 0);
+    expect(current.latest_metadata.retained_artifact_projection.authoritative.layout_retained)
+      .toBe(retainedCount > 0);
+    expect(current.latest_metadata.retained_artifact_projection.authoritative.expansion_state_count)
+      .toBe(retainedCount);
+    expect(current.latest_metadata.expansion_state_capture_coverage).toEqual(expectedCoverage);
+    if (retainedCount) {
+      for (const slot of ["layout", "expansion_state_01", "expansion_state_01_layout"]) {
+        expect(objectStore.objects.get(current.latest_object_keys[slot]).body)
+          .toEqual(value.objects.get(before.latest_object_keys[slot]).body);
+      }
+    }
+    expect(objectStore.objects.get(current.latest_object_keys.meta).body).toEqual(rawMeta);
+    expect(objectStore.objects.get(value.latest.objectKeys.meta).body).toEqual(rawMeta);
+    expect(JSON.parse(rawMeta.toString("utf8"))).not.toHaveProperty("expansion_state_capture_coverage");
+    expect(value.row).toEqual(before);
+    expect(value.source.admin_review_status).toBe("review_later");
+    expect(item.safety).toMatchObject({
+      baseline_refreshed: false,
+      events_written: false,
+      live_fetch_performed: false,
+      paid_api_calls: 0,
+    });
+  });
+
+  it.each(["pointer drift", "raw metadata binding"])("keeps derived coverage fail-closed on %s", async (failure) => {
+    const value = legacyScalarCoverageFixture();
+    const objectStore = fakeObjectStore(value.objects);
+    const { item } = await inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore,
+    });
+    buildLegacyR2PointerMigrationPlan({
+      items: [item],
+      selector: { mode: "exact_allowlist", source_ids: [sourceId], source_count: 1 },
+      builtAt,
+    });
+    const current = structuredClone(value.row);
+    if (failure === "pointer drift") current.updated_at = "2026-08-10T16:02:00.000Z";
+    else {
+      const raw = JSON.parse(objectStore.objects.get(value.latest.objectKeys.meta).body.toString("utf8"));
+      raw.expansion_state_capture_limit = 25;
+      objectStore.objects.set(value.latest.objectKeys.meta, objectRecord(
+        Buffer.from(JSON.stringify(raw), "utf8"),
+        "application/json; charset=utf-8",
+      ));
+    }
+    const compareAndSetObjectKeys = vi.fn();
+    const loadCurrentRow = vi.fn();
+    await expect(applyLegacyR2SnapshotPointerItem({
+      planItem: item,
+      currentRow: current,
+      source: value.source,
+      objectStore,
+      compareAndSetObjectKeys,
+      loadCurrentRow,
+    })).rejects.toMatchObject({
+      code: failure === "pointer drift"
+        ? "snapshot_pointer_precondition_changed"
+        : "r2_artifact_bindings_mismatch",
+    });
+    expect(objectStore.puts).toHaveLength(0);
+    expect(compareAndSetObjectKeys).not.toHaveBeenCalled();
+    expect(loadCurrentRow).not.toHaveBeenCalled();
+  });
+
   it("copies exact bytes once, verifies destinations, and CAS-updates only reviewed pointer fields", async () => {
     const { inspected, row, source, objectStore } = await inspectedFixture();
     let current = structuredClone(row);

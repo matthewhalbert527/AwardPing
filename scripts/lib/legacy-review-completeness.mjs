@@ -11,6 +11,7 @@ const fields = ["added_text", "removed_text", "date_changes", "amount_changes"];
 const hash = value => createHash("sha256").update(value).digest("hex");
 const object = value => value && typeof value === "object" && !Array.isArray(value);
 const sha = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const contrastText = value => value.replace(/\s+/g, " ").trim().toLowerCase();
 const values = diff => Object.fromEntries(fields.map(field => [field, diff?.[field] ?? []]));
 const validValues = diff => fields.every(field => Array.isArray(diff?.[field] ?? []) && (diff?.[field] ?? []).every(value => typeof value === "string" && value.trim()));
 const hold = reason => ({ allowed: false, manual_review_required: true, reason, retain_both_captures: true, baseline_advance_allowed: false, creates_api_charge: false,
@@ -113,6 +114,10 @@ function paragraphResultDecision(result, diff) {
     const current = [fact.after, fact.added_text].filter(value => value != null);
     if (!previous.length || !current.length || previous.some(value => typeof value !== "string" || !value.trim() || !diff.removed_text[index].includes(value)) ||
         current.some(value => typeof value !== "string" || !value.trim() || !diff.added_text[index].includes(value))) return hold("legacy_paragraph_review_fact_pair_mismatch");
+    // Membership in a changed paragraph is not directional change evidence.
+    // Check only this paired block; repeated wording elsewhere stays distinct.
+    if (previous.some(value => contrastText(diff.added_text[index]).includes(contrastText(value))) ||
+        current.some(value => contrastText(diff.removed_text[index]).includes(contrastText(value)))) return hold("legacy_paragraph_review_fact_contrast_unverified");
     factCounts.set(index, (factCounts.get(index) || 0) + 1);
   }
   for (const fact of result.changed_facts) {
@@ -120,6 +125,8 @@ function paragraphResultDecision(result, diff) {
     const before = [fact.before, fact.removed_text].filter(value => value != null), after = [fact.after, fact.added_text].filter(value => value != null);
     if (!before.length || !after.length || before.some(value => typeof value !== "string" || !value.trim() || !diff.removed_text[index].includes(value)) ||
         after.some(value => typeof value !== "string" || !value.trim() || !diff.added_text[index].includes(value))) return hold("legacy_paragraph_review_normalized_fact_pair_mismatch");
+    if (before.some(value => contrastText(diff.added_text[index]).includes(contrastText(value))) ||
+        after.some(value => contrastText(diff.removed_text[index]).includes(contrastText(value)))) return hold("legacy_paragraph_review_normalized_fact_contrast_unverified");
   }
   if (reviews.some(review => review.disposition === "applicant_change" && !factCounts.has(review.block_index)) ||
       (facts.length > 0 && (raw.is_true_change !== true || raw.is_alert_worthy !== true)) ||

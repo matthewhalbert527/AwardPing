@@ -261,3 +261,257 @@ describe("paid retry current-request preflight (actual worker / no external oper
     expect(providerCreate).not.toHaveBeenCalled();
   });
 });
+
+const pendingNames = ["loadPendingCandidatesForSubmission", "applyPaidLaneCandidateScopeFilter",
+  "submitPendingCandidates", "chunks"];
+const pendingCode = pendingNames.map((name) => {
+  if (!declarations.has(name)) throw new Error(name);
+  return declarations.get(name);
+}).join("\n");
+const prioritySource = "55555555-5555-4555-8555-555555555555";
+const fleetSource = "66666666-6666-4666-8666-666666666666";
+const paidLanes = { CHANGED_PAGE_REVIEW: changedLane, NEW_PAGE_REVIEW: initialLane };
+
+function pendingRow(id, overrides = {}) {
+  return { id, shared_award_source_id: fleetSource, status: "pending", candidate_scope: "content_change",
+    created_at: "2026-10-01T00:00:00.000Z", ...overrides };
+}
+
+function pendingHarness(rows, { lane = changedLane, windowLimit = 3,
+  manifest = { available: true, sourceIds: new Set([prioritySource]) }, failRead = 0, beforeRead = null } = {}) {
+  const tables = structuredClone(rows), reads = [], phases = [];
+  const forbiddenMutation = vi.fn(() => { throw new Error("Pending selection must only SELECT"); });
+  const supabase = { rpc: forbiddenMutation, from(table) {
+    if (table !== "shared_award_visual_review_candidates") throw new Error("Unexpected table");
+    const clauses = [], filters = [], orders = [];
+    let rowLimit = null, exactCount = false;
+    const query = {
+      select(columns, options) { clauses.push(["select", columns, options || null]); exactCount = options?.count === "exact"; return query; },
+      eq(key, value) { clauses.push(["eq", key, value]); filters.push((row) => row[key] === value); return query; },
+      neq(key, value) { clauses.push(["neq", key, value]); filters.push((row) => row[key] != null && row[key] !== value); return query; },
+      in(key, values) { clauses.push(["in", key, [...values]]); filters.push((row) => values.includes(row[key])); return query; },
+      order(key, options) { clauses.push(["order", key, options]); orders.push({ key, ...options }); return query; },
+      limit(value) { clauses.push(["limit", value]); rowLimit = value; return query; },
+      update: forbiddenMutation, insert: forbiddenMutation, upsert: forbiddenMutation, delete: forbiddenMutation,
+      then(yes, no) {
+        const number = reads.length + 1;
+        if (beforeRead) beforeRead(number, tables);
+        if (!Number.isInteger(rowLimit) || rowLimit < 1) throw new Error("Every pending SELECT must be bounded");
+        const matched = tables.filter((row) => filters.every((filter) => filter(row))).sort((left, right) => {
+          for (const { key, ascending } of orders) {
+            const order = String(left[key]).localeCompare(String(right[key]));
+            if (order) return ascending ? order : -order;
+          }
+          return 0;
+        });
+        const data = matched.slice(0, rowLimit);
+        reads.push({ table, clauses: structuredClone(clauses), returned: data.length }); phases.push("select");
+        return Promise.resolve(number === failRead
+          ? { data: null, count: null, error: { message: "injected_select_failure" } }
+          : { data: structuredClone(data), count: exactCount ? matched.length : null, error: null }).then(yes, no);
+      },
+    };
+    return query;
+  } };
+  const spies = {
+    recoverStaleSubmissionClaims: vi.fn(async () => { phases.push("recover"); }),
+    requeueRetryableFailures: vi.fn(async () => { phases.push("retry_preflight"); }),
+    loadSourcesById: vi.fn(async (ids) => { phases.push("sources"); return new Map(ids.map((id) => [id, { id }])); }),
+    visualReviewSourceIdentityFreshness: vi.fn(() => { phases.push("identity"); return { allowed: true }; }),
+    preSubmissionRejectReason: vi.fn(() => { phases.push("preflight"); return null; }),
+    persistPendingCandidateForCurrentPolicy: vi.fn(async (row) => { phases.push("policy"); return row; }),
+    partitionPaidVisualReviewCandidates: vi.fn((candidates) => new Map([[changedLane, candidates]])),
+    partitionVisualReviewCandidatesByModel: vi.fn((candidates) => new Map([["unchanged-model-partition", candidates]])),
+    visualReviewMaxRequestsPerBatchForModel: vi.fn(() => windowLimit),
+    submitCandidateChunk: vi.fn(async () => { phases.push("submit_chunk"); }),
+    reserveGeminiSpend: vi.fn(), createGeminiBatchJob: vi.fn(),
+    markCandidate: vi.fn(async () => {}), retainIncompleteReviewHold: vi.fn(async () => {}),
+    workerMetadataForCandidate: vi.fn(() => ({})),
+  };
+  const report = { pending_visual_reviews: 0, superseded: 0, source_url_changed_since_capture: 0, rejected: 0 };
+  const actual = runInNewContext(`${pendingCode}\n({${pendingNames.join(",")}})`, {
+    supabase, paidLane: lane, stage1Manifest: manifest, limit: windowLimit, GEMINI_PAID_LANES: paidLanes,
+    INITIAL_OFFICIAL_DOCUMENT_SCOPE: "initial_official_document", maxRequestsPerBatch: windowLimit,
+    report, ...spies, console: { log: vi.fn() }, isGeminiBillingBlockedError: () => false,
+    recordGeminiBillingBlockFromError: forbiddenMutation, fetch: forbiddenMutation,
+  });
+  return { actual, tables, reads, phases, spies, report, forbiddenMutation };
+}
+
+describe("published Stage1 changed-page pending selection (actual worker / SELECT-only doubles)", () => {
+  it("reaches a reviewed source behind more than one fleet window without increasing the final limit", async () => {
+    const rows = Array.from({ length: 8 }, (_, i) => pendingRow(`fleet-${i}`));
+    rows.push(pendingRow("reviewed-target", { shared_award_source_id: prioritySource, created_at: "2026-10-13T00:00:00Z" }));
+    const h = pendingHarness(rows), before = structuredClone(h.tables);
+    const result = await h.actual.loadPendingCandidatesForSubmission();
+    expect(result.candidates.map((row) => row.id)).toEqual(["reviewed-target", "fleet-0", "fleet-1"]);
+    expect(result.count).toBe(9); expect(h.tables).toEqual(before);
+    expect(h.reads).toHaveLength(2); expect(h.reads.reduce((sum, read) => sum + read.returned, 0)).toBeLessThanOrEqual(6);
+    expect(h.forbiddenMutation).not.toHaveBeenCalled();
+  });
+
+  it("keeps FIFO and ID tie-break order independently within priority and fleet selections", async () => {
+    const h = pendingHarness([
+      pendingRow("priority-z", { shared_award_source_id: prioritySource }),
+      pendingRow("fleet-z"), pendingRow("priority-a", { shared_award_source_id: prioritySource }),
+      pendingRow("priority-older", { shared_award_source_id: prioritySource, created_at: "2026-09-01T00:00:00Z" }), pendingRow("fleet-a"),
+    ], { windowLimit: 5 });
+    const result = await h.actual.loadPendingCandidatesForSubmission();
+    expect(result.candidates.map((row) => row.id)).toEqual(["priority-older", "priority-a", "priority-z", "fleet-a", "fleet-z"]);
+    for (const read of h.reads) {
+      expect(read.clauses).toContainEqual(["eq", "status", "pending"]);
+      expect(read.clauses).toContainEqual(["neq", "candidate_scope", "initial_official_document"]);
+      expect(read.clauses.filter(([method]) => method === "order")).toEqual([
+        ["order", "created_at", { ascending: true }], ["order", "id", { ascending: true }],
+      ]);
+      expect(read.clauses).toContainEqual(["limit", 5]);
+    }
+    expect(h.reads[0].clauses).toContainEqual(["in", "shared_award_source_id", [prioritySource]]);
+    expect(h.reads[1].clauses.some(([method]) => method === "in")).toBe(false);
+  });
+
+  it("deduplicates overlapping query results by candidate ID and still fills from fleet", async () => {
+    const h = pendingHarness([pendingRow("a-priority", { shared_award_source_id: prioritySource }),
+      pendingRow("b-fleet"), pendingRow("c-fleet"), pendingRow("d-fleet")]);
+    const result = await h.actual.loadPendingCandidatesForSubmission();
+    expect(result.candidates.map((row) => row.id)).toEqual(["a-priority", "b-fleet", "c-fleet"]);
+    expect(new Set(result.candidates.map((row) => row.id)).size).toBe(3); expect(result.count).toBe(4);
+  });
+
+  it("caps a full priority window while keeping the global exact pending count", async () => {
+    const h = pendingHarness([pendingRow("old-fleet"), ...["c", "b", "a", "d"].map((id) =>
+      pendingRow(id, { shared_award_source_id: prioritySource, created_at: "2026-10-13T00:00:00Z" }))]);
+    const result = await h.actual.loadPendingCandidatesForSubmission();
+    expect(result.candidates.map((row) => row.id)).toEqual(["a", "b", "c"]); expect(result.count).toBe(5);
+    expect(h.reads).toHaveLength(2); expect(h.reads.every((read) => read.returned <= 3)).toBe(true);
+    expect(h.reads[0].clauses[0]).toEqual(["select", "*", null]);
+    expect(h.reads[1].clauses[0]).toEqual(["select", "*", { count: "exact" }]);
+  });
+
+  it("uses the fleet window when no pending row belongs to a published manifest source", async () => {
+    const h = pendingHarness([pendingRow("b"), pendingRow("a")]);
+    const result = await h.actual.loadPendingCandidatesForSubmission();
+    expect(result.candidates.map((row) => row.id)).toEqual(["a", "b"]); expect(result.count).toBe(2);
+    expect(h.reads.map((read) => read.returned)).toEqual([0, 2]);
+  });
+
+  it.each([
+    ["unavailable", { available: false, sourceIds: new Set([prioritySource]) }],
+    ["empty", { available: true, sourceIds: new Set() }], ["missing", null],
+    ["missing source set", { available: true }],
+  ])("uses one unchanged fleet selection for an %s manifest", async (_name, manifest) => {
+    const h = pendingHarness([pendingRow("a"), pendingRow("z", { shared_award_source_id: prioritySource })], { manifest });
+    const result = await h.actual.loadPendingCandidatesForSubmission();
+    expect(result.candidates.map((row) => row.id)).toEqual(["a", "z"]); expect(h.reads).toHaveLength(1);
+    expect(h.reads[0].clauses.some(([method]) => method === "in")).toBe(false);
+  });
+
+  it.each([initialLane, null])("does not prioritize or add a query for lane %s", async (lane) => {
+    const h = pendingHarness([pendingRow("a"), pendingRow("b", { candidate_scope: "initial_official_document" }),
+      pendingRow("z", { shared_award_source_id: prioritySource, candidate_scope: "initial_official_document" })], { lane });
+    const result = await h.actual.loadPendingCandidatesForSubmission();
+    expect(result.candidates.map((row) => row.id)).toEqual(lane === initialLane ? ["b", "z"] : ["a", "b", "z"]);
+    expect(h.reads).toHaveLength(1); expect(h.reads[0].clauses.some(([method]) => method === "in")).toBe(false);
+    expect(h.reads[0].clauses.filter(([method, key]) => ["eq", "neq"].includes(method) && key === "candidate_scope"))
+      .toEqual(lane === initialLane ? [["eq", "candidate_scope", "initial_official_document"]] : []);
+  });
+
+  it("excludes non-pending rows and the other paid lane without changing any status", async () => {
+    const rows = ["failed", "rejected", "submitted", "processing", "succeeded"].map((status) =>
+      pendingRow(status, { status, shared_award_source_id: prioritySource }));
+    rows.push(pendingRow("initial", { candidate_scope: "initial_official_document", shared_award_source_id: prioritySource }),
+      pendingRow("valid-priority", { shared_award_source_id: prioritySource }), pendingRow("valid-fleet"));
+    const h = pendingHarness(rows), before = structuredClone(h.tables);
+    const result = await h.actual.loadPendingCandidatesForSubmission();
+    expect(result.candidates.map((row) => row.id)).toEqual(["valid-priority", "valid-fleet"]);
+    expect(result.count).toBe(2); expect(h.tables).toEqual(before); expect(h.forbiddenMutation).not.toHaveBeenCalled();
+  });
+
+  it("keeps registered source IDs, not all sources belonging to a member award", async () => {
+    const h = pendingHarness([pendingRow("unregistered-alias", { shared_award_id: "same-award" }),
+      pendingRow("registered-alias", { shared_award_id: "alias-award", shared_award_source_id: prioritySource })]);
+    const result = await h.actual.loadPendingCandidatesForSubmission();
+    expect(result.candidates.map((row) => row.id)).toEqual(["registered-alias", "unregistered-alias"]);
+    expect(h.reads[0].clauses.filter(([method]) => method === "in")).toEqual([["in", "shared_award_source_id", [prioritySource]]]);
+  });
+
+  it.each([1, 2])("fails closed on SELECT %i before source preflight, claims or provider work", async (failRead) => {
+    const h = pendingHarness([pendingRow("a", { shared_award_source_id: prioritySource })], { failRead });
+    await expect(h.actual.submitPendingCandidates()).rejects.toThrow("injected_select_failure");
+    expect(h.reads).toHaveLength(failRead); expect(h.spies.loadSourcesById).not.toHaveBeenCalled();
+    expect(h.spies.persistPendingCandidateForCurrentPolicy).not.toHaveBeenCalled();
+    expect(h.spies.submitCandidateChunk).not.toHaveBeenCalled(); expect(h.forbiddenMutation).not.toHaveBeenCalled();
+    expect(h.spies.reserveGeminiSpend).not.toHaveBeenCalled(); expect(h.spies.createGeminiBatchJob).not.toHaveBeenCalled();
+  });
+
+  it("preserves exact zero counts and exits empty without submission", async () => {
+    const h = pendingHarness([]);
+    await h.actual.submitPendingCandidates();
+    expect(h.report.pending_visual_reviews).toBe(0); expect(h.reads).toHaveLength(2);
+    expect(h.spies.loadSourcesById).not.toHaveBeenCalled(); expect(h.spies.submitCandidateChunk).not.toHaveBeenCalled();
+  });
+
+  it("sends selected rows through the unchanged freshness, preflight, policy and model/chunk path", async () => {
+    const h = pendingHarness([pendingRow("fleet"), pendingRow("priority", { shared_award_source_id: prioritySource })]);
+    await h.actual.submitPendingCandidates();
+    expect(h.phases).toEqual(["recover", "retry_preflight", "select", "select", "sources",
+      "identity", "preflight", "policy", "identity", "preflight", "policy", "submit_chunk"]);
+    expect(h.spies.loadSourcesById).toHaveBeenCalledExactlyOnceWith([prioritySource, fleetSource]);
+    expect(h.spies.partitionVisualReviewCandidatesByModel.mock.calls[0][0].map((row) => row.id)).toEqual(["priority", "fleet"]);
+    expect(h.spies.submitCandidateChunk.mock.calls[0][0]).toBe("unchanged-model-partition");
+    expect(h.spies.submitCandidateChunk.mock.calls[0][1].map((row) => row.id)).toEqual(["priority", "fleet"]);
+    expect(h.report.pending_visual_reviews).toBe(2); expect(h.forbiddenMutation).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass source freshness or an evidence hold merely because the source is prioritized", async () => {
+    const h = pendingHarness([pendingRow("priority", { shared_award_source_id: prioritySource })]);
+    h.spies.preSubmissionRejectReason.mockReturnValue("manual_review_required:saved_evidence_incomplete");
+    h.spies.partitionPaidVisualReviewCandidates.mockImplementation((rows) => new Map(rows.length ? [[changedLane, rows]] : []));
+    await h.actual.submitPendingCandidates();
+    expect(h.spies.visualReviewSourceIdentityFreshness).toHaveBeenCalledTimes(1);
+    expect(h.spies.retainIncompleteReviewHold).toHaveBeenCalledWith(expect.objectContaining({
+      candidate: expect.objectContaining({ id: "priority" }), decision: { reason: "saved_evidence_incomplete" },
+    }));
+    expect(h.spies.persistPendingCandidateForCurrentPolicy).not.toHaveBeenCalled(); expect(h.spies.submitCandidateChunk).not.toHaveBeenCalled();
+  });
+
+  it("keeps the existing source-identity rejection ahead of policy persistence and submission", async () => {
+    const h = pendingHarness([pendingRow("priority", { shared_award_source_id: prioritySource })]);
+    h.spies.visualReviewSourceIdentityFreshness.mockReturnValue({ allowed: false, reason: "source_url_changed_since_capture" });
+    h.spies.partitionPaidVisualReviewCandidates.mockImplementation((rows) => new Map(rows.length ? [[changedLane, rows]] : []));
+    await h.actual.submitPendingCandidates();
+    expect(h.spies.markCandidate).toHaveBeenCalledWith("priority", expect.objectContaining({
+      status: "superseded", rejection_reason: "source_url_changed_since_capture",
+    }));
+    expect(h.spies.preSubmissionRejectReason).not.toHaveBeenCalled();
+    expect(h.spies.persistPendingCandidateForCurrentPolicy).not.toHaveBeenCalled();
+    expect(h.spies.submitCandidateChunk).not.toHaveBeenCalled();
+  });
+
+  it("does not submit a stale prioritized row when the existing atomic claim loses a race", async () => {
+    const h = pendingHarness([pendingRow("priority", { shared_award_source_id: prioritySource }), pendingRow("fleet")], {
+      beforeRead: (number, rows) => { if (number === 2) rows.find((row) => row.id === "priority").status = "processing"; },
+    });
+    const selected = await h.actual.loadPendingCandidatesForSubmission();
+    expect(selected.candidates.map((row) => row.id)).toEqual(["priority", "fleet"]);
+    expect(h.reads.map((read) => read.returned)).toEqual([1, 1]);
+    expect(h.tables.find((row) => row.id === "priority").status).toBe("processing");
+    const clauses = [], reserve = vi.fn(), provider = vi.fn();
+    const claimQuery = { update: vi.fn(() => claimQuery),
+      eq(key, value) { clauses.push(["eq", key, value]); return claimQuery; },
+      is(key, value) { clauses.push(["is", key, value]); return claimQuery; },
+      select(columns) { clauses.push(["select", columns]); return claimQuery; },
+      maybeSingle: async () => ({ data: null, error: null }) };
+    const report = { submission_claim_conflicts: 0 };
+    const submitChunk = runInNewContext(`${declarations.get("submitCandidateChunk")}\nsubmitCandidateChunk`, {
+      supabase: { from: () => claimQuery }, report, crypto: { randomUUID: () => "synthetic-claim" },
+      paidReviewWorkKindForLane: () => "changed-page-review", paidReviewLaneForCandidate: () => changedLane,
+      visualReviewMaxOutputTokensForModel: () => 2048, timestampForPath: () => "synthetic-time",
+      workerMetadataForCandidate: () => ({}), reserveGeminiSpend: reserve, createGeminiBatchJob: provider,
+    });
+    await submitChunk("unchanged-model", [selected.candidates[0]], changedLane);
+    expect(clauses).toEqual([["eq", "id", "priority"], ["eq", "status", "pending"],
+      ["is", "gemini_batch_name", null], ["select", "*"]]);
+    expect(report.submission_claim_conflicts).toBe(1); expect(reserve).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
+  });
+});

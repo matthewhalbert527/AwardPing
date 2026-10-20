@@ -175,6 +175,10 @@ export type ChangeSummaryPresentation = {
   condensed: boolean;
 };
 
+const completeSummaryLimit = 1200;
+const conciseSummaryUnavailable = "A complete concise summary is unavailable. Review the official source.";
+const publicFactFields = ["fact", "before", "after", "added_text", "removed_text", "visual_evidence"] as const;
+
 /** Reader presentation only. Never changes stored evidence, alert eligibility or deduplication. */
 export function changeSummaryPresentation(
   summary: string | null | undefined,
@@ -201,10 +205,31 @@ export function changeSummaryPresentation(
   // An observation is not a publication or a before/after comparison. Keep the
   // existing explicit disclaimer, regardless of claims in a legacy AI summary.
   if (details?.event_kind === "new_official_document") return fallback;
+  const original = originalPresentationDetails(changeDetails);
+  const originalSummary = typeof original?.reader_summary === "string" && original.reader_summary.trim()
+    ? original.reader_summary : typeof summary === "string" ? summary : "";
+  const originalLength = originalSummary.replace(/\s+/g, " ").trim().length;
+  const incompleteOriginal = originalLength >= completeSummaryLimit ||
+    (original?.generation_status === "generated" && original.is_alert_worthy === true && /(?:\.\.\.|…)/.test(originalSummary));
+  const unavailable = { ...fallback, title: "Official page update", label: "Update", text: conciseSummaryUnavailable,
+    paragraphs: [conciseSummaryUnavailable], condensed: false };
   if (details && (details.generation_status !== "generated" || !details.is_alert_worthy ||
     details.quality_flags.some((flag) => /(?:contradict|unsupported|not_supported|uncertain|rejected)/i.test(flag)))) {
-    return fallback;
+    return incompleteOriginal ? unavailable : fallback;
   }
+
+  if (original && (Object.hasOwn(original, "changed_facts") || Object.hasOwn(original, "changed_award_facts"))) {
+    // Parser defaults and model labels are not review authority. Recovery is
+    // display-only and must also retain every supported original fact record.
+    if (original.generation_status !== "generated" || original.is_alert_worthy !== true ||
+      !Array.isArray(original.quality_flags) || original.quality_flags.some(flag => typeof flag !== "string" || !flag.trim())) return incompleteOriginal ? unavailable : fallback;
+    if (isMeaningfulChangeDetails(changeDetails) !== true) return unavailable;
+    const paragraphs = completePublicFactParagraphs(original);
+    return paragraphs ? { ...parts, title: "Award information changed", paragraphs, text: paragraphs.join(" "), condensed: true } : unavailable;
+  }
+  // The legacy parser's 1200-character prefix may end inside a requirement.
+  // Missing facts cannot be reconstructed from that prefix or a screenshot.
+  if (incompleteOriginal) return unavailable;
 
   const claims = parts.paragraphs.map(parsePresentationClaim);
   // Never drop an unrecognized sentence, a trailing qualification or an extra
@@ -223,6 +248,59 @@ export function changeSummaryPresentation(
     ? `Eligibility criteria updated for ${cycle.after?.match(/^\d{4}/)?.[0]}`
     : categories.size === 1 ? presentationClaimTitle(completeClaims[0]) : "Award information changed";
   return { ...parts, title, paragraphs, text: paragraphs.join(" "), condensed: true };
+}
+
+function originalPresentationDetails(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function completePublicFactParagraphs(original: Record<string, unknown>): string[] | null {
+  const records = Object.hasOwn(original, "changed_facts") ? original.changed_facts : original.changed_award_facts;
+  if (!Array.isArray(records) || records.length === 0 || records.length > 12) return null;
+  if (Object.hasOwn(original, "changed_facts") && Object.hasOwn(original, "changed_award_facts")) {
+    const aliases = original.changed_award_facts;
+    if (!Array.isArray(aliases) || aliases.length !== records.length || Array.from(records).some((record, index) => {
+      const alias = aliases[index];
+      return !record || !alias || typeof record !== "object" || typeof alias !== "object" ||
+        Object.keys(record).length !== publicFactFields.length || Object.keys(alias).length !== publicFactFields.length ||
+        publicFactFields.some(field => !Object.hasOwn(record, field) || !Object.hasOwn(alias, field) || record[field] !== alias[field]);
+    })) return null;
+  }
+  const diff = originalPresentationDetails(original.structured_diff);
+  const validText = (value: unknown): value is string => typeof value === "string" && value.length > 0 &&
+    value === value.replace(/\s+/g, " ").trim() && !/(?:\.\.\.|…)/.test(value);
+  const added = diff?.added_text, removed = diff?.removed_text;
+  if (!Array.isArray(added) || !Array.isArray(removed) ||
+    Array.from(added).some(value => !validText(value)) || Array.from(removed).some(value => !validText(value))) return null;
+  const paragraphs: string[] = [];
+  for (const record of records) {
+    if (!record || typeof record !== "object" || Array.isArray(record) || Object.keys(record).length !== publicFactFields.length ||
+      publicFactFields.some(field => !Object.hasOwn(record, field)) || !validText(record.fact) || record.visual_evidence !== null ||
+      [record.before, record.after, record.added_text, record.removed_text].some(value => value !== null && !validText(value)) ||
+      (record.before !== null && record.removed_text !== null && record.before !== record.removed_text) ||
+      (record.after !== null && record.added_text !== null && record.after !== record.added_text)) return null;
+    const before: string | null = record.before ?? record.removed_text;
+    const after: string | null = record.after ?? record.added_text;
+    // Keep each existing public record's sides together; never assemble a new
+    // pair from diff rows. Array positions are not semantic pairing or new
+    // publication authority. Upstream event/review gates remain unchanged.
+    const supported = before && after ? removed.some(value => value.includes(before)) && added.some(value => value.includes(after)) &&
+      !added.some(value => value.toLowerCase().includes(before.toLowerCase())) &&
+      !removed.some(value => value.toLowerCase().includes(after.toLowerCase()))
+      : after ? removed.length === 0 && added.some(value => value.includes(after))
+        : before ? added.length === 0 && removed.some(value => value.includes(before)) : false;
+    if (!supported) return null;
+    // These are already complete original fact sides, not legacy scrape text.
+    // Never run the legacy cleaner/year condenser over identifiers or wording.
+    const sentence = (value: string) => /[.!?]$/.test(value) ? value : `${value}.`;
+    paragraphs.push(before && after ? `Award information — previously: ${sentence(before)} Now: ${sentence(after)}`
+      : after ? `Award information added: ${sentence(after)}` : `Award information removed from this page: ${sentence(before!)}`);
+    if (paragraphs.join(" ").length > completeSummaryLimit) return null;
+  }
+  return paragraphs;
 }
 
 type PresentationClaim = {

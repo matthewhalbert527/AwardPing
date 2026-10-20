@@ -239,6 +239,20 @@ describe("v2 complete paired paragraphs: one bounded request, not request chunks
         disposition: changes.includes(block_index) ? "applicant_change" : "wording_only", reason: "Both complete paragraphs reviewed with their full audience and cycle context." })) };
     return { ...normalizeVisualBatchResult(raw, input), finish_reason: "STOP", provider_candidate_count: 1 };
   }
+  function quotedResult(input, facts) {
+    const raw = { ...response(facts), exact_before: facts[0]?.before ?? null, exact_after: facts[0]?.after ?? null,
+      structured_diff: null, block_reviews: input.diff.added_text.map((_, block_index) => ({ block_index,
+        disposition: facts.some(fact => fact.block_index === block_index) ? "applicant_change" : "wording_only",
+        reason: "Synthetic quote-validation fixture only, not an actual assessment of the remaining blocks." })) };
+    // Standalone producer fixtures still supply their full deterministic packet
+    // through the normalizer's actual candidate argument, not an ignored diff key.
+    return { ...normalizeVisualBatchResult(raw, { ...input, candidate: input.candidate || { deterministic_diff: input.diff } }),
+      finish_reason: "STOP", provider_candidate_count: 1 };
+  }
+  function quotedFact(block_index, before, after) {
+    return { fact: "Application requirements changed.", block_index, before, removed_text: before,
+      after, added_text: after, visual_evidence: null };
+  }
   it("binds the actual historical source, exact writer files and all91 paragraphs; five replacements reconstruct the entire captured text", () => {
     expect(digest(fixtureBytes)).toBe("9500cc222600232839335772e887650db5b69effe82b2edc67cf1a50960c8122");
     expect(fixture.source.id).toBe("c28878c0-6a8b-5fa8-b99b-ec826b86d8f2");
@@ -270,6 +284,111 @@ describe("v2 complete paired paragraphs: one bounded request, not request chunks
     expect(legacyReviewCompletenessDecision({ ...input, result, requireResult: true }).allowed).toBe(true);
     expect(validateVisualBatchReview({ ...input, result }).allowed).toBe(true);
     expect(changeDetailsFromVisualBatchResult({ ...input, result }).changed_facts).toHaveLength(4);
+  });
+  it("holds the concrete false-summary reproduction when two different quotes both survive in the same actual paired paragraph", () => {
+    const input = actualPair(), before = "a minimum of a Bachelor's degree in any field.", after = "Peking University";
+    for (const quote of [before, after]) {
+      expect(input.diff.removed_text[1]).toContain(quote); expect(input.diff.added_text[1]).toContain(quote);
+    }
+    const result = quotedResult(input, [quotedFact(1, before, after)]), original = JSON.stringify({ input, result });
+    const decision = legacyReviewCompletenessDecision({ ...input, result, requireResult: true });
+    expect(decision).toMatchObject({ allowed: false, manual_review_required: true,
+      reason: "legacy_paragraph_review_fact_contrast_unverified", baseline_advance_allowed: false, creates_api_charge: false });
+    expect(validateVisualBatchReview({ ...input, result })).toMatchObject(decision);
+    const details = changeDetailsFromVisualBatchResult({ ...input, result });
+    expect(details).toMatchObject({ manual_review_required: true, changed_facts: [], reader_summary: "Saved change evidence requires manual review." });
+    expect(details.reader_summary).not.toContain("changed from");
+    expect(JSON.stringify({ input, result })).toBe(original);
+  });
+  it.each(["unchanged before", "unchanged after", "unchanged removed alias", "unchanged added alias", "case counterpart"])("holds raw %s rather than borrowing unchanged context as directional evidence", kind => {
+    const input = actualPair(), result = reviewed(input), fact = result.raw_result.changed_facts[1];
+    if (kind === "unchanged before") fact.before = fact.removed_text = "a minimum of a Bachelor's degree in any field.";
+    if (kind === "unchanged after") fact.after = fact.added_text = "Peking University";
+    if (kind === "unchanged removed alias") fact.removed_text = "Peking University";
+    if (kind === "unchanged added alias") fact.added_text = "Peking University";
+    if (kind === "case counterpart") {
+      const old = "Applicants must send the original essay. Shared Applicant Context stays.";
+      const next = "Applicants must send the revised essay. shared applicant context stays.";
+      const diff = buildLegacyParagraphReviewDiff({ source, previousText: old, currentText: next });
+      const input = { source, previous: { text: old }, capture: { text: next, text_hash: digest(next) }, baseline: { text_hash: digest(old) }, diff };
+      const raw = quotedResult(input, [quotedFact(0, "Shared Applicant Context", "Applicants must send the revised essay.")]);
+      expect(legacyReviewCompletenessDecision({ ...input, result: raw })).toMatchObject({ allowed: false,
+        reason: "legacy_paragraph_review_fact_contrast_unverified" });
+      return;
+    }
+    expect(legacyReviewCompletenessDecision({ ...input, result })).toMatchObject({ allowed: false,
+      reason: "legacy_paragraph_review_fact_contrast_unverified" });
+  });
+  it.each(["before", "after", "removed_text", "added_text"])("holds normalized-only unchanged %s without altering the complete raw response", field => {
+    const input = actualPair(), result = reviewed(input), originalRaw = JSON.stringify(result.raw_result);
+    result.changed_facts[1][field] = "Peking University";
+    expect(legacyReviewCompletenessDecision({ ...input, result })).toMatchObject({ allowed: false,
+      reason: "legacy_paragraph_review_normalized_fact_contrast_unverified" });
+    expect(validateVisualBatchReview({ ...input, result }).allowed).toBe(false);
+    expect(changeDetailsFromVisualBatchResult({ ...input, result }).changed_facts).toEqual([]);
+    expect(JSON.stringify(result.raw_result)).toBe(originalRaw);
+  });
+  it("holds a swapped block reference even when the quoted source words remain somewhere in the complete page", () => {
+    const input = actualPair(), result = reviewed(input);
+    result.raw_result.changed_facts[1].block_index = result.changed_facts[1].block_index = 3;
+    expect(legacyReviewCompletenessDecision({ ...input, result })).toMatchObject({ allowed: false,
+      reason: "legacy_paragraph_review_fact_pair_mismatch" });
+  });
+  it.each([
+    [0, "no later than August 31 of the year in which you wish to enroll.", "no later than August of the intended enrollment year."],
+    [3, "International candidates can attend interviews online or in person.", "International candidates will be interviewed online."],
+    [4, "Those who accept our offers will then be approved through an internal process at Peking University, and receive their official acceptance letters in the summer before enrollment.", "Candidates who accept our offers must complete internal procedures at Peking University before being pre-admitted. Final admission will be confirmed through the official Peking University acceptance letter, issued in the summer prior to enrollment."],
+  ])("keeps genuine actual paired-block %i precision and audience constraints intact", (index, before, after) => {
+    const input = actualPair(), result = quotedResult(input, [quotedFact(index, before, after)]);
+    expect(legacyReviewCompletenessDecision({ ...input, result, requireResult: true }).allowed).toBe(true);
+    expect(validateVisualBatchReview({ ...input, result }).allowed).toBe(true);
+    const details = changeDetailsFromVisualBatchResult({ ...input, result });
+    expect(details.changed_facts[0]).toMatchObject({ before, after, removed_text: before, added_text: after });
+    if (index === 0) expect(details.after).not.toContain("August 31");
+    if (index === 3) expect(details.after).toContain("International candidates");
+    if (index === 4) { expect(details.after).toContain("pre-admitted"); expect(details.after).toContain("Final admission"); }
+  });
+  it("does not reject directionally changed quotes merely because they survive in a different paired block", () => {
+    const old = "Applicants must submit the original essay for eligibility.\n\nFor other applicants, the revised essay remains optional.";
+    const next = "Applicants must submit the revised essay for eligibility.\n\nFor other applicants, the original essay remains optional.";
+    const input = pair(old, next);
+    input.diff = buildLegacyParagraphReviewDiff({ source: input.source, previousText: old, currentText: next });
+    input.candidate = { ...input.candidate, shared_award_id: input.source.shared_award_id, deterministic_diff: input.diff,
+      prompt_payload: buildVisualReviewPromptPayload(input) };
+    const result = quotedResult(input, [quotedFact(0, "original essay", "revised essay")]);
+    expect(input.diff.added_text[1]).toContain("original essay"); expect(input.diff.removed_text[1]).toContain("revised essay");
+    expect(legacyReviewCompletenessDecision({ ...input, result }).allowed).toBe(true);
+    expect(validateVisualBatchReview({ ...input, result }).allowed).toBe(true);
+    expect(changeDetailsFromVisualBatchResult({ ...input, result }).changed_facts[0]).toMatchObject({ before: "original essay", after: "revised essay" });
+  });
+  it("conservatively holds an old quote that survives inside an extended requirement rather than inventing a directional deletion", () => {
+    const old = "Applicants must submit an essay.", next = "Applicants must submit an essay. International applicants must also submit a translation.";
+    const diff = buildLegacyParagraphReviewDiff({ source, previousText: old, currentText: next });
+    const input = { source, previous: { text: old }, capture: { text: next, text_hash: digest(next) }, baseline: { text_hash: digest(old) }, diff };
+    const result = quotedResult(input, [quotedFact(0, old, next)]), frozen = JSON.stringify(result);
+    expect(legacyReviewCompletenessDecision({ ...input, result })).toMatchObject({ allowed: false, manual_review_required: true,
+      reason: "legacy_paragraph_review_fact_contrast_unverified", baseline_advance_allowed: false });
+    expect(JSON.stringify(result)).toBe(frozen);
+  });
+  it.each(["raw", "normalized"])("actual publisher retains the %s contrast hold and full response before any event, noise, provider or baseline write", async kind => {
+    const input = actualPair(), result = kind === "raw"
+      ? quotedResult(input, [quotedFact(1, "a minimum of a Bachelor's degree in any field.", "Peking University")]) : reviewed(input);
+    if (kind === "normalized") result.changed_facts[1].after = "Peking University";
+    const original = JSON.stringify({ input, result }), raw = result.raw_result, usage = { input_tokens: 7, output_tokens: 3 }, report = {};
+    const mark = vi.fn(async (_candidate, token) => { expect(token).toBe("synthetic-owned"); });
+    const forbidden = vi.fn(() => { throw Error("Contrast hold must not acquire a lock, submit, publish, reconcile, write noise or promote a baseline"); });
+    const api = functions(batchCode, ["publishCandidateResult", "retainIncompleteReviewHold"], { legacyReviewCompletenessDecision,
+      markPublicationCandidate: mark, workerMetadataForCandidate: (candidate, value) => ({ ...candidate.worker_metadata, ...value }), report,
+      supabase: { from: forbidden }, withVisualBaselineLockAsync: forbidden, publishCandidateResultUnlocked: forbidden,
+      promoteApprovedBaselineForCandidate: forbidden, persistVisualChangeAndReconciliation: forbidden,
+      recordVisualRejectionLedger: forbidden, reserveGeminiSpend: forbidden, createGeminiBatchJob: forbidden });
+    expect(await api.publishCandidateResult({ ...input, result, usage, publicationClaimToken: "synthetic-owned" })).toMatchObject({ status: "manual_review_required" });
+    expect(mark).toHaveBeenCalledOnce(); const patch = mark.mock.calls[0][2];
+    expect(patch).toMatchObject({ status: "failed", worker_metadata: { baseline_advanced: false,
+      review_completeness_hold: { automatic_retry_allowed: false, baseline_advance_allowed: false, retain_both_captures: true, creates_api_charge: false } } });
+    expect(patch.ai_result).toBe(result); expect(patch.ai_result.raw_result).toBe(raw); expect(patch.actual_usage).toBe(usage);
+    expect(report.manual_review_required).toBe(1); expect(forbidden).not.toHaveBeenCalled();
+    expect(JSON.stringify({ input, result })).toBe(original);
   });
   it("keeps full contexts and every paired paragraph through the actual prompt, normalization and version-selected schema", () => {
     const input = actualPair(), result = reviewed(input);

@@ -53,7 +53,15 @@ export function isPublishedVisualEvidenceKey(value) {
 }
 
 export function isDeletableVisualSnapshotKey(value) {
-  return Boolean(value) && !isPublishedVisualEvidenceKey(value);
+  return Boolean(value) && !isPublishedVisualEvidenceKey(value)
+    && !isLegacyFixedVisualSnapshotKey(value);
+}
+
+function isLegacyFixedVisualSnapshotKey(value) {
+  // Fixed aliases may be the only retained originals. Cleanup protection does
+  // not establish immutable origin, coverage, freshness or migration readiness.
+  if (typeof value !== "string") return false;
+  return /^visual-snapshots\/sources\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/(?:latest|previous)\/(?:page\.jpg|thumb\.jpg|document\.pdf|text\.txt|page\.html\.txt|layout\.json|meta\.json|expansion-state-(?:0[1-9]|[1-9][0-9])(?:\.jpg|-layout\.json))$/u.exec(value)?.[0] === value;
 }
 
 function objectValue(value) {

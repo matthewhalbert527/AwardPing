@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isPublishedVisualEvidenceKey } from "./visual-snapshot-history.mjs";
+import { isDeletableVisualSnapshotKey } from "./visual-snapshot-history.mjs";
 
 export const VISUAL_SNAPSHOT_LATEST_ONLY_CLEANUP_DEBT_SCHEMA =
   "awardping.visual-snapshot.latest-only-cleanup-debt.v1";
@@ -301,7 +301,7 @@ function buildCleanupDebt({
 }) {
   const candidates = normalizedKeys(candidateKeys);
   const referenced = new Set(normalizedKeys(authoritativeReferences));
-  const permanentlyProtected = candidates.filter(isPublishedVisualEvidenceKey);
+  const permanentlyProtected = candidates.filter((key) => !isDeletableVisualSnapshotKey(key));
   const referencedCandidates = candidates.filter((key) => referenced.has(key));
   const protectedKeys = uniqueSorted([...permanentlyProtected, ...referencedCandidates]);
   const potentiallyUnreferenced = candidates.filter((key) => !protectedKeys.includes(key));

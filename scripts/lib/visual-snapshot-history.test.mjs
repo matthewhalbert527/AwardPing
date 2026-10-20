@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   refreshedLatestVisualSnapshotHistory,
+  isDeletableVisualSnapshotKey,
   isPublishedVisualEvidenceKey,
   rotatedVisualSnapshotHistory,
   visualSnapshotKeysToDeleteAfterCas,
@@ -104,5 +105,94 @@ describe("immutable visual snapshot history", () => {
       uploaded: { page: published },
       current: {},
     })).toEqual([]);
+  });
+});
+
+const legacySourceId = "11111111-1111-4111-8111-111111111111";
+const legacyFixedKey = (generation, filename, sourceId = legacySourceId) =>
+  `visual-snapshots/sources/${sourceId}/${generation}/${filename}`;
+const legacyFixedFiles = ["page.jpg", "thumb.jpg", "document.pdf", "text.txt",
+  "page.html.txt", "layout.json", "meta.json", ...Array.from({ length: 99 }, (_, index) => {
+    const number = String(index + 1).padStart(2, "0");
+    return [`expansion-state-${number}.jpg`, `expansion-state-${number}-layout.json`];
+  }).flat()];
+
+describe("exact fixed legacy originals are retained, not certified", () => {
+  it.each(["latest", "previous"])("protects every approved %s fixed filename and expansion number", (generation) => {
+    for (const filename of legacyFixedFiles) {
+      expect(isDeletableVisualSnapshotKey(legacyFixedKey(generation, filename)), filename).toBe(false);
+    }
+  });
+
+  it("keeps displaced legacy originals after ordinary CAS while modern captures and approved cleanup stay unchanged", () => {
+    const originals = Object.fromEntries(legacyFixedFiles.map((filename) => [filename, legacyFixedKey("latest", filename)]));
+    const existing = {
+      latest_object_keys: { page: `visual-snapshots/sources/${legacySourceId}/captures/kept/page.jpg` },
+      previous_object_keys: { ...originals,
+        ordinary: `visual-snapshots/sources/${legacySourceId}/captures/displaced/page.jpg`,
+        approved: `visual-snapshots/sources/${legacySourceId}/approved/displaced/meta.json`,
+        published: "visual-snapshots/published/immutable/previous/main/full.jpg" },
+    };
+    const before = structuredClone(existing);
+    const next = rotatedVisualSnapshotHistory(existing, {
+      page: `visual-snapshots/sources/${legacySourceId}/captures/new/page.jpg`,
+    });
+    expect(visualSnapshotKeysToDeleteAfterCas({ pointerAdvanced: false, existing, next })).toEqual([]);
+    expect(visualSnapshotKeysToDeleteAfterCas({ pointerAdvanced: true, existing, next })).toEqual([
+      existing.previous_object_keys.ordinary, existing.previous_object_keys.approved,
+    ]);
+    expect(existing).toEqual(before);
+    expect(next.previous_object_keys).toEqual(existing.latest_object_keys);
+  });
+
+  it("keeps unreferenced fixed aliases after a lost CAS without changing upload or pointer objects", () => {
+    const uploaded = Object.fromEntries(legacyFixedFiles.map((filename) => [filename, legacyFixedKey("previous", filename)]));
+    uploaded.loser = `visual-snapshots/sources/${legacySourceId}/captures/loser/page.jpg`;
+    uploaded.retained = `visual-snapshots/sources/${legacySourceId}/captures/winner/text.txt`;
+    const current = { latest_object_keys: { text: uploaded.retained }, previous_object_keys: {} };
+    const before = structuredClone({ uploaded, current });
+    expect(visualSnapshotUploadedKeysToDeleteAfterLostCas({ uploaded, current })).toEqual([uploaded.loser]);
+    expect({ uploaded, current }).toEqual(before);
+  });
+
+  it.each([
+    `/${legacyFixedKey("latest", "page.jpg")}`,
+    `prefix/${legacyFixedKey("latest", "page.jpg")}`,
+    `https://example.test/${legacyFixedKey("latest", "page.jpg")}`,
+    legacyFixedKey("latest", "page.jpg") + "/extra",
+    legacyFixedKey("latest", "page.jpg") + "?version=old",
+    legacyFixedKey("latest", "page.jpg") + "#original",
+    legacyFixedKey("latest", "page.jpg") + "\n",
+    legacyFixedKey("latest", "page.jpg") + "\r\n",
+    " " + legacyFixedKey("latest", "page.jpg"),
+    legacyFixedKey("latest", "page.jpg") + " ",
+    legacyFixedKey("latest", "page.jpg").replace("sources/", "sources//"),
+    legacyFixedKey("latest", "page.jpg").replace("visual-snapshots/", "Visual-snapshots/"),
+    legacyFixedKey("LATEST", "page.jpg"), legacyFixedKey("previous-extra", "page.jpg"),
+    legacyFixedKey("latest/subdirectory", "page.jpg"),
+    legacyFixedKey("latest", "page.jpg", "source-1"),
+    legacyFixedKey("latest", "page.jpg", legacySourceId.replaceAll("-", "")),
+    legacyFixedKey("latest", "page.jpg", "11111111-1111-0111-8111-111111111111"),
+    legacyFixedKey("latest", "page.jpg", "11111111-1111-9111-8111-111111111111"),
+    legacyFixedKey("latest", "page.jpg", "11111111-1111-4111-7111-111111111111"),
+    legacyFixedKey("latest", "page.jpg", "abcdefab-cdef-4abc-8abc-abcdefabcdef".toUpperCase()),
+    legacyFixedKey("latest", "page.jpg").replace("/latest/", "%2Flatest%2F"),
+    legacyFixedKey("latest", "page.jpg").replace("page.jpg", "%70age.jpg"),
+    ...["", "page.jpeg", "page.JPG", "page.png", "meta.json.bak", "page.html", "other.txt",
+      "expansion-state-00.jpg", "expansion-state-100.jpg", "expansion-state-1.jpg",
+      "expansion-state-001.jpg", "expansion-state-01.json", "expansion-state-01-layout.json.bak",
+      "expansion-state-01-layout.jpg"].map((filename) => legacyFixedKey("latest", filename)),
+  ])("does not extend fixed-key protection to malformed or boundary key %s", (key) => {
+    expect(isDeletableVisualSnapshotKey(key)).toBe(true);
+  });
+
+  it.each(["captures/generation-1", "approved/review-1"])("preserves ordinary %s deletion eligibility", (generation) => {
+    expect(isDeletableVisualSnapshotKey(legacyFixedKey(generation, "page.jpg"))).toBe(true);
+  });
+
+  it("does not coerce objects into legacy retention matches or change empty-value behavior", () => {
+    expect(isDeletableVisualSnapshotKey({ toString: () => legacyFixedKey("latest", "page.jpg") })).toBe(true);
+    for (const empty of [undefined, null, "", false, 0]) expect(isDeletableVisualSnapshotKey(empty)).toBe(false);
+    expect(isDeletableVisualSnapshotKey("/visual-snapshots/published/immutable/main.jpg")).toBe(false);
   });
 });
