@@ -922,8 +922,21 @@ export function conflictDateKey(normalizedValue) {
     ` (${Object.keys(conflictOrdinalRanks).join("|")}) (${conflictWeekdayNames.join("|")}) (?:in|of) (${conflictMonthNames.join("|")}) `,
   ));
   if (nth) return `nth:${conflictOrdinalRanks[nth[1]]}:${nth[2]}:${nth[3]}`;
-  const monthFirst = text.match(new RegExp(` (${conflictMonthNames.join("|")}) ([0-9]{1,2})(?: ([0-9]{4}))? `));
-  const dayFirst = monthFirst ? null : text.match(new RegExp(` ([0-9]{1,2}) (${conflictMonthNames.join("|")})(?: ([0-9]{4}))? `));
+  // Convert only a single calendar-day spelling, not an alternative/range or
+  // another ambiguous number. Everything else keeps the existing fallback.
+  const ordinalDays = [...text.matchAll(/ ([0-9]{1,2})(st|nd|rd|th)(?= )/g)];
+  const dayTokens = [...text.matchAll(/ ([0-9]{1,2})(?:st|nd|rd|th)?(?= )/g)]
+    .filter(([, digits]) => Number(digits) >= 1 && Number(digits) <= 31);
+  const singleOrdinalDay = ordinalDays.length === 1 && dayTokens.length === 1
+    && [...text.matchAll(new RegExp(` (${conflictMonthNames.join("|")})(?= )`, "g"))].length === 1
+    && !/ (?:and|or|to|through|between) /.test(text);
+  const calendarText = singleOrdinalDay ? text.replace(/ ([0-9]{1,2})(st|nd|rd|th)(?= )/g, (ordinal, digits, suffix) => {
+    const day = Number(digits);
+    const expected = day >= 11 && day <= 13 ? "th" : (["th", "st", "nd", "rd"][day % 10] || "th");
+    return day >= 1 && day <= 31 && suffix === expected ? ` ${digits}` : ordinal;
+  }) : text;
+  const monthFirst = calendarText.match(new RegExp(` (${conflictMonthNames.join("|")}) ([0-9]{1,2})(?: ([0-9]{4}))? `));
+  const dayFirst = monthFirst ? null : calendarText.match(new RegExp(` ([0-9]{1,2}) (${conflictMonthNames.join("|")})(?: ([0-9]{4}))? `));
   const match = monthFirst || dayFirst;
   if (!match) {
     // A month stated without a day ("early July", "late October 2026") cannot

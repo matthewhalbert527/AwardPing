@@ -328,6 +328,39 @@ describe("calendar-aware conflict grouping", () => {
     expect(conflictFor("deadline", ["early July", "July 1, 2026", "July 15, 2026"])).toBe(true);
   });
 
+  it.each(["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "15th", "21st", "22nd", "23rd", "31st"])(
+    "compares valid calendar day %s in either order without supplying a year",
+    (ordinal) => {
+      const day = Number.parseInt(ordinal, 10);
+      expect(conflictFor("deadline", [`January ${ordinal}`, `January ${day}`])).toBe(false);
+      expect(conflictFor("opening_date", [`${ordinal} January 2027`, `January ${day}, 2027`])).toBe(false);
+    },
+  );
+
+  it("preserves ordinal year precision and unresolved year ambiguity", () => {
+    expect(conflictFor("deadline", ["January 15th", "January 15, 2027"])).toBe(false);
+    expect(conflictFor("deadline", ["January 15th", "January 15, 2027", "January 15, 2028"])).toBe(true);
+  });
+
+  it("keeps genuinely different ordinal days, months and years in conflict", () => {
+    expect(conflictFor("deadline", ["January 15th", "January 16"])).toBe(true);
+    expect(conflictFor("deadline", ["15th January", "February 15"])).toBe(true);
+    expect(conflictFor("deadline", ["January 15th, 2027", "January 15, 2028"])).toBe(true);
+  });
+
+  it("leaves malformed ordinal suffixes on the existing month-only fallback", () => {
+    for (const ordinal of ["11st", "12nd", "13rd", "22th", "31th"]) {
+      expect(conflictFor("deadline", [`January ${ordinal}`, `January ${Number.parseInt(ordinal, 10)}`])).toBe(true);
+      // Existing fallback is intentionally unchanged, not a newly verified day.
+      expect(conflictFor("deadline", [`January ${ordinal}`, "January"])).toBe(false);
+    }
+  });
+
+  it("recognizes the existing numeric nth-weekday rule before calendar ordinals", () => {
+    expect(conflictFor("deadline", ["1st Tuesday in February", "February 2, 2027"])).toBe(false);
+    expect(conflictFor("deadline", ["1st Tuesday in February", "February 3, 2027"])).toBe(true);
+  });
+
   it("does not let an unstated cycle conflict with an asserted one", () => {
     expect(conflictFor("cycle_status", ["unknown", "deadline_passed"])).toBe(false);
     expect(conflictFor("cycle_status", ["upcoming", "deadline_passed"])).toBe(true);
