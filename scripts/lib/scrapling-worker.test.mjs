@@ -29,6 +29,17 @@ function record() { return {schema:"awardping.scrapling-capture.v1",capture_prof
     alignment:"not_verified",semantics_bracketed:true,limitations:[]}}; }
 function manifest() {return {schema:"awardping.scrapling-source-manifest.v1",profile:SCRAPLING_WORKER_PROFILE,reviewed_at:time,
   award_ids:ids,sources:[{id:source.id,award_id:source.shared_award_id,url:source.url,kind:"html",roles:["eligibility"]}]};}
+const aliasAwardId = "30000000-0000-0000-0000-000000000001";
+const secondAliasAwardId = "30000000-0000-0000-0000-000000000002";
+const aliasSource = { ...source, id: "40000000-0000-0000-0000-000000000001", shared_award_id: aliasAwardId };
+function sharedUrlManifest() {
+  const m = manifest();
+  // Existing negative fixtures mutate their shared roster; this fixture owns its copy.
+  m.award_ids = Array.from({ length: 25 }, (_, i) => `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`);
+  m.award_aliases = [{ award_id: aliasAwardId, canonical_award_id: ids[0], cohort_key: "award-0" }];
+  m.sources.push({ ...m.sources[0], id: aliasSource.id, award_id: aliasAwardId });
+  return m;
+}
 
 describe("exact reviewed source scope",()=>{
   it("opts in exact source UUID/award/URL only and defaults off",()=>{
@@ -50,6 +61,42 @@ describe("exact reviewed source scope",()=>{
     ["missing role",m=>m.sources[0].roles=[]],
     ["unknown schema",m=>m.schema="legacy"],
   ])("rejects %s",(_,mutate)=>{const m=manifest();mutate(m);expect(()=>validateScraplingSourceManifest(m)).toThrow();});
+  it.each([false, true])("keeps both exact stored owners of a shared canonical/alias URL (reverse=%s)", reverse => {
+    const m = sharedUrlManifest();
+    if (reverse) m.sources.reverse();
+    const bytes = JSON.stringify(m);
+    expect(validateScraplingSourceManifest(m)).toBe(m);
+    expect(JSON.stringify(m)).toBe(bytes);
+    for (const actual of [source, aliasSource]) {
+      expect(selectScraplingSource(actual, m)).toMatchObject({ id: actual.id, award_id: actual.shared_award_id, url: actual.url });
+      expect(() => selectScraplingSource({ ...actual, shared_award_id: actual === source ? aliasAwardId : ids[0] }, m)).toThrow(/identity/);
+      expect(() => selectScraplingSource({ ...actual, url: `${actual.url}/changed` }, m)).toThrow(/identity/);
+    }
+    expect(selectScraplingSource({ ...aliasSource, id: ids[2] }, m)).toBeNull();
+  });
+  it("allows two declared alias owners in one cohort without requiring a canonical-owner source", () => {
+    const m = sharedUrlManifest();
+    m.award_aliases.push({ ...m.award_aliases[0], award_id: secondAliasAwardId });
+    m.sources[0] = { ...m.sources[0], award_id: secondAliasAwardId };
+    expect(validateScraplingSourceManifest(m)).toBe(m);
+  });
+  it.each([ids[0], aliasAwardId, secondAliasAwardId])("rejects repeated owner %s even after other owners share the URL", awardId => {
+    const m = sharedUrlManifest();
+    m.award_aliases.push({ ...m.award_aliases[0], award_id: secondAliasAwardId });
+    m.sources.push({ ...m.sources[0], id: "40000000-0000-0000-0000-000000000002", award_id: secondAliasAwardId });
+    m.sources.push({ ...m.sources[0], id: "40000000-0000-0000-0000-000000000003", award_id: awardId });
+    expect(() => validateScraplingSourceManifest(m)).toThrow(/duplicate/);
+  });
+  it.each([
+    ["missing alias", m => delete m.award_aliases],
+    ["unknown alias owner", m => m.sources[1].award_id = secondAliasAwardId],
+    ["malformed alias", m => m.award_aliases[0].award_id = "not-a-uuid"],
+    ["wrong cohort", m => m.award_aliases.push({ award_id: secondAliasAwardId, canonical_award_id: m.award_ids[1], cohort_key: "award-0" })],
+    ["duplicate ID across owners", m => m.sources[1].id = m.sources[0].id],
+  ])("does not waive %s for shared URLs", (_, mutate) => {
+    const m = sharedUrlManifest(); mutate(m);
+    expect(() => validateScraplingSourceManifest(m)).toThrow();
+  });
   it("blocks profile migration AND rollback without a baseline-only run",()=>{
     expect(()=>assertScraplingBaselineCompatibility({capture_profile:"stable-daily"},{useScrapling:true})).toThrow();
     expect(()=>assertScraplingBaselineCompatibility({capture_profile:SCRAPLING_WORKER_PROFILE},{useScrapling:false})).toThrow();
@@ -99,6 +146,32 @@ describe("full HTML evidence contract",()=>{
       await expect(captureScraplingWorkerSource(source,{archiveRoot:root,capture:async()=>{throw new Error("network boundary rejected");}})).rejects.toThrow();
       expect(readdirSync(root)).toEqual([]);
     } finally {rmSync(root,{recursive:true,force:true});}
+  });
+  it("captures a shared URL independently for both source IDs and retains each actual owner", async () => {
+    const root = mkdtempSync(join(tmpdir(), "awardping-scrapling-alias-adapter-"));
+    try {
+      const m = validateScraplingSourceManifest(sharedUrlManifest()), invocations = [], captures = [];
+      for (const actual of [source, aliasSource]) {
+        expect(selectScraplingSource(actual, m)?.id).toBe(actual.id);
+        captures.push(await captureScraplingWorkerSource(actual, { archiveRoot: root, capture: async capturedSource => {
+          invocations.push({ ...capturedSource });
+          return { ...record(), source_id: capturedSource.id };
+        } }));
+      }
+      expect(invocations).toEqual([source, aliasSource]);
+      expect(captures[0].dir).not.toBe(captures[1].dir);
+      for (const [index, capture] of captures.entries()) {
+        const actual = [source, aliasSource][index], meta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+        expect(meta.source).toMatchObject({ id: actual.id, shared_award_id: actual.shared_award_id, url: actual.url });
+        for (const ref of Object.values(meta.files).filter(value => typeof value === "string"))
+          expect(ref).toMatch(new RegExp(`^sources/${actual.id}/captures/`));
+        expect(prepareR2CaptureArtifacts(collectR2CaptureArtifactFiles(capture), { readFile: readFileSync })).toBeTruthy();
+      }
+      expect(captures[0].image_hash).toBe(captures[1].image_hash);
+      const filesBefore = captures.map(capture => readFileSync(capture.meta_path, "utf8"));
+      await expect(captureScraplingWorkerSource(aliasSource, { archiveRoot: root, capture: async () => record() })).rejects.toThrow();
+      expect(captures.map(capture => readFileSync(capture.meta_path, "utf8"))).toEqual(filesBefore);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("rejects archive junction escape before evidence files are written",async()=>{
     const root=mkdtempSync(join(tmpdir(),"awardping-scrapling-adapter-"));

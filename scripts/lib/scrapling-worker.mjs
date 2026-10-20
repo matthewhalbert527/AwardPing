@@ -23,18 +23,46 @@ export function validateScraplingSourceManifest(value) {
       !Array.isArray(value.sources) || !value.sources.length || value.sources.length > 300 ||
       !Array.isArray(value.award_ids) || value.award_ids.length !== 25 || new Set(value.award_ids).size !== 25 ||
       value.award_ids.some(id => !uuid.test(id)) || !Number.isFinite(Date.parse(value.reviewed_at))) fail("invalid source manifest");
+  // Award aliases are existing Stage 1 memberships, never rewritten source IDs.
+  // The proposal builder verifies these against the live registry. Installed
+  // manifests remain reviewed, hash-bound configuration, not approval authority.
+  const aliases = new Map();
+  const cohortByCanonical = new Map();
+  const canonicalByCohort = new Map();
+  if (value.award_aliases !== undefined) {
+    if (!Array.isArray(value.award_aliases) || !value.award_aliases.length || value.award_aliases.length > 300) fail("invalid award aliases");
+    for (const alias of value.award_aliases) {
+      if (!alias || Object.keys(alias).sort().join(",") !== "award_id,canonical_award_id,cohort_key" ||
+          !uuid.test(alias.award_id) || aliases.has(alias.award_id) || value.award_ids.includes(alias.award_id) ||
+          !value.award_ids.includes(alias.canonical_award_id) || typeof alias.cohort_key !== "string" || !/^[a-z0-9_-]{1,80}$/.test(alias.cohort_key) ||
+          (cohortByCanonical.has(alias.canonical_award_id) && cohortByCanonical.get(alias.canonical_award_id) !== alias.cohort_key) ||
+          (canonicalByCohort.has(alias.cohort_key) && canonicalByCohort.get(alias.cohort_key) !== alias.canonical_award_id)) fail("invalid or conflicting award alias");
+      aliases.set(alias.award_id, alias);
+      cohortByCanonical.set(alias.canonical_award_id, alias.cohort_key);
+      canonicalByCohort.set(alias.cohort_key, alias.canonical_award_id);
+    }
+  }
   const ids = new Set();
-  const urls = new Set();
+  const ownersByCanonicalUrl = new Map();
+  const usedAliases = new Set();
   for (const row of value.sources) {
-    if (!uuid.test(row?.id) || ids.has(row.id) || !value.award_ids.includes(row.award_id) ||
+    const canonicalAwardId = aliases.get(row?.award_id)?.canonical_award_id ?? row?.award_id;
+    const canonicalUrl = `${canonicalAwardId}\n${row?.url}`;
+    if (!uuid.test(row?.id) || ids.has(row.id) || !value.award_ids.includes(canonicalAwardId) ||
         typeof row.url !== "string" || normalizePublicHttpUrl(row.url).href !== row.url || new URL(row.url).port ||
         row.kind !== "html" || (row.capture_profile !== undefined && ![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(row.capture_profile)) ||
         (row.capture_profile === SOURCE_HTML_PROFILE && !row.url.startsWith("https://")) || !Array.isArray(row.roles) || !row.roles.length ||
         row.roles.some(role => typeof role !== "string" || !/^[a-z_]{1,60}$/.test(role)) ||
-        urls.has(`${row.award_id}\n${row.url}`)) fail("invalid or duplicate source manifest entry");
+        ownersByCanonicalUrl.get(canonicalUrl)?.has(row.award_id)) fail("invalid or duplicate source manifest entry");
     ids.add(row.id);
-    urls.add(`${row.award_id}\n${row.url}`);
+    // Only distinct stored owners in the already-declared canonical/alias cohort
+    // may share a URL. Their source IDs and evidence remain independent.
+    const owners = ownersByCanonicalUrl.get(canonicalUrl) ?? new Set();
+    owners.add(row.award_id);
+    ownersByCanonicalUrl.set(canonicalUrl, owners);
+    if (aliases.has(row.award_id)) usedAliases.add(row.award_id);
   }
+  if (usedAliases.size !== aliases.size) fail("unused award alias");
   return value;
 }
 
