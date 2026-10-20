@@ -1556,7 +1556,7 @@ describe("approved visual baseline promotion", () => {
     expect(database.current.latest_hashes.layout_hash).toBe(capture.layout_hash);
   });
 
-  it("deletes only unreferenced immutable uploads after losing the pointer CAS", async () => {
+  it("retains all immutable uploads after losing CAS without reference and create-ownership proof", async () => {
     const archiveRoot = temporaryArchive();
     const captureDir = join(archiveRoot, "lost-cas-r2");
     const capture = verifiedWebCapture({ archiveRoot, captureDir });
@@ -1592,14 +1592,14 @@ describe("approved visual baseline promotion", () => {
     expect(result).toMatchObject({
       promoted: false,
       reason: "r2_pointer_compare_and_set_lost",
-      deleted_orphan_uploads: 4,
+      deleted_orphan_uploads: 0,
     });
     expect(operations.filter((operation) => operation.type === "delete").map(
       (operation) => operation.key,
-    )).not.toContain(retainedPage);
+    )).toEqual([]);
   });
 
-  it("reports post-CAS cleanup debt without misreporting an authoritative promotion", async () => {
+  it("preserves displaced historical evidence while authoritative promotion and rotation still succeed", async () => {
     const archiveRoot = temporaryArchive();
     const capture = verifiedWebCapture({
       archiveRoot,
@@ -1640,18 +1640,22 @@ describe("approved visual baseline promotion", () => {
 
     expect(result).toMatchObject({
       promoted: true,
-      deleted: 1,
+      deleted: 0,
       cleanup: {
-        attempted: 2,
-        deleted: 1,
-        failed: 1,
-        failures: [{ key: stalePage, message: "simulated delete failure" }],
+        attempted: 0,
+        deleted: 0,
+        failed: 0,
+        failures: [],
       },
     });
     expect(database.current.latest_captured_at).toBe(capture.captured_at);
+    expect(database.current.previous_captured_at).toBe(existing.latest_captured_at);
+    expect(database.current.previous_object_keys).toEqual(existing.latest_object_keys);
+    expect(database.current.previous_hashes).toEqual(existing.latest_hashes);
+    expect(database.current.previous_metadata).toEqual(existing.latest_metadata);
     expect(operations.filter((operation) => operation.type === "delete").map(
       (operation) => operation.key,
-    )).toEqual(expect.arrayContaining([stalePage, staleText]));
+    )).toEqual([]);
   });
 });
 

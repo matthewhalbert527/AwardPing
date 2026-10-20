@@ -27,7 +27,7 @@ describe("immutable visual snapshot history", () => {
     });
   });
 
-  it("garbage-collects generation one only after generation three CAS succeeds", () => {
+  it("retains displaced generation one even after generation three CAS succeeds", () => {
     const beforeThird = {
       latest_object_keys: { page: "generation-2/page.jpg" },
       previous_object_keys: { page: "generation-1/page.jpg" },
@@ -44,7 +44,7 @@ describe("immutable visual snapshot history", () => {
       pointerAdvanced: true,
       existing: beforeThird,
       next: afterThird,
-    })).toEqual(["generation-1/page.jpg"]);
+    })).toEqual([]);
   });
 
   it("refreshes latest metadata without rotating or deleting historical previous objects", () => {
@@ -71,10 +71,10 @@ describe("immutable visual snapshot history", () => {
       pointerAdvanced: true,
       existing,
       next,
-    })).toEqual(["latest-old/page.jpg", "latest-old/meta.json"]);
+    })).toEqual([]);
   });
 
-  it("removes only an unreferenced upload after a lost pointer CAS", () => {
+  it("retains uploads after lost CAS without complete reference and create-ownership proof", () => {
     expect(visualSnapshotUploadedKeysToDeleteAfterLostCas({
       uploaded: {
         page: "loser/page.jpg",
@@ -84,7 +84,7 @@ describe("immutable visual snapshot history", () => {
         latest_object_keys: { page: "winner/page.jpg", text: "winner/text.txt" },
         previous_object_keys: { page: "previous/page.jpg" },
       },
-    })).toEqual(["loser/page.jpg"]);
+    })).toEqual([]);
   });
 
   it("categorically protects permanent published evidence from pointer cleanup", () => {
@@ -100,7 +100,7 @@ describe("immutable visual snapshot history", () => {
         latest_object_keys: { page: "generation-3/page.jpg" },
         previous_object_keys: { page: "generation-2/page.jpg" },
       },
-    })).toEqual(["generation-1/page.jpg"]);
+    })).toEqual([]);
     expect(visualSnapshotUploadedKeysToDeleteAfterLostCas({
       uploaded: { page: published },
       current: {},
@@ -124,7 +124,7 @@ describe("exact fixed legacy originals are retained, not certified", () => {
     }
   });
 
-  it("keeps displaced legacy originals after ordinary CAS while modern captures and approved cleanup stay unchanged", () => {
+  it("keeps displaced legacy, modern and approved originals after ordinary CAS", () => {
     const originals = Object.fromEntries(legacyFixedFiles.map((filename) => [filename, legacyFixedKey("latest", filename)]));
     const existing = {
       latest_object_keys: { page: `visual-snapshots/sources/${legacySourceId}/captures/kept/page.jpg` },
@@ -138,9 +138,7 @@ describe("exact fixed legacy originals are retained, not certified", () => {
       page: `visual-snapshots/sources/${legacySourceId}/captures/new/page.jpg`,
     });
     expect(visualSnapshotKeysToDeleteAfterCas({ pointerAdvanced: false, existing, next })).toEqual([]);
-    expect(visualSnapshotKeysToDeleteAfterCas({ pointerAdvanced: true, existing, next })).toEqual([
-      existing.previous_object_keys.ordinary, existing.previous_object_keys.approved,
-    ]);
+    expect(visualSnapshotKeysToDeleteAfterCas({ pointerAdvanced: true, existing, next })).toEqual([]);
     expect(existing).toEqual(before);
     expect(next.previous_object_keys).toEqual(existing.latest_object_keys);
   });
@@ -151,7 +149,7 @@ describe("exact fixed legacy originals are retained, not certified", () => {
     uploaded.retained = `visual-snapshots/sources/${legacySourceId}/captures/winner/text.txt`;
     const current = { latest_object_keys: { text: uploaded.retained }, previous_object_keys: {} };
     const before = structuredClone({ uploaded, current });
-    expect(visualSnapshotUploadedKeysToDeleteAfterLostCas({ uploaded, current })).toEqual([uploaded.loser]);
+    expect(visualSnapshotUploadedKeysToDeleteAfterLostCas({ uploaded, current })).toEqual([]);
     expect({ uploaded, current }).toEqual(before);
   });
 
@@ -194,5 +192,22 @@ describe("exact fixed legacy originals are retained, not certified", () => {
     expect(isDeletableVisualSnapshotKey({ toString: () => legacyFixedKey("latest", "page.jpg") })).toBe(true);
     for (const empty of [undefined, null, "", false, 0]) expect(isDeletableVisualSnapshotKey(empty)).toBe(false);
     expect(isDeletableVisualSnapshotKey("/visual-snapshots/published/immutable/main.jpg")).toBe(false);
+  });
+});
+
+describe("cleanup has no reference or create-ownership authority", () => {
+  it.each([undefined, {}, { reference_status: "unknown" }, { reference_status: "unavailable" },
+    { references_complete: true, created_by_this_operation: true, protected_keys: [] }])
+  ("never accepts absent or caller-asserted proof as deletion authority: %j", (unverified) => {
+    const original = `visual-snapshots/sources/${legacySourceId}/captures/original/meta.json`;
+    const existing = { latest_object_keys: { meta: "current/meta.json" }, previous_object_keys: { meta: original } };
+    const next = rotatedVisualSnapshotHistory(existing, { meta: "new/meta.json" });
+    const uploaded = { meta: original }, current = { latest_object_keys: {}, previous_object_keys: {} };
+    const input = { pointerAdvanced: true, existing, next, uploaded, current, ...unverified };
+    const before = structuredClone(input);
+    expect(visualSnapshotKeysToDeleteAfterCas(input)).toEqual([]);
+    expect(visualSnapshotUploadedKeysToDeleteAfterLostCas(input)).toEqual([]);
+    expect(input).toEqual(before);
+    expect(next.previous_object_keys).toEqual(existing.latest_object_keys);
   });
 });

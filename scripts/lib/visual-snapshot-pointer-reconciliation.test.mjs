@@ -27,6 +27,20 @@ function pointer(overrides = {}) {
 }
 
 describe("visual snapshot pointer reconciliation", () => {
+  it("commits ordinary rotation without deleting displaced evidence with unknown cross-record references", async () => {
+    const existing = pointer({ latest_object_keys: { page: "generation-2/page.jpg" },
+      previous_object_keys: { page: "stage1-original/page.jpg" } });
+    const proposed = pointer(), before = structuredClone({ existing, proposed });
+    const cleanup = vi.fn(), reload = vi.fn();
+    const result = await reconcileVisualSnapshotPointerAdvance({ advance: async () => true, reload, cleanup,
+      existing, proposed, uploaded: proposed.latest_object_keys });
+    expect(result).toMatchObject({ committed: true, reconciled_after_ambiguous_error: false,
+      cleanup: { attempted: 0, deleted: 0, failed: 0, failures: [] } });
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+    expect({ existing, proposed }).toEqual(before);
+  });
+
   it("treats an RPC error followed by the exact proposed pointer as committed", async () => {
     const existing = pointer({
       latest_object_keys: { page: "generation-2/page.jpg" },
@@ -51,12 +65,11 @@ describe("visual snapshot pointer reconciliation", () => {
 
     expect(result.committed).toBe(true);
     expect(result.reconciled_after_ambiguous_error).toBe(true);
-    expect(cleanup).toHaveBeenCalledWith(["generation-1/page.jpg"]);
-    expect(result.cleanup).toMatchObject({ attempted: 1, failed: 1 });
-    expect(result.cleanup.failures[0].message).toContain("R2 delete unavailable");
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(result.cleanup).toEqual({ attempted: 0, deleted: 0, failed: 0, failures: [] });
   });
 
-  it("never deletes an uploaded key referenced by the winner after a false CAS", async () => {
+  it("never deletes any upload after false CAS, even when absent from the winning pointer", async () => {
     const cleanup = vi.fn(async (keys) => ({
       attempted: keys.length,
       deleted: 0,
@@ -80,25 +93,27 @@ describe("visual snapshot pointer reconciliation", () => {
     })).rejects.toMatchObject({
       code: "visual_snapshot_pointer_lost_cas",
       r2PointerOutcome: "lost_compare_and_set",
-      r2Cleanup: { attempted: 1, failed: 1 },
+      r2Cleanup: { attempted: 0, deleted: 0, failed: 0, failures: [] },
     });
-    expect(cleanup).toHaveBeenCalledWith(["loser/page.jpg"]);
+    expect(cleanup).not.toHaveBeenCalled();
   });
 
-  it("preserves the pointer error when losing-upload cleanup itself throws", async () => {
+  it("preserves the pointer error without attempting losing-upload deletion", async () => {
     const rpcError = new Error("RPC timed out before a commit");
+    const cleanup = vi.fn(async () => { throw new Error("cleanup transport failed"); });
     await expect(reconcileVisualSnapshotPointerAdvance({
       advance: async () => { throw rpcError; },
       reload: async () => pointer({ latest_hashes: { image_hash: "another-writer" } }),
-      cleanup: async () => { throw new Error("cleanup transport failed"); },
+      cleanup,
       existing: pointer(),
       proposed: pointer(),
       uploaded: { page: "loser/page.jpg" },
     })).rejects.toMatchObject({
       message: rpcError.message,
       code: "visual_snapshot_pointer_advance_failed",
-      r2Cleanup: { attempted: 1, failed: 1 },
+      r2Cleanup: { attempted: 0, deleted: 0, failed: 0, failures: [] },
     });
+    expect(cleanup).not.toHaveBeenCalled();
   });
 
   it("defers deletion and records every uploaded key when the pointer cannot be reloaded", async () => {

@@ -127,11 +127,11 @@ describe("explicit source HTML approved baseline promotion", () => {
   it("requires explicit approval", async () => fixture(f => {
     expect(promoteApprovedVisualBaselineLocal({ ...localArgs(f), approved: false }).reason).toBe("candidate_not_approved");
   }));
-  it("preserves CAS loss and deletes only unreferenced new upload keys", async () => fixture(async f => {
+  it("preserves CAS loss without deleting uploads lacking reference and create-ownership proof", async () => fixture(async f => {
     const r = remote({ loseCas: true }); const result = await promoteApprovedVisualBaselineR2(remoteArgs(f, r));
     expect(result.reason).toBe("r2_pointer_compare_and_set_lost"); expect(r.current).toBeNull();
     expect(r.operations.filter(o => o.type === "PutObjectCommand")).toHaveLength(3);
-    expect(r.operations.filter(o => o.type === "DeleteObjectCommand")).toHaveLength(3);
+    expect(r.operations.filter(o => o.type === "DeleteObjectCommand")).toHaveLength(0);
   }));
   it("refuses newer pointer conflicts before uploads", async () => fixture(async f => {
     const r = remote({ existing: { latest_captured_at: "2026-10-19T00:00:00.000Z", latest_metadata: { capture_profile: SOURCE_HTML_PROFILE } } });

@@ -19,33 +19,19 @@ export function refreshedLatestVisualSnapshotHistory(existing, { resetPrevious =
   };
 }
 
-export function visualSnapshotKeysToDeleteAfterCas({
-  pointerAdvanced,
-  existing,
-  next,
-} = {}) {
-  if (!pointerAdvanced) return [];
-  const retained = new Set([
-    ...Object.values(objectValue(next?.latest_object_keys)),
-    ...Object.values(objectValue(next?.previous_object_keys)),
-  ].filter(Boolean));
-  return [...new Set([
-    ...Object.values(objectValue(existing?.latest_object_keys)),
-    ...Object.values(objectValue(existing?.previous_object_keys)),
-  ].filter(Boolean))]
-    .filter((key) => !retained.has(key) && isDeletableVisualSnapshotKey(key));
+export function visualSnapshotKeysToDeleteAfterCas() {
+  // A successful pointer rotation does not prove that displaced objects are
+  // absent from Stage 1 manifests, candidates or other retained evidence.
+  // Existing callers supply no complete cross-record reference proof. Defer
+  // deletion categorically; pointer arguments or flags cannot authorize it.
+  return [];
 }
 
-export function visualSnapshotUploadedKeysToDeleteAfterLostCas({
-  uploaded,
-  current,
-} = {}) {
-  const retained = new Set([
-    ...Object.values(objectValue(current?.latest_object_keys)),
-    ...Object.values(objectValue(current?.previous_object_keys)),
-  ].filter(Boolean));
-  return [...new Set(Object.values(objectValue(uploaded)).filter(Boolean))]
-    .filter((key) => !retained.has(key) && isDeletableVisualSnapshotKey(key));
+export function visualSnapshotUploadedKeysToDeleteAfterLostCas() {
+  // Content-addressed upload keys may already have existed and be referenced
+  // outside the winning pointer. A lost CAS proves neither exclusive create
+  // ownership nor complete reference absence, so it cannot authorize deletion.
+  return [];
 }
 
 export function isPublishedVisualEvidenceKey(value) {
