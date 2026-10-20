@@ -105,6 +105,12 @@ import {
   captureScraplingWorkerSource,
 } from "./lib/scrapling-worker.mjs";
 import { buildScraplingReviewDiff } from "./lib/scrapling-review-diff.mjs";
+import {
+  ScraplingBaselineTransitionError,
+  loadScraplingBaselineTransition,
+  getScraplingBaselineTransitionReference,
+  assertScraplingBaselineTransition,
+} from "./lib/scrapling-baseline-transition.mjs";
 import { verifyScraplingRuntimeBinding } from "./lib/scrapling-runtime-binding.mjs";
 import { SOURCE_HTML_PROFILE } from "./lib/source-html-evidence.mjs";
 import { verifyLocalSourceHtmlCapture, sourceHtmlBaselineEvidence, sourceHtmlR2Metadata } from "./lib/source-html-worker-state.mjs";
@@ -399,6 +405,16 @@ const scraplingPythonPath = cleanText(args["scrapling-python"] || env.AWARDPING_
 // source/baseline mutation. Command-line overrides cannot bypass this binding.
 verifyScraplingRuntimeBinding({ appDir: root, manifestPath: scraplingManifestPath, pythonPath: scraplingPythonPath });
 const scraplingManifest = loadScraplingSourceManifest(scraplingManifestPath);
+// Deliberately CLI-only: an inherited environment must not authorize refresh.
+const scraplingTransitionRequested = Object.hasOwn(args, "baseline-refresh-evidence")
+  || Object.hasOwn(args, "baseline-refresh-evidence-sha256");
+const scraplingBaselineTransition = scraplingTransitionRequested
+  ? loadScraplingBaselineTransition({
+      path: cleanText(args["baseline-refresh-evidence"])
+        ? resolve(root, cleanText(args["baseline-refresh-evidence"])) : "",
+      sha256: cleanText(args["baseline-refresh-evidence-sha256"]),
+    })
+  : null;
 const promote = stage1EvidenceSchemaUpgrade ? false : boolArg(args.promote, true);
 const pdfOnly = boolArg(args["pdf-only"], false);
 const webOnly = boolArg(args["web-only"], false);
@@ -823,6 +839,26 @@ const aiProvider = aiRequired
     })
   : null;
 const aiModel = modelForProvider(aiProvider);
+assertScraplingBaselineTransitionRunOptions({
+  guard: scraplingBaselineTransition,
+  sourceId: sourceIdFilter,
+  otherFilters: Boolean(sourceIdsFile || sourceUrlFilter || awardFilter),
+  limit,
+  baselineRefresh,
+  runTrigger,
+  continuous,
+  safeCollection: webOnly && !pdfOnly && includeNotDue && keepUnchanged
+    && shardCount === 1 && shardIndex === 0 && visualWebConcurrency === 1
+    && r2SnapshotSync && Boolean(scraplingManifest),
+  noAi: !aiRequired && aiProvider === null && requestedAiProvider === "none"
+    && visualReviewMode === "none" && !interpretVisualChanges
+    && !extractBaselineInfo && !backfillBaselineInfo && sourceQualityMode === "deterministic",
+  forbiddenMaintenance: stage1EvidenceSchemaUpgrade || initialOfficialDocumentMaterialization
+    || localizationRepair || discoveryMode || discoverHtmlSubpages || discoverPdfSubpages
+    || snapshotHistoryPrune || r2BackfillBaselines || forceR2SnapshotRefresh
+    || resetPreviousSnapshot || r2RepairMissingSnapshots || completeMissingBaselines
+    || aiReviewEvidenceCapture || promote,
+});
 let supabase = null;
 let r2Client = null;
 // Stage 1 manifest membership, loaded once per run. Manifest sources decide
@@ -1120,6 +1156,7 @@ async function runOnce() {
       source_url: sourceUrlFilter || null,
       award: awardFilter || null,
       baseline_refresh: baselineRefresh,
+      baseline_refresh_evidence_sha256: scraplingBaselineTransition?.sha256 || null,
       promote,
       pdf_only: pdfOnly,
       web_only: webOnly,
@@ -1629,7 +1666,7 @@ async function runOnce() {
             report,
             state.networkProxy,
             sourceDeadline,
-          ));
+          ), { settleAfterTimeout: Boolean(scraplingBaselineTransition) });
         }
         if (hasOpenSourceIssue(source)) {
           report.issue_sources_cleared += 1;
@@ -1638,6 +1675,21 @@ async function runOnce() {
         if (!pdfSource) state.sourcesSinceBrowserStart += 1;
         break;
       } catch (error) {
+        if (error?.scraplingBaselineTransitionHold === true
+          || (scraplingBaselineTransition && isSourceTimeoutError(error))) {
+          // A changed/unbound page is not a broken website. Keep its capture
+          // and the old baseline; do not retry, queue AI or alter source health.
+          report.failed += 1;
+          report.errors.push({
+            source_id: source.id,
+            source_url: source.url,
+            stage: "scrapling_baseline_transition_hold",
+            message: errorMessage(error),
+            creates_api_charge: false,
+          });
+          console.log(`BASELINE_TRANSITION_HOLD ${errorMessage(error)} ${sourceLabel(source)}`);
+          break;
+        }
         if (
           !pdfSource &&
           !retriedAfterBrowserRestart &&
@@ -3630,6 +3682,22 @@ async function processSourceUnlocked(
     return;
   }
 
+  // Validate a cross-profile transition before ordinary hygiene can change a
+  // review state. This function already runs under the source baseline lock.
+  const transitionSource = isPdfSource(source) ? null : selectScraplingSource(source, scraplingManifest);
+  let transitionReference = transitionSource
+    ? getScraplingBaselineTransitionReference({
+        guard: scraplingBaselineTransition,
+        source,
+        baseline: readJsonIfExists(baselinePathForSource(source.id)),
+        baselineRefresh,
+        captureProfile: transitionSource.capture_profile || SCRAPLING_WORKER_PROFILE,
+      })
+    : null;
+  if (scraplingBaselineTransition && !transitionReference) {
+    throw new ScraplingBaselineTransitionError("the evidence pin does not apply to this exact existing-baseline transition");
+  }
+
   // Exact R2 repair may deliberately load an already-held source. Preserve the
   // workflow/operator that owns that hold; hygiene may classify open sources,
   // but it must not rewrite an existing review_later record before repair.
@@ -3755,6 +3823,17 @@ async function processSourceUnlocked(
   const pdfSource = isPdfSource(source);
   const pendingStage1Activation = isStage1PendingBaselineActivationSource(source);
   const scraplingSource = pdfSource ? null : selectScraplingSource(source, scraplingManifest);
+  // Recovery may have restored an authoritative old baseline after the early
+  // preflight. Recheck that final baseline before allowing any live capture.
+  if (scraplingSource) {
+    transitionReference = getScraplingBaselineTransitionReference({
+      guard: scraplingBaselineTransition,
+      source,
+      baseline,
+      baselineRefresh,
+      captureProfile: scraplingSource.capture_profile || SCRAPLING_WORKER_PROFILE,
+    });
+  }
   if (!pdfSource) assertScraplingBaselineCompatibility(baseline, {
     useScrapling: Boolean(scraplingSource), captureProfile: scraplingSource?.capture_profile || SCRAPLING_WORKER_PROFILE, baselineRefresh,
   });
@@ -3785,6 +3864,12 @@ async function processSourceUnlocked(
         stage1BaselineActivationVisualCaptureFailure: true,
       },
     );
+  }
+  if (transitionReference) {
+    await enforceScraplingBaselineTransition(source, baseline, capture, report);
+    if (sourceDeadline?.expired?.()) {
+      throw new ScraplingBaselineTransitionError("the source deadline expired before transition commitment");
+    }
   }
   attachHtmlComparisonDiagnostic(source, baseline, capture, report);
   materializeRetainedCaptureAuthority(source, capture);
@@ -19155,6 +19240,43 @@ function isSourceTimeoutError(error) {
   return errorChainHasCode(error, "AWARDPING_SOURCE_TIMEOUT");
 }
 
+function assertScraplingBaselineTransitionRunOptions(options) {
+  if (!options.guard) return;
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(options.sourceId)
+    || options.otherFilters || options.limit !== 1 || !options.baselineRefresh
+    || options.runTrigger !== "maintenance" || options.continuous
+    || !options.safeCollection || !options.noAi || options.forbiddenMaintenance
+    || !options.guard.sources.some(row => row.source_id === options.sourceId)) {
+    throw new ScraplingBaselineTransitionError(
+      "evidence-bound refresh requires one exact source, maintenance-only collection, no AI/discovery/pruning/other repairs, and required R2 persistence",
+    );
+  }
+}
+
+async function enforceScraplingBaselineTransition(source, baseline, capture, report) {
+  try {
+    const { data: current, error } = await buildSourcesQuery([source.id])
+      .eq("id", source.id).maybeSingle();
+    if (error || !current || !sourceQualityDecision(current, { purpose: "monitoring" }).allowed) {
+      throw new ScraplingBaselineTransitionError("the fresh source identity or monitoring approval could not be verified");
+    }
+    const proof = assertScraplingBaselineTransition({
+      guard: scraplingBaselineTransition,
+      sourceBefore: source,
+      sourceAfter: current,
+      baseline,
+      capture,
+      baselineRefresh,
+      captureProfile: selectScraplingSource(source, scraplingManifest)?.capture_profile || SCRAPLING_WORKER_PROFILE,
+    });
+    (report.scrapling_baseline_transitions ||= []).push(proof);
+    return proof;
+  } catch (error) {
+    if (error?.scraplingBaselineTransitionHold === true) throw error;
+    throw Object.assign(new ScraplingBaselineTransitionError("fresh transition verification could not be completed"), { cause: error });
+  }
+}
+
 function captureVisualSnapshotsHelp() {
   return [
     "AwardPing visual snapshot worker",
@@ -19166,6 +19288,9 @@ function captureVisualSnapshotsHelp() {
     "  --help                     Print this text and exit without loading runtime configuration or starting a run.",
     "  --source-id=<uuid>         Restrict the run to one exact source.",
     "  --source-ids-file=<path>   Restrict the run to an allowlisted source-ID file.",
+    "  --baseline-refresh-evidence=<path>",
+    "  --baseline-refresh-evidence-sha256=<64hex>",
+    "                             Bind an exact-one v2 profile transition to reviewed complete/native text; changed content is held before baseline writes.",
     "  --stage1-evidence-schema-upgrade=true",
     "                             Use the isolated reviewed-nine evidence upgrade path.",
     "  --stage1-evidence-schema-upgrade-dry-run=true",
@@ -19183,7 +19308,7 @@ function captureVisualSnapshotsHelp() {
     "                             Required: retain the full reviewed capture/evidence profile.",
     "  --source-quality-mode=deterministic",
     "  --web-concurrency=1        Required: use deterministic sequential capture.",
-    "  --gemini-api-max-calls=0   Disable paid Gemini calls for the run.",
+    "  --ai-provider=none        Refuse paid AI; also disable review, extraction and backfill. A numeric Gemini call cap of zero is not an AI-disable switch.",
     "  --visual-review-mode=none  Disable visual-review interpretation.",
     "  --r2-snapshot-sync=true    Require immutable R2 snapshot synchronization.",
     "",

@@ -226,7 +226,7 @@ describe("Stage 1 first-visual-baseline activation worker wiring", () => {
     expect(success).toContain('requiredAdminReviewStatus = "open"');
     expect(success).toContain("requiredStatus: requiredAdminReviewStatus");
     expect(success).toContain("const metadataUpdate = preserveReviewedMetadata");
-    expect(success).toContain("if (!preserveReviewedUrl && ![SCRAPLING_WORKER_PROFILE, SOURCE_HTML_PROFILE].includes(capture.capture_profile))");
+    expect(success).toContain("if (!preserveReviewedUrl && ![SCRAPLING_WORKER_PROFILE, SCRAPLING_WORKER_PROFILE_V2, SOURCE_HTML_PROFILE].includes(capture.capture_profile))");
     expect(success).toContain("maybeUpdateSafeRedirectUrl");
   });
 

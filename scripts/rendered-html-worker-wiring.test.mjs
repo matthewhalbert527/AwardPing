@@ -195,13 +195,13 @@ function diagnosticHookFixture({ metadataSourceId = "source-1" } = {}) {
   const diagnostic = { schema: "awardping.html-comparison.v1", mode: "shadow", status: "changed", reason: null, publishable: false, changes: { text_changed: true } };
   const writes = [];
   const reads = [];
-  const invoke = Function("fromArchiveRelative", "compareRetainedHtmlCaptures", "archiveRoot", "baselineRefresh", "readJsonIfExists", "atomicWriteJson", "incrementCounterObject", "SOURCE_HTML_PROFILE",
+  const invoke = Function("fromArchiveRelative", "compareRetainedHtmlCaptures", "archiveRoot", "baselineRefresh", "readJsonIfExists", "atomicWriteJson", "incrementCounterObject", "SOURCE_HTML_PROFILE", "SCRAPLING_WORKER_PROFILE", "SCRAPLING_WORKER_PROFILE_V2",
     `${functionBody("attachHtmlComparisonDiagnostic", "captureR2Files")}\nreturn attachHtmlComparisonDiagnostic;`)(
     (path) => path, () => diagnostic, "archive", false,
     (path) => { reads.push(path); return { captured_at: capturedAt, source: { id: metadataSourceId } }; },
     (path, metadata) => writes.push({ path, metadata }),
     (counters, reason) => { counters[reason] = (counters[reason] || 0) + 1; },
-    SOURCE_HTML_PROFILE,
+    SOURCE_HTML_PROFILE, "scrapling-evidence-v1", "scrapling-evidence-v2",
   );
   return { invoke, diagnostic, writes, reads, report: { html_comparison: { checked: 0, changed: 0, unchanged: 0, first_observation: 0, unavailable: 0, reasons: {} } } };
 }

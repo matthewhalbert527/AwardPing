@@ -60,6 +60,7 @@ import {
 } from "./lib/visual-baseline-promotion.mjs";
 import { withVisualBaselineLockAsync } from "./lib/visual-baseline-lock.mjs";
 import {
+  batchInputModeForRequests,
   extractGeminiBatchInlineResponses,
   extractGeminiFinishReason,
   extractGeminiUsageMetadata,
@@ -1707,7 +1708,7 @@ async function submitCandidateChunk(model, candidates, laneKey) {
 
   const requests = claimedCandidates.map((candidate) =>
     requestByCandidateId.get(candidate.id));
-  const mode = requests.length > inlineThreshold ? "jsonl_file" : "inline";
+  const mode = batchInputModeForRequests(requests, { inlineThreshold });
   const estimated = estimateGeminiMaximumBatchRequestsCostUsd(model, requests, {
     maxOutputTokensPerRequest,
   });
