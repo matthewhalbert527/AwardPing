@@ -21,6 +21,7 @@ import { sourceHtmlReviewPairingVerified } from "./source-html-review-contract.m
 import { legacyReviewCompletenessDecision, isLegacyParagraphReviewCandidate, legacyParagraphReviewResponseSchema,
   nativePdfWholeOriginalCompletenessDecision } from "./legacy-review-completeness.mjs";
 import { NATIVE_PDF_REVIEW_PROFILE, nativePdfResponseSchema } from "./native-pdf-review.mjs";
+import { buildScraplingReviewDiff } from "./scrapling-review-diff.mjs";
 
 export const visualReviewResponseSchema = {
   type: "object",
@@ -268,7 +269,9 @@ export function classifyVisualReviewCandidate({
   }
 
   const sourceNoise = sourceNoiseClassFromSource(source, evidence.changed_text);
-  if (sourceNoise && !applicantSourceEscape.allowed) {
+  const mixedPrimary = mixedPrimaryHomepageEvidence({ source, diff, quality });
+  if (sourceNoise && !applicantSourceEscape.allowed &&
+      !(sourceNoise.label === "sibling_program_or_cross_award" && mixedPrimary)) {
     return reject(sourceNoise.label, sourceNoise.reason, {
       source_rejected: true,
       source_noise: sourceNoise,
@@ -277,6 +280,22 @@ export function classifyVisualReviewCandidate({
 
   const completeness = legacyReviewCompletenessDecision({ source, diff, baseline, previous, capture });
   if (completeness.applicable !== false && !completeness.allowed) return reject("manual_review_required", completeness.reason, completeness);
+  // Source identity and changed-item relevance are different questions. Only
+  // complete legacy text or an exact replay of the bounded Scrapling producer
+  // can defer sibling-item relevance to review. A delegated scope is not proof.
+  const reviewMixedPrimary = mixedPrimary && (
+    (completeness.allowed && completeness.applicable !== false) ||
+    mixedPrimaryScraplingPairVerified({ source, diff, baseline, previous, capture })
+  );
+  // Per-entry mixed evidence can exist even if the aggregate noise matcher does
+  // not flag the page. Failed completeness must not fall through to a date/GPA
+  // signal and admit the same unverified pair through the ordinary branch.
+  if (mixedPrimary && !reviewMixedPrimary) {
+    return reject("manual_review_required", "mixed_primary_source_completeness_unverified");
+  }
+  if (sourceNoise && !applicantSourceEscape.allowed && !reviewMixedPrimary) {
+    return reject(sourceNoise.label, sourceNoise.reason, { source_rejected: true, source_noise: sourceNoise });
+  }
 
   if (deterministic?.candidate_change === false) {
     return reject(noiseLabelForReason(deterministic.reason), deterministic.reason || "deterministic_rejected");
@@ -287,7 +306,9 @@ export function classifyVisualReviewCandidate({
   }
 
   const textNoise = contentNoiseClass(evidence.changed_text, source);
-  if (textNoise) return reject(textNoise.label, textNoise.reason);
+  if (textNoise && !(textNoise.label === "sibling_program_or_cross_award" && reviewMixedPrimary)) {
+    return reject(textNoise.label, textNoise.reason);
+  }
 
   if (!evidence.has_text_evidence) {
     if (
@@ -303,6 +324,10 @@ export function classifyVisualReviewCandidate({
 
   if (!evidence.added_text.length && !evidence.removed_text.length) {
     return reject("text_only_candidate", "missing_added_or_removed_text_evidence");
+  }
+
+  if (reviewMixedPrimary) {
+    return allow("text_only_candidate", "mixed_primary_source_content_requires_review");
   }
 
   if (hasSiblingProgramSignal(source, evidence.changed_text)) {
@@ -1082,6 +1107,11 @@ export function validateVisualBatchReview({ candidate, source, result }) {
   const evidenceFailure = facts.map((fact) => changedFactEvidenceDecision({ fact, candidate }))
     .find((decision) => !decision.allowed);
   if (evidenceFailure) return reject(evidenceFailure.reason);
+  const mixedPrimary = mixedPrimaryHomepageEvidence({ source,
+    diff: candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {}, quality });
+  if (mixedPrimary && !mixedPrimaryResultEvidenceSupported({ mixedPrimary, facts, result })) {
+    return reject("mixed_primary_source_fact_context_unverified");
+  }
   const temporalContext = temporalContextAmbiguityDecision({ candidate, facts });
   if (!temporalContext.allowed) return reject(temporalContext.reason);
 
@@ -1757,6 +1787,62 @@ function sourceNoiseClassFromSource(source, changedText = "") {
     return { label: "sibling_program_or_cross_award", reason: "sibling_program_or_cross_award" };
   }
   return null;
+}
+
+function mixedPrimaryHomepageEvidence({ source, diff, quality }) {
+  if (!quality?.allowed || quality.reason !== "ai_review_reviewed_accepted_primary" ||
+      cleanKey(source?.page_type) !== "homepage" || sourceNoiseClassFromSource(source)) return null;
+  const name = normalizeText(source?.shared_awards?.name);
+  if (meaningfulTokens(name).length < 2) return null;
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const namePattern = new RegExp(`(^|[^\\p{L}\\p{N}])${escapedName}(?=$|[^\\p{L}\\p{N}])`, "giu");
+  const primary = {}, other = {};
+  let hasSibling = false;
+  for (const direction of ["added", "removed"]) {
+    primary[direction] = []; other[direction] = [];
+    for (const entry of stringArray(diff?.[`${direction}_text`])) {
+      const text = normalizeText(entry);
+      const sibling = hasSiblingProgramSignal(source, text);
+      hasSibling ||= sibling;
+      // A primary name prefixed to a foreign program does not establish whose
+      // facts changed. Reject that ambiguity instead of stripping its name.
+      const withoutName = text.replace(namePattern, "$1");
+      const cleanPrimary = withoutName !== text && !sibling &&
+        !/\b(?:award|scholarship|fellowship|grant|program)s?\b/i.test(withoutName);
+      (cleanPrimary ? primary : other)[direction].push(entry);
+    }
+  }
+  return hasSibling && (primary.added.length || primary.removed.length) ? { primary, other } : null;
+}
+
+function mixedPrimaryScraplingPairVerified({ source, diff, baseline, previous, capture }) {
+  if (diff?.candidate_scope !== "scrapling_html_source") return false;
+  // Reuse the actual collector's complete-context, identity and integrity checks
+  // with its unchanged limits. Source-only pairs require raw HTTP HTML; browser
+  // pairs require native-visible corroboration and screenshot bracketing. Neither
+  // scope/complete flags nor a matching added/removed excerpt authorize admission.
+  try {
+    const replay = buildScraplingReviewDiff({ source, baseline, previous, capture });
+    return replay.status === "changed_needs_review" &&
+      stableJsonStringify(replay.diff) === stableJsonStringify(diff);
+  } catch {
+    return false;
+  }
+}
+
+function mixedPrimaryResultEvidenceSupported({ mixedPrimary, facts, result }) {
+  const quotes = {
+    removed: [result.exact_before, result.before, ...facts.flatMap(fact => [fact.before, fact.removed_text])],
+    added: [result.exact_after, result.after, ...facts.flatMap(fact => [fact.after, fact.added_text])],
+  };
+  const ambiguous = [...mixedPrimary.other.added, ...mixedPrimary.other.removed];
+  // Review admission is not fact approval. Every directional claim must be in
+  // its clean named-primary entry, never only a foreign or unnamed entry. A
+  // quote shared with such an entry is ambiguous even if the model omits its
+  // foreign program name. Preserve all originals for the ordinary reviewer.
+  return Object.entries(quotes).every(([direction, values]) => values.map(cleanNullable).filter(Boolean)
+    .every(quote => textContainsEvidence(mixedPrimary.primary[direction], quote) &&
+      !textContainsEvidence(ambiguous, quote)));
 }
 
 function contentNoiseClass(changedText, source) {

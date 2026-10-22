@@ -1,0 +1,29 @@
+{
+  "schema": "awardping.mixed-homepage-retained-text-fixture.v1",
+  "purpose": "Public retained full text and exact directional producer output; not source approval, historical DOM equality, or an AI verdict.",
+  "source_id": "36b6f04f-404e-4f7c-9a90-49480ba13f0b",
+  "source_url": "https://yenchingacademy.pku.edu.cn/",
+  "before": {
+    "capture": "2026-09-29T01-00-23-096Z",
+    "raw_text": "ACADEMY\n \nYENCHING SCHOLARS\n \nADMISSIONS\n \nCURRICULUM\n \nSTUDENT DEVELOPMENT\n \nALUMNI\n \nNEWS & NOTICES\n \n中文\n \n\nThe Yenching Academy of Peking University aims to build bridges between China and the rest of the world through an interdisciplinary master's program in China Studies. This initiative brings together young people who have demonstrated a talent for leadership and innovation. At Yenching, they are immersed in an intensive learning environment where they can explore China and its role in the world—past, present, and future. The Academy's goal is to shape new generations of global citizens with a nuanced understanding of China.\n\nThe Yenching Academy provides full fellowships to its Scholars, and offers them a wide array of interdisciplinary courses on China within broadly defined fields of the humanities and social sciences. Working closely with their academic mentors, Yenching Scholars create their own study paths by choosing courses from six research areas. They participate in a variety of extracurricular activities and field studies, organized by the Yenching Academy, and designed by scholars themselves. Studying at the Academy is an exceptional opportunity to take part in intercultural exchanges and interdisciplinary learning, developing both personally and professionally.\n\nNews\nMore\nYenching Scholars Forum | China in Transition: Modernity, Sustainability & Humanity\n\n\nNotices\nMore\n【Open for Applications】YCA Alumni Enrichment Program (2026 Fall)\n\nApplications for the September 2027 intake are now open to international candidates and applicants from China’s Hong Kong, Macao, and Taiwan regions. The application deadline is November 30, 2026.\n\nApplication\n \n\nAddress: Jingyuan Courtyard 3, Peking University, 5 Yiheyuan Road, Haidian District, Beijing, 100871\n\nTel：010-6275 3625\n\nEmail：yca@pku.edu.cn\n\nAdmissions\n\nTel: 86-10-6274 4510 (Domestic)\n\n86-10-6276 6358 (International)\n\nEmail：yca-admissions@pku.edu.cn\n\nMedia\n\nTel：010-6276 8317\n\nEmail：gycapr@pku.edu.cn\n\nCareer Development\n\nTel：010-6275 6761\n\nEmail：ycacareer@pku.edu.cn\n\nAlumni\n\nTel：010-6275 6761\n\nEmail：ycaalumni@pku.edu.cn\n\n \n\nCopyright © 2018 Yenching Academy of Peking University\n\nWeChat\n",
+    "raw_sha256": "21d8d175ebeb0f95d36f40a1bb6957f9ba6b4d769dfd3d906bff687ea823698e",
+    "meta_sha256": "3f0cc73cb96eb9db882cbe08becf3f5a110236adbf41c893ef51aaa6ddfbc9c5"
+  },
+  "after": {
+    "capture": "2026-10-20T09-03-38-302Z",
+    "raw_text": "ACADEMY\n \nYENCHING SCHOLARS\n \nADMISSIONS\n \nCURRICULUM\n \nSTUDENT DEVELOPMENT\n \nALUMNI\n \nNEWS & NOTICES\n \n中文\n \n\nThe Yenching Academy of Peking University aims to build bridges between China and the rest of the world through an interdisciplinary master's program in China Studies. This initiative brings together young people who have demonstrated a talent for leadership and innovation. At Yenching, they are immersed in an intensive learning environment where they can explore China and its role in the world—past, present, and future. The Academy's goal is to shape new generations of global citizens with a nuanced understanding of China.\n\nThe Yenching Academy provides full fellowships to its Scholars, and offers them a wide array of interdisciplinary courses on China within broadly defined fields of the humanities and social sciences. Working closely with their academic mentors, Yenching Scholars create their own study paths by choosing courses from six research areas. They participate in a variety of extracurricular activities and field studies, organized by the Yenching Academy, and designed by scholars themselves. Studying at the Academy is an exceptional opportunity to take part in intercultural exchanges and interdisciplinary learning, developing both personally and professionally.\n\nNews\nMore\nHello, Cohort 2026!\n\n\nNotices\nMore\nMany Paths to Yenching Academy: Join Our October Information Sessions\n\nApplications for the September 2027 intake are now open to international candidates and applicants from China’s Hong Kong, Macao, and Taiwan regions. The application deadline is November 30, 2026.\n\nApplication\n \n\nAddress: Jingyuan Courtyard 3, Peking University, 5 Yiheyuan Road, Haidian District, Beijing, 100871\n\nTel：010-6275 3625\n\nEmail：yca@pku.edu.cn\n\nAdmissions\n\nTel: 86-10-6274 4510 (Domestic)\n\n86-10-6276 6358 (International)\n\nEmail：yca-admissions@pku.edu.cn\n\nMedia\n\nTel：010-6276 8317\n\nEmail：gycapr@pku.edu.cn\n\nCareer Development\n\nTel：010-6275 6761\n\nEmail：ycacareer@pku.edu.cn\n\nAlumni\n\nTel：010-6275 6761\n\nEmail：ycaalumni@pku.edu.cn\n\n \n\nCopyright © 2018 Yenching Academy of Peking University\n\nWeChat\n",
+    "raw_sha256": "f96da1b142c957fd0e1ba69e07135d67b867683f636337f3e5773d2bc340b80b",
+    "meta_sha256": "f18f9ff72dccf1357b64b3922138c336f6bced290054fe9213c8cf9e28ee2c0e"
+  },
+  "diff": {
+    "added_text": [
+      "Notices Many Paths to Yenching Academy:",
+      "Join Our October Information Sessions Applications for the September 2027 intake are now open to international candidates and applicants from China’s Hong Kong, Macao, and Taiwan regions."
+    ],
+    "removed_text": [
+      "Modernity, Sustainability & Humanity Notices 【Open for Applications】YCA Alumni Enrichment Program (2026 Fall) Applications for the September 2027 intake are now open to international candidates and applicants from China’s Hong Kong, Macao, and Taiwan regions."
+    ],
+    "date_changes": [],
+    "amount_changes": []
+  }
+}
