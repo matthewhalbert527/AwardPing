@@ -15,6 +15,7 @@ import { buildVisualReviewPromptPayload, changeDetailsFromVisualBatchResult,
   buildVisualReviewPromptText, visualReviewResponseSchemaForCandidate, visualReviewResponseSchema } from "./lib/visual-review-queue.mjs";
 import { visualReviewCompletionDecision } from "./lib/gemini-worker-policy.mjs";
 import { compareVisualCandidateOrder, findBlockingPriorVisualPublication } from "./lib/visual-publication-order.mjs";
+import { NATIVE_PDF_REVIEW_PROFILE, nativePdfCandidate } from "./lib/native-pdf-review.mjs";
 
 // Execute only actual extracted function declarations, never either CLI/main.
 // No artifacts, provider requests, database calls or worker operations are used.
@@ -30,7 +31,7 @@ function declarations(code, names) {
   }).join("\n");
 }
 function functions(code, names, globals = {}) {
-  const context = vm.createContext({ Buffer, console: { log() {} }, ...globals });
+  const context = vm.createContext({ Buffer, NATIVE_PDF_REVIEW_PROFILE, nativePdfCandidate, console: { log() {} }, ...globals });
   vm.runInContext(`${declarations(code, names)}\nthis.api={${names.join(",")}}`, context);
   return context.api;
 }
@@ -729,7 +730,7 @@ describe("manual hold has no automatic spend, rejection-ledger, cleanup or basel
     expect(outputs.has(join("synthetic-output", "previous-text.txt"))).toBe(false);
     expect(outputs.get(join("synthetic-output", "new-text.txt"))).toEqual(readFileSync(currentPath));
   });
-  function batchApi(row, { publication = false } = {}) {
+  function batchApi(row) {
     const writes = [], filters = [], report = {};
     let patch;
     const query = { update(value) { patch = value; return this; },

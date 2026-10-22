@@ -24,6 +24,12 @@ import {
 } from "./lib/visual-review-queue.mjs";
 import { assertVisualReviewBatchPolicyCoverage } from "./lib/award-monitoring-policy.mjs";
 import { legacyReviewCompletenessDecision, isLegacyParagraphReviewCandidate, legacyParagraphReviewLimits } from "./lib/legacy-review-completeness.mjs";
+import {
+  NATIVE_PDF_REVIEW_PROFILE,
+  nativePdfCandidate,
+  prepareNativePdfReview,
+  validateNativePdfReviewResult,
+} from "./lib/native-pdf-review.mjs";
 import { recordVisualRejectionLedger } from "./lib/visual-rejection-ledger.mjs";
 import { acquireVisualReviewPublicationClaim } from "./lib/visual-publication-claim.mjs";
 import { persistVisualChangeAndReconciliation } from "./lib/visual-change-publication.mjs";
@@ -1241,6 +1247,9 @@ function paidRetryRequestPreflight(candidate, source, approval, now = Date.now()
       !candidate.updated_at || candidate.updated_at !== approval.candidate_updated_at) {
     return hold("paid_retry_candidate_version_unavailable");
   }
+  if (nativePdfCandidate(candidate) && candidate.prompt_payload?.native_pdf_review_profile !== NATIVE_PDF_REVIEW_PROFILE) {
+    return hold("paid_retry_native_pdf_contract_not_approved");
+  }
   const expiresAt = Date.parse(approval.expires_at);
   if (!Number.isFinite(expiresAt) || expiresAt <= now) return hold("paid_retry_approval_expired_or_invalid");
   if (paidReviewLaneForCandidate(candidate) !== approval.lane_key ||
@@ -1455,6 +1464,10 @@ async function authorizePaidRetryCandidatesForSubmission({
   for (const candidate of candidates) {
     const precheck = paidVisualRetryAuthorizationPrecheck(candidate, laneKey);
     if (!precheck.required) continue;
+    if (nativePdfCandidate(candidate) && candidate.prompt_payload?.native_pdf_review_profile !== NATIVE_PDF_REVIEW_PROFILE) {
+      failures.push({ candidate, reason: "paid_retry_native_pdf_contract_not_approved", stage });
+      continue;
+    }
     if (!precheck.allowed) {
       failures.push({
         candidate,
@@ -1559,6 +1572,18 @@ async function failVisualProviderRequestEvidence(
   const now = new Date().toISOString();
   for (const failure of failures) {
     const candidate = failure.candidate;
+    if (candidate.worker_metadata?.native_pdf_review_profile === NATIVE_PDF_REVIEW_PROFILE) {
+      if (candidate.worker_metadata?.submission_claim_token !== claimToken) {
+        report.submission_claim_conflicts += 1;
+        continue;
+      }
+      await retainIncompleteReviewHold({ candidate, decision: { allowed: false, manual_review_required: true,
+        reason: /^native_pdf_review_[a-z_]+$/.test(failure.error?.code || "")
+          ? failure.error.code : "native_pdf_review_provider_request_invalid",
+        detail: truncate(errorMessage(failure.error), 500), retain_both_captures: true,
+        baseline_advance_allowed: false, automatic_retry_allowed: false, creates_api_charge: false } });
+      continue;
+    }
     if (isLegacyParagraphReviewCandidate(candidate) && failure.error?.code === "legacy_paragraph_provider_packet_exceeds_bound") {
       if (candidate.worker_metadata?.submission_claim_token !== claimToken) {
         report.submission_claim_conflicts += 1;
@@ -1637,11 +1662,14 @@ async function submitCandidateChunk(model, candidates, laneKey) {
           // Binds the lane's chosen model to the claim; the provider request,
           // fingerprint, reservation, and persisted model column read it.
           review_model: model,
+          ...(nativePdfCandidate(candidate)
+            ? { native_pdf_review_profile: NATIVE_PDF_REVIEW_PROFILE } : {}),
         }),
         updated_at: claimedAt,
       })
       .eq("id", candidate.id)
       .eq("status", "pending")
+      .eq("updated_at", candidate.updated_at)
       .is("gemini_batch_name", null)
       .select("*")
       .maybeSingle();
@@ -1651,13 +1679,43 @@ async function submitCandidateChunk(model, candidates, laneKey) {
   }
   if (!claimedCandidates.length) return;
 
+  const nativePdfClaimedCandidates = claimedCandidates.filter(candidate =>
+    candidate.worker_metadata?.native_pdf_review_profile === NATIVE_PDF_REVIEW_PROFILE);
+  let nativePdfSourcesById;
+  try {
+    nativePdfSourcesById = nativePdfClaimedCandidates.length
+      ? await loadSourcesById(nativePdfClaimedCandidates.map(candidate => candidate.shared_award_source_id))
+      : new Map();
+  } catch (error) {
+    // A transient database read is not a bad document or a paid retry. No
+    // reservation/create exists yet, so release these owned claims normally.
+    await releaseSubmissionClaims(claimedCandidates, claimToken, error);
+    throw error;
+  }
   const requestByCandidateId = new Map();
+  const verifiedPdfInputsByCandidateId = new Map();
   const providerRequestFingerprints = new Map();
   const requestEvidenceFailures = [];
   for (const candidate of claimedCandidates) {
     try {
-      const batchRequest = geminiBatchRequestForCandidate(candidate);
+      if (nativePdfCandidate(candidate) !==
+          (candidate.worker_metadata?.native_pdf_review_profile === NATIVE_PDF_REVIEW_PROFILE)) {
+        const error = new Error("The claimed PDF pair and review profile do not agree.");
+        error.code = "native_pdf_review_claim_profile_mismatch";
+        throw error;
+      }
+      // Resolve originals only AFTER the real compare-and-set claim. Missing,
+      // stale or partial pairs fail before reservation or any provider create.
+      let nativePdfInput = null;
+      if (candidate.worker_metadata?.native_pdf_review_profile === NATIVE_PDF_REVIEW_PROFILE) {
+        const source = nativePdfSourcesById.get(candidate.shared_award_source_id);
+        const rejectReason = preSubmissionRejectReason(candidate, source);
+        if (rejectReason) throw new Error(`Native PDF source is no longer eligible: ${rejectReason}.`);
+        nativePdfInput = await prepareNativePdfReview({ candidate, source, archiveRoot });
+      }
+      const batchRequest = geminiBatchRequestForCandidate(candidate, nativePdfInput);
       requestByCandidateId.set(candidate.id, batchRequest);
+      verifiedPdfInputsByCandidateId.set(candidate.id, nativePdfInput?.verifiedPdfInputs);
       providerRequestFingerprints.set(
         candidate.id,
         paidVisualProviderRequestFingerprint({
@@ -1709,9 +1767,16 @@ async function submitCandidateChunk(model, candidates, laneKey) {
   const requests = claimedCandidates.map((candidate) =>
     requestByCandidateId.get(candidate.id));
   const mode = batchInputModeForRequests(requests, { inlineThreshold });
-  const estimated = estimateGeminiMaximumBatchRequestsCostUsd(model, requests, {
-    maxOutputTokensPerRequest,
-  });
+  let estimated;
+  try {
+    estimated = estimateGeminiMaximumBatchRequestsCostUsd(model, requests, {
+      maxOutputTokensPerRequest,
+      verifiedPdfInputsByRequest: claimedCandidates.map(candidate => verifiedPdfInputsByCandidateId.get(candidate.id)),
+    });
+  } catch (error) {
+    await failVisualProviderRequestEvidence(claimedCandidates.map(candidate => ({ candidate, error })), claimToken);
+    return;
+  }
   const reservationKey = `${workKind}:${claimToken}`;
   const workFingerprint = paidReviewWorkFingerprint(
     workKind,
@@ -1736,7 +1801,9 @@ async function submitCandidateChunk(model, candidates, laneKey) {
         candidate_ids: claimedCandidates.map((candidate) => candidate.id),
         paid_lane: laneKey,
         work_fingerprint: workFingerprint,
-        reservation_basis: "text_utf8_and_image_tile_upper_bound_standard_rates_max_output",
+        reservation_basis: claimedCandidates.some(candidate => verifiedPdfInputsByCandidateId.get(candidate.id))
+          ? "verified_native_pdf_high_pages_and_native_utf8_2x_standard_rates_max_output"
+          : "text_utf8_and_image_tile_upper_bound_standard_rates_max_output",
       },
     });
     report.spend_reservations_created += 1;
@@ -1808,16 +1875,29 @@ async function submitCandidateChunk(model, candidates, laneKey) {
           laneKey,
         },
       ),
-      authorizeAtProviderBoundary: () =>
-        authorizePaidRetryCandidatesForSubmission({
+      authorizeAtProviderBoundary: async () => {
+        await verifyNativePdfSubmissionSources(claimedCandidates);
+        return authorizePaidRetryCandidatesForSubmission({
           candidates: claimedCandidates,
           claimToken,
           laneKey,
           stage: "before_provider_create",
           providerRequestFingerprints,
-        }),
+        });
+      },
     });
   } catch (error) {
+    if (Array.isArray(error?.nativePdfAuthorizationFailures)) {
+      await releaseGeminiSpendReservation({
+        supabase, reservationId: spendReservation.reservation_id,
+        reason: "provider_create_not_reached:native_pdf_source_changed",
+        expectedStatus: "creating", expectedAttemptToken: claimToken,
+      });
+      await failVisualProviderRequestEvidence(error.nativePdfAuthorizationFailures, claimToken);
+      const failedIds = new Set(error.nativePdfAuthorizationFailures.map(failure => failure.candidate.id));
+      await releaseSubmissionClaims(claimedCandidates.filter(candidate => !failedIds.has(candidate.id)), claimToken, error);
+      return;
+    }
     if (Array.isArray(error?.paidRetryAuthorizationFailures)) {
       await releaseGeminiSpendReservation({
         supabase,
@@ -1927,6 +2007,30 @@ async function submitCandidateChunk(model, candidates, laneKey) {
   console.log(`VISUAL_REVIEW_BATCH submitted job=${batchName} model=${model} candidates=${submittedCandidates.length}/${claimedCandidates.length} mode=${mode}`);
 }
 
+async function verifyNativePdfSubmissionSources(candidates) {
+  const pdfCandidates = candidates.filter(candidate =>
+    candidate.worker_metadata?.native_pdf_review_profile === NATIVE_PDF_REVIEW_PROFILE);
+  if (!pdfCandidates.length) return;
+  const sources = await loadSourcesById(pdfCandidates.map(candidate => candidate.shared_award_source_id));
+  const failures = [];
+  for (const candidate of pdfCandidates) {
+    const source = sources.get(candidate.shared_award_source_id);
+    const reason = preSubmissionRejectReason(candidate, source);
+    if (reason || source?.id !== candidate.shared_award_source_id || source?.shared_award_id !== candidate.shared_award_id ||
+        source?.url !== candidate.source_url ||
+        rebuildVisualReviewCandidateForCurrentPolicy(candidate, { source }).candidate_signature !== candidate.candidate_signature) {
+      const error = new Error(`Native PDF source changed before provider create: ${reason || "source_identity_or_context"}.`);
+      error.code = "native_pdf_review_source_changed_before_provider_create";
+      failures.push({ candidate, error });
+    }
+  }
+  if (failures.length) {
+    const error = new Error("Native PDF source authorization changed before provider create.");
+    error.nativePdfAuthorizationFailures = failures;
+    throw error;
+  }
+}
+
 async function persistSubmittedClaim({
   candidate,
   claimToken,
@@ -2001,7 +2105,7 @@ async function markSubmissionClaimsCreateStarted(
       .eq("status", "processing")
       .is("gemini_batch_name", null)
       .contains("worker_metadata", { submission_claim_token: claimToken })
-      .select("id,worker_metadata")
+      .select("id,worker_metadata,updated_at")
       .maybeSingle();
     if (error) {
       throw new Error(`Mark Gemini create start for ${candidate.id} failed: ${error.message}`);
@@ -2010,6 +2114,7 @@ async function markSubmissionClaimsCreateStarted(
       throw new Error(`Submission claim ${candidate.id} was lost before Gemini create POST.`);
     }
     candidate.worker_metadata = data.worker_metadata;
+    candidate.updated_at = data.updated_at;
   }
   await markGeminiSpendCreateStarted({
     supabase,
@@ -2534,6 +2639,21 @@ async function publishCandidateResultUnlocked({
   publicationClaimToken,
 }) {
   assertVisualReviewCompletedResult(result);
+  if (candidate.worker_metadata?.native_pdf_review_profile === NATIVE_PDF_REVIEW_PROFILE) {
+    // Rebuild from the same immutable originals under the source baseline lock.
+    // This also covers retained-result recovery; a schema-only page claim never
+    // acquires publication or baseline-advance authority.
+    let decision;
+    try {
+      const input = await prepareNativePdfReview({ candidate, source, archiveRoot, requireSubmissionClaim: false });
+      decision = validateNativePdfReviewResult({ candidate, result, pair: input.pair });
+    } catch (error) {
+      decision = { allowed: false, manual_review_required: true, reason: "native_pdf_evidence_unavailable",
+        baseline_advance_allowed: false, automatic_retry_allowed: false, creates_api_charge: false,
+        detail: errorMessage(error) };
+    }
+    if (!decision.allowed) return retainIncompleteReviewHold({ candidate, source, result, usage, decision, publicationClaimToken });
+  }
   const now = new Date().toISOString();
   if (!source) {
     await markPublicationCandidate(candidate, publicationClaimToken, {
@@ -3724,7 +3844,7 @@ async function markCandidateSucceededDryRun({ candidate, result, usage }) {
   return { status: "succeeded", reason: "apply_false" };
 }
 
-function geminiBatchRequestForCandidate(candidate) {
+function geminiBatchRequestForCandidate(candidate, nativePdfInput = null) {
   // The claim bound the model; the generation config (output cap + thinking)
   // comes from the same policy the spend estimate uses so they cannot drift.
   const generationConfig = visualReviewGenerationConfigForModel(
@@ -3733,7 +3853,25 @@ function geminiBatchRequestForCandidate(candidate) {
   const promptPayload = refreshVisualReviewPromptPayloadPolicy(candidate.prompt_payload || {});
   const promptText = buildVisualReviewPromptText(promptPayload);
   const parts = [{ text: promptText }];
-  if (promptPayload.include_images) {
+  const nativePdfReview = candidate.worker_metadata?.native_pdf_review_profile === NATIVE_PDF_REVIEW_PROFILE;
+  if (nativePdfCandidate(candidate) && !nativePdfReview) {
+    throw new Error("A claimed PDF pair cannot fall back to a text-only or thumbnail request.");
+  }
+  if (nativePdfReview) {
+    if (!nativePdfInput || visualReviewClaimedModel(candidate) !== "gemini-3.8-flash") {
+      throw new Error("Native PDF review requires both verified originals and its bound strong model.");
+    }
+    const retry = paidVisualRetryAuthorizationPrecheck(candidate, paidReviewLaneForCandidate(candidate));
+    if (retry.required && promptPayload.native_pdf_review_profile !== NATIVE_PDF_REVIEW_PROFILE) {
+      const error = new Error("The paid retry did not approve the native PDF input contract.");
+      error.code = "native_pdf_review_paid_contract_not_approved";
+      throw error;
+    }
+    generationConfig.mediaResolution = "MEDIA_RESOLUTION_HIGH";
+    parts.push({ text: nativePdfInput.instructions }, ...nativePdfInput.parts);
+  } else if (nativePdfInput) {
+    throw new Error("Native PDF evidence cannot attach to an unbound candidate.");
+  } else if (promptPayload.include_images) {
     const initialDocument =
       candidate.candidate_scope === INITIAL_OFFICIAL_DOCUMENT_SCOPE;
     const imageSides = [
@@ -4194,6 +4332,10 @@ async function findPriorNonterminalPublication(candidate) {
 
 function preSubmissionRejectReason(candidate, source) {
   if (!source) return "missing_source";
+  const nativePdfProfile = candidate.worker_metadata?.native_pdf_review_profile;
+  if (nativePdfProfile != null && nativePdfProfile !== NATIVE_PDF_REVIEW_PROFILE) {
+    return "manual_review_required:native_pdf_review_profile_unrecognized";
+  }
   if (source.admin_review_status && source.admin_review_status !== "open") return `source_not_open_${source.admin_review_status}`;
   const quality = sourceQualityDecision(source, { purpose: "monitoring" });
   const applicantSourceEscape = visualReviewConditionalSourceApplicantEscape({

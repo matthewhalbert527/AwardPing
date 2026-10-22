@@ -300,6 +300,7 @@ import {
   stableJsonStringify,
 } from "./lib/visual-review-queue.mjs";
 import { buildLegacyReviewCompleteness, buildLegacyParagraphReviewDiff, legacyReviewCompletenessDecision, legacyReviewCompletenessLimits } from "./lib/legacy-review-completeness.mjs";
+import { prepareNativePdfReviewCompleteness, verifyNativePdfReviewCompleteness } from "./lib/native-pdf-review.mjs";
 import {
   INITIAL_OFFICIAL_DOCUMENT_SCOPE,
   buildInitialOfficialDocumentCandidate,
@@ -6963,6 +6964,19 @@ async function enqueueVisualReviewCandidate({
   report,
   enqueuePolicy = null,
 }) {
+  if (Object.hasOwn(diff || {}, "native_pdf_completeness")) {
+    try {
+      await verifyNativePdfReviewCompleteness({ source, baseline, previousText: previous.text, currentText: capture.text, diff, archiveRoot,
+        previousSnapshotRef: buildVisualSnapshotRef(previous, toArchiveRelative, baseline),
+        newSnapshotRef: buildVisualSnapshotRef(capture, toArchiveRelative) });
+    } catch (error) {
+      await holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report, suppliedDecision: {
+        allowed: false, reason: error?.nativePdfReviewHold ? error.code : "native_pdf_review_whole_original_verification_failed",
+        baseline_advance_allowed: false, retain_both_captures: true, creates_api_charge: false,
+      } });
+      return { manual_review_required: true, retains_current_capture: true, candidate_inserted: false };
+    }
+  }
   if (await holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report })) {
     return { manual_review_required: true, retains_current_capture: true, candidate_inserted: false };
   }
@@ -7417,6 +7431,23 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`REVIEW ${pdfHold} ${sourceLabel(source)}`);
     return;
+  }
+
+  // Only a NEW, otherwise complete long-native capture may opt in. Old stored
+  // packets, paragraph-v2, sparse/same-text and disabled/nonbatch paths keep
+  // their existing contracts. Never convert an excluded unit into zero.
+  if (interpretVisualChanges && visualReviewMode === "batch" &&
+      diff.legacy_review_completeness?.schema === "awardping.legacy-eligible-text-completeness.v1" &&
+      legacyReviewCompletenessDecision({ source, baseline, previous, capture, diff }).reason === "legacy_review_complete_context_exceeds_bound") {
+    try {
+      diff.native_pdf_completeness = await prepareNativePdfReviewCompleteness({ source, baseline, previousText: previous.text, currentText: capture.text, diff, archiveRoot,
+        previousSnapshotRef: buildVisualSnapshotRef(previous, toArchiveRelative, baseline),
+        newSnapshotRef: buildVisualSnapshotRef(capture, toArchiveRelative) });
+    } catch (error) {
+      // The original complete diff and both captures remain in the normal
+      // manual-review record below; no candidate or paid request is created.
+      deterministic.native_pdf_completeness_hold = error?.nativePdfReviewHold ? error.code : "native_pdf_review_whole_original_preparation_failed";
+    }
   }
 
   if (await holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report })) return;
@@ -15146,8 +15177,8 @@ function excludedLegacyChangedUnits(previousText, currentText, addedText, remove
   return excluded;
 }
 
-async function holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report }) {
-  const decision = legacyReviewCompletenessDecision({ source, baseline, previous, capture, diff });
+async function holdIncompleteLegacyReview({ source, baseline, previous, capture, diff, report, suppliedDecision = null }) {
+  const decision = suppliedDecision || legacyReviewCompletenessDecision({ source, baseline, previous, capture, diff });
   if (decision.applicable === false || decision.allowed) return false;
   capture.persist_expansion_state_screenshots = true;
   const reviewPath = saveReviewRecord({ source, baseline: baseline || {}, previous: previous || {}, capture, diff,

@@ -4,6 +4,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import * as queue from "./lib/visual-review-queue.mjs";
+import { NATIVE_PDF_REVIEW_PROFILE, nativePdfCandidate } from "./lib/native-pdf-review.mjs";
 import { sourceQualityDecision } from "./lib/source-quality.mjs";
 import { buildLegacyReviewCompleteness, legacyReviewCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
 import {
@@ -107,6 +108,7 @@ function harness(f = fixture(), { lane = changedLane, beforeConsume = null, cons
   const report = { retried_failed_candidates: 0, paid_retry_approvals_required: 0, paid_retry_preflight_held: 0,
     paid_retry_preflight_holds: [], paid_retry_request_drift_invalidated: 0, superseded: 0 };
   const actual = runInNewContext(`${code}\n({${names.join(",")}})`, { ...queue, sourceQualityDecision,
+    NATIVE_PDF_REVIEW_PROFILE, nativePdfCandidate,
     legacyReviewCompletenessDecision,
     rebuildVisualReviewCandidateForCurrentPolicy: rebuild,
     paidReviewLaneForCandidate: paidVisualReviewLaneForCandidate, paidLane: lane, limit: 10, supabase, report,
@@ -508,9 +510,11 @@ describe("published Stage1 changed-page pending selection (actual worker / SELEC
       paidReviewWorkKindForLane: () => "changed-page-review", paidReviewLaneForCandidate: () => changedLane,
       visualReviewMaxOutputTokensForModel: () => 2048, timestampForPath: () => "synthetic-time",
       workerMetadataForCandidate: () => ({}), reserveGeminiSpend: reserve, createGeminiBatchJob: provider,
+      nativePdfCandidate,
     });
     await submitChunk("unchanged-model", [selected.candidates[0]], changedLane);
     expect(clauses).toEqual([["eq", "id", "priority"], ["eq", "status", "pending"],
+      ["eq", "updated_at", selected.candidates[0].updated_at],
       ["is", "gemini_batch_name", null], ["select", "*"]]);
     expect(report.submission_claim_conflicts).toBe(1); expect(reserve).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
   });

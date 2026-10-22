@@ -4,6 +4,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import * as queue from "./lib/visual-review-queue.mjs";
+import { NATIVE_PDF_REVIEW_PROFILE, nativePdfCandidate } from "./lib/native-pdf-review.mjs";
 import { buildLegacyReviewCompleteness, isLegacyParagraphReviewCandidate, legacyParagraphReviewLimits, legacyReviewCompletenessDecision } from "./lib/legacy-review-completeness.mjs";
 import { compareVisualCandidateOrder, findBlockingPriorVisualPublication } from "./lib/visual-publication-order.mjs";
 import {
@@ -46,7 +47,7 @@ function publicationFunctions(names, globals) {
     if (matches.length !== 1) throw new Error(`Expected one real declaration: ${name}`);
     return matches[0].getText(ast);
   }).join("\n");
-  return runInNewContext(`${declarations}; ({${names.join(",")}})`, { Buffer, ...globals });
+  return runInNewContext(`${declarations}; ({${names.join(",")}})`, { Buffer, NATIVE_PDF_REVIEW_PROFILE, nativePdfCandidate, ...globals });
 }
 const historyId = n => `20000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 const historyTime = n => new Date(Date.UTC(2026, 9, 18) + n * 1000).toISOString();
@@ -245,6 +246,7 @@ describe("compact output contract, with retained Goldwater failure provenance", 
     expect(fn).toBeTruthy();
     const makeRequest = runInNewContext(`${fn.getText(ast)}; geminiBatchRequestForCandidate`, {
       ...queue, visualReviewGenerationConfigForModel, visualReviewClaimedModel, monitoringPolicy: null,
+      NATIVE_PDF_REVIEW_PROFILE, nativePdfCandidate,
       Buffer, isLegacyParagraphReviewCandidate, legacyParagraphReviewLimits,
     });
     const request = makeRequest({ id: "test-candidate", candidate_signature: "test-signature", model, worker_metadata: { review_model: model }, prompt_payload: candidate.prompt_payload }).request;

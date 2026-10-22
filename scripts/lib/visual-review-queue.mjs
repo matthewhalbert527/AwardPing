@@ -18,7 +18,9 @@ import { assertRenderedHtmlArtifactIdentity } from "./r2-capture-artifact-bindin
 import { temporalContextAmbiguityDecision } from "./visual-review-temporal-context.mjs";
 import { SOURCE_HTML_PROFILE, validateSourceHtmlEvidence, sourceHtmlReviewText } from "./source-html-evidence.mjs";
 import { sourceHtmlReviewPairingVerified } from "./source-html-review-contract.mjs";
-import { legacyReviewCompletenessDecision, isLegacyParagraphReviewCandidate, legacyParagraphReviewResponseSchema } from "./legacy-review-completeness.mjs";
+import { legacyReviewCompletenessDecision, isLegacyParagraphReviewCandidate, legacyParagraphReviewResponseSchema,
+  nativePdfWholeOriginalCompletenessDecision } from "./legacy-review-completeness.mjs";
+import { NATIVE_PDF_REVIEW_PROFILE, nativePdfResponseSchema } from "./native-pdf-review.mjs";
 
 export const visualReviewResponseSchema = {
   type: "object",
@@ -84,7 +86,9 @@ export const visualReviewResponseSchema = {
 };
 
 export function visualReviewResponseSchemaForCandidate(candidate) {
-  return isLegacyParagraphReviewCandidate(candidate) ? legacyParagraphReviewResponseSchema(visualReviewResponseSchema) : visualReviewResponseSchema;
+  const schema = isLegacyParagraphReviewCandidate(candidate) ? legacyParagraphReviewResponseSchema(visualReviewResponseSchema) : visualReviewResponseSchema;
+  return candidate?.worker_metadata?.native_pdf_review_profile === NATIVE_PDF_REVIEW_PROFILE
+    ? nativePdfResponseSchema(schema, { wholeOriginal: Object.hasOwn(candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {}, "native_pdf_completeness") }) : schema;
 }
 
 const rejectNoiseFlags = new Set([
@@ -402,6 +406,7 @@ export function visualReviewEvidenceSignature({
     previous_section_hash: diff?.previous_section_hash || null,
     new_section_hash: diff?.new_section_hash || null,
     deterministic_diff: compactDiffSignature(diff),
+    ...(Object.hasOwn(diff || {}, "native_pdf_completeness") ? { native_pdf_completeness_sha256: diff.native_pdf_completeness?.digest || null } : {}),
     deterministic_classification: deterministic?.classification || deterministic?.reason || null,
     behavior_version: behaviorVersion || null,
   };
@@ -777,7 +782,11 @@ export function buildVisualReviewPromptPayload({
     diff?.scrapling_semantics?.version === 4 && diff?.scrapling_semantics?.representation === "lossless_context_tables" &&
     diff?.scrapling_semantics?.complete === true && diff?.scrapling_semantics?.context_table_reconstruction_verified === true &&
     diff?.scrapling_semantics?.current_context_tables?.schema === "awardping.scrapling-context-tables.v1";
-  const contextRepresentation = tableScraplingContext ? "lossless_context_tables" : sharedScraplingContext ? "lossless_shared_context" : null;
+  const wholeOriginalPdfContext = Object.hasOwn(diff || {}, "native_pdf_completeness");
+  if (wholeOriginalPdfContext && !nativePdfWholeOriginalCompletenessDecision({ source, baseline, capture, diff,
+    previousSnapshotRef: previousRef, newSnapshotRef: newRef }).allowed) throw new Error("Whole-original PDF prompt requires its complete bound admission proof.");
+  const contextRepresentation = wholeOriginalPdfContext ? "complete_original_pdfs"
+    : tableScraplingContext ? "lossless_context_tables" : sharedScraplingContext ? "lossless_shared_context" : null;
   const completeness = legacyReviewCompletenessDecision({ source, baseline, previous, capture, diff });
   const completeLegacyContext = Boolean(diff?.legacy_review_completeness);
 
@@ -793,6 +802,10 @@ export function buildVisualReviewPromptPayload({
     }),
     previous_snapshot_ref: previousRef,
     new_snapshot_ref: newRef,
+    // A future paid retry approves this typed input contract as part of its
+    // stored prompt. Never retrofit the marker into an older failed packet.
+    ...(previousRef.kind === "pdf" && newRef.kind === "pdf"
+      ? { native_pdf_review_profile: NATIVE_PDF_REVIEW_PROFILE } : {}),
     hashes: {
       previous_text_hash: baseline?.text_hash || null,
       new_text_hash: capture?.text_hash || null,
@@ -836,8 +849,8 @@ export function buildVisualReviewPromptPayload({
   };
 }
 
-export function buildVisualSnapshotRef(capture, archiveRelative = (value) => value || null) {
-  return snapshotRef(capture, capture, archiveRelative);
+export function buildVisualSnapshotRef(capture, archiveRelative = (value) => value || null, hashes = capture) {
+  return snapshotRef(capture, hashes, archiveRelative);
 }
 
 export function buildVisualReviewPromptText(payload) {
@@ -892,6 +905,10 @@ export function buildVisualReviewPromptText(payload) {
     stableJsonStringify(payload.deterministic_classification || {}),
     "",
     "Deterministic diff summary:",
+    ...(payload.text_context_representation === "complete_original_pdfs" ? [
+      "Whole-original native PDF context: BOTH complete immutable PDFs are attached in previous/current order. Empty excerpt fields are intentional, not missing context. Read every page, including unchanged audience, cycle, exception and date qualifiers.",
+      "The versioned admission proof binds all raw artifacts, complete native page inventories and EVERY directional evidence entry with zero excluded eligible units. Do not infer exhaustive visual accuracy from native extraction. Return pdf_review.unit_reviews for every exact field/index; applicant_change units require supported linked facts, wording_only/noise units require no linked facts, and uncertain or missing units hold the whole pair.",
+    ] : []),
     ...(payload.deterministic_diff?.scrapling_semantics?.capture_profile === SOURCE_HTML_PROFILE ? [
       "HTML-only evidence: these captures are complete ordinary HTTP responses, not browser-visible pages. No screenshot was collected. Never claim a visual change, highlight location, form interaction or client-loaded content.",
       "Changed blocks are paired within the full source and its main element. Read all retained audience, cycle, exception and conflicting-date context. Reject hidden/stale/ambiguous source claims rather than treating source markup as proof of current eligibility.",

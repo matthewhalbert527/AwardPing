@@ -1,4 +1,5 @@
 import { isStage1ManifestSource } from "./stage1-manifest-sources.mjs";
+import { nativePdfCandidate } from "./native-pdf-review.mjs";
 
 // Fleet default: every worker lane reviews with the cheap flash-lite model.
 export const GEMINI_WORKER_MODEL = "gemini-2.5-flash-lite";
@@ -123,6 +124,7 @@ export function visualReviewEscalationAttempt(candidate) {
  */
 export function modelForCandidate(candidate, manifest) {
   if (visualReviewEscalation(candidate)) return GEMINI_STRONG_WORKER_MODEL;
+  if (nativePdfCandidate(candidate)) return GEMINI_STRONG_WORKER_MODEL;
   if (isStage1ManifestSource(manifest, candidate?.shared_award_source_id)) {
     return GEMINI_STRONG_WORKER_MODEL;
   }
@@ -131,6 +133,7 @@ export function modelForCandidate(candidate, manifest) {
 
 export function visualReviewModelSelectionReason(candidate, manifest) {
   if (visualReviewEscalation(candidate)) return "escalation";
+  if (nativePdfCandidate(candidate)) return "native_pdf_pair";
   if (isStage1ManifestSource(manifest, candidate?.shared_award_source_id)) {
     return "stage1_manifest_source";
   }

@@ -7,6 +7,7 @@ export const legacyReviewCompletenessSchema = "awardping.legacy-eligible-text-co
 export const legacyReviewCompletenessLimits = Object.freeze({ evidenceItems: 8, resultFacts: 12, contextChars: 12_000, packetBytes: 128_000 });
 export const legacyParagraphReviewSchema = "awardping.legacy-paired-paragraph-completeness.v2";
 export const legacyParagraphReviewLimits = Object.freeze({ blocks: 8, contextChars: 16_000, packetBytes: 128_000 });
+export const nativePdfWholeOriginalCompletenessSchema = "awardping.native-pdf-whole-original-completeness.v1";
 const fields = ["added_text", "removed_text", "date_changes", "amount_changes"];
 const hash = value => createHash("sha256").update(value).digest("hex");
 const object = value => value && typeof value === "object" && !Array.isArray(value);
@@ -17,6 +18,81 @@ const validValues = diff => fields.every(field => Array.isArray(diff?.[field] ??
 const hold = reason => ({ allowed: false, manual_review_required: true, reason, retain_both_captures: true, baseline_advance_allowed: false, creates_api_charge: false,
   solution: "Preserve the saved captures and any completed response. Rebuild and verify the complete legacy evidence from its original bound artifacts; do not retry AI or advance the baseline automatically." });
 const delegate = reason => ({ applicable: false, allowed: false, requires_existing_contract: true, reason });
+const exactKeys = (value, expected) => object(value) && equal(Object.keys(value).sort(), [...expected].sort());
+const sorted = value => Array.isArray(value) ? value.map(sorted) : object(value)
+  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
+const canonicalHash = value => hash(JSON.stringify(sorted(value)));
+
+export function nativePdfWholeOriginalCompletenessDigest(proof) {
+  if (!object(proof)) return null;
+  return canonicalHash(Object.fromEntries(Object.entries(proof).filter(([key]) => key !== "digest")));
+}
+
+/** Structural binding only. The concrete PDF reader must verify all originals. */
+export function nativePdfWholeOriginalCompletenessDecision({ candidate = null, source = null, diff = null, baseline = null,
+  capture = null, previousSnapshotRef = null, newSnapshotRef = null } = {}) {
+  const payload = candidate?.prompt_payload;
+  diff ||= candidate?.deterministic_diff || payload?.deterministic_diff || {};
+  const proof = diff.native_pdf_completeness, legacy = diff.legacy_review_completeness;
+  const reject = reason => hold(`native_pdf_whole_original_${reason}`);
+  const identity = { id: source?.id || candidate?.shared_award_source_id, stored_owner_id: source?.shared_award_id || candidate?.shared_award_id,
+    url: source?.url || candidate?.source_url, page_type: source?.page_type || candidate?.source_page_type || payload?.source?.page_type };
+  const refs = { previous: previousSnapshotRef || candidate?.previous_snapshot_ref, current: newSnapshotRef || candidate?.new_snapshot_ref };
+  if (!exactKeys(proof, ["schema", "representation", "archive_root", "source", "previous", "current", "directional_counts",
+    "directional_sha256", "excluded_changed_units", "legacy_proof_sha256", "digest"]) || proof.schema !== nativePdfWholeOriginalCompletenessSchema ||
+      proof.representation !== "complete_original_pdfs" || typeof proof.archive_root !== "string" || !proof.archive_root ||
+      !exactKeys(proof.source, ["id", "stored_owner_id", "url", "page_type"]) || !equal(proof.source, identity) ||
+      !sha(proof.digest) || nativePdfWholeOriginalCompletenessDigest(proof) !== proof.digest) return reject("proof_binding");
+  const evidence = values(diff);
+  if (diff.candidate_scope && diff.candidate_scope !== "content_change") return reject("scope");
+  if (!validValues(diff) || fields.some(field => evidence[field].length > legacyReviewCompletenessLimits.evidenceItems) ||
+      !evidence.added_text.length && !evidence.removed_text.length ||
+      legacy?.schema !== legacyReviewCompletenessSchema || legacy.representation !== "legacy_eligible_directional_text" ||
+      legacy.source_id !== identity.id || legacy.source_url !== identity.url || legacy.excluded_changed_units !== 0 || proof.excluded_changed_units !== 0 ||
+      !exactKeys(proof.directional_counts, fields) || !equal(proof.directional_counts, legacy.directional_counts) ||
+      fields.some(field => proof.directional_counts[field] !== evidence[field].length) ||
+      proof.directional_sha256 !== hash(JSON.stringify(evidence)) || proof.directional_sha256 !== legacy.directional_sha256 ||
+      proof.legacy_proof_sha256 !== canonicalHash(legacy)) return reject("directional_accounting");
+  let pdfBytes = 0, nativeBytes = 0, pageBytes = 0;
+  for (const side of ["previous", "current"]) {
+    const row = proof[side], ref = refs[side], prefix = side === "previous" ? "previous" : "new";
+    const textHash = side === "previous" ? baseline?.text_hash || candidate?.previous_text_hash : capture?.text_hash || candidate?.new_text_hash;
+    const fileHash = side === "previous" ? baseline?.file_hash || candidate?.previous_file_hash : capture?.file_hash || candidate?.new_file_hash;
+    if (!exactKeys(row, ["snapshot_ref_sha256", "artifact_manifest_digest", "pdf_sha256", "pdf_byte_length", "text_artifact_sha256",
+      "text_artifact_byte_length", "meta_artifact_sha256", "meta_artifact_byte_length", "captured_at", "final_url", "semantic_text_sha256",
+      "text_length", "text_writer_frame", "native_text_sha256", "native_text_byte_length", "page_count", "pages"]) ||
+        !sha(row.snapshot_ref_sha256) || !sha(row.artifact_manifest_digest) || !sha(row.pdf_sha256) || row.pdf_sha256 !== fileHash ||
+        !sha(row.text_artifact_sha256) || !sha(row.meta_artifact_sha256) || !Number.isFinite(Date.parse(row.captured_at)) || typeof row.final_url !== "string" ||
+        !sha(row.semantic_text_sha256) || row.semantic_text_sha256 !== textHash ||
+        !Number.isSafeInteger(row.text_length) || row.text_length <= 0 || !["none", "one_lf"].includes(row.text_writer_frame) ||
+        legacy[`${side}_text_sha256`] !== (row.text_writer_frame === "one_lf" ? row.text_artifact_sha256 : row.semantic_text_sha256) ||
+        legacy[`${side}_text_length`] !== row.text_length + Number(row.text_writer_frame === "one_lf") ||
+        !sha(row.native_text_sha256) || !Number.isSafeInteger(row.native_text_byte_length) || row.native_text_byte_length <= 0 ||
+        !Number.isSafeInteger(row.page_count) || row.page_count < 1 || row.page_count > 25 || !Array.isArray(row.pages) || row.pages.length !== row.page_count ||
+        row.pages.some((page, i) => !exactKeys(page, ["page", "native_text_sha256", "native_text_byte_length"]) || page.page !== i + 1 ||
+          !sha(page.native_text_sha256) || !Number.isSafeInteger(page.native_text_byte_length) || page.native_text_byte_length <= 0) ||
+        [row.pdf_byte_length, row.text_artifact_byte_length, row.meta_artifact_byte_length].some(length => !Number.isSafeInteger(length) || length <= 0) ||
+        row.text_artifact_byte_length > 2 * 1024 * 1024 + 1 || row.meta_artifact_byte_length > 256 * 1024) return reject("original_binding");
+    if ((candidate && !ref) || (ref && (ref.kind !== "pdf" || row.snapshot_ref_sha256 !== canonicalHash(ref) ||
+        row.artifact_manifest_digest !== ref.artifact_manifest_digest || row.pdf_sha256 !== ref.file_hash || row.semantic_text_sha256 !== ref.text_hash ||
+        row.pdf_sha256 !== ref.local_paths?.pdf?.sha256 || row.pdf_byte_length !== ref.local_paths?.pdf?.byte_length ||
+        row.text_artifact_sha256 !== ref.local_paths?.text?.sha256 || row.text_artifact_byte_length !== ref.local_paths?.text?.byte_length ||
+        row.meta_artifact_sha256 !== ref.local_paths?.meta?.sha256 || row.meta_artifact_byte_length !== ref.local_paths?.meta?.byte_length ||
+        row.captured_at !== ref.captured_at || row.final_url !== ref.final_url))) return reject("original_binding");
+    if (candidate && (payload?.hashes?.[`${prefix}_file_hash`] !== row.pdf_sha256 || payload?.hashes?.[`${prefix}_text_hash`] !== row.semantic_text_sha256 ||
+        !equal(payload?.[side === "previous" ? "previous_snapshot_ref" : "new_snapshot_ref"], ref))) return reject("prompt_binding");
+    pdfBytes += row.pdf_byte_length; nativeBytes += row.native_text_byte_length;
+    pageBytes += row.pages.reduce((sum, page) => sum + page.native_text_byte_length, 0);
+  }
+  if (!(Date.parse(proof.previous.captured_at) < Date.parse(proof.current.captured_at)) || proof.previous.pdf_sha256 === proof.current.pdf_sha256 ||
+      proof.previous.semantic_text_sha256 === proof.current.semantic_text_sha256 || pdfBytes > 16 * 1024 * 1024 || nativeBytes > 2 * 1024 * 1024 ||
+      pageBytes > 2 * 1024 * 1024 || Buffer.byteLength(JSON.stringify({ proof, evidence }), "utf8") > legacyReviewCompletenessLimits.packetBytes) return reject("pair_bounds");
+  if (candidate && (candidate.candidate_scope !== "content_change" || candidate.prompt_payload?.native_pdf_review_profile !== "awardping.native-pdf-pair-review.v1" ||
+      payload.text_context_representation !== "complete_original_pdfs" || payload.previous_text_excerpt !== "" || payload.new_text_excerpt !== "" ||
+      !equal(payload.deterministic_diff?.native_pdf_completeness, proof) || !equal(payload.deterministic_diff?.legacy_review_completeness, legacy) ||
+      fields.some(field => !equal(payload.deterministic_diff?.[field], evidence[field]) || !equal(payload.text_evidence?.[field], evidence[field])))) return reject("prompt_binding");
+  return { allowed: true, reason: "bound_complete_original_pdf_input_requires_raw_verification", requires_original_pdf_verification: true };
+}
 
 export function isLegacyParagraphReviewCandidate(candidate) {
   return (candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff)?.legacy_review_completeness?.schema === legacyParagraphReviewSchema;
@@ -201,6 +277,11 @@ export function legacyReviewCompletenessDecision({ candidate = null, source = nu
     // A scope/version/complete tag is NOT raw-artifact or pairing authority.
     // Callers must continue the existing concrete Scrapling/HTML validators.
     return delegate("requires_existing_scrapling_contract");
+  }
+  if (Object.hasOwn(diff, "native_pdf_completeness")) {
+    const native = nativePdfWholeOriginalCompletenessDecision({ candidate, source, diff, baseline, capture,
+      previousSnapshotRef: previous?.snapshot_ref, newSnapshotRef: capture?.snapshot_ref });
+    return native.allowed ? delegate("requires_existing_verified_whole_original_pdf_contract") : native;
   }
   if (diff.legacy_review_completeness?.schema === legacyParagraphReviewSchema) return paragraphCompletenessDecision({ candidate, source, diff, baseline, previous, capture, result });
   const previousHash = baseline?.text_hash || candidate?.previous_text_hash || payload?.hashes?.previous_text_hash;

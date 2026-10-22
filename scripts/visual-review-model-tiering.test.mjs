@@ -277,11 +277,11 @@ describe("visual review model tiering", () => {
     );
     expect(submit).toContain("const maxOutputTokensPerRequest = visualReviewMaxOutputTokensForModel(model)");
     expect(submit).toContain("review_model: model,");
-    expect(submit).toContain("geminiBatchRequestForCandidate(candidate)");
-    expect(submit).toContain("maxOutputTokensPerRequest,\n  });");
+    expect(submit).toContain("geminiBatchRequestForCandidate(candidate, nativePdfInput)");
+    expect(submit).toContain("maxOutputTokensPerRequest,\n      verifiedPdfInputsByRequest:");
     expect(submit).not.toContain("maxOutputTokensPerRequest: 900");
     expect(submit.indexOf("review_model: model,")).toBeLessThan(
-      submit.indexOf("geminiBatchRequestForCandidate(candidate)"),
+      submit.indexOf("geminiBatchRequestForCandidate(candidate, nativePdfInput)"),
     );
 
     const request = functionBody(

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { estimateGeminiCostUsd, estimateTextTokens } from "./gemini-batch-support.mjs";
 
 export const GEMINI_PAID_LANES = Object.freeze({
@@ -276,9 +277,14 @@ export function estimateGeminiMaximumBatchRequestsCostUsd(
     maxOutputTokensPerRequest,
     inputOverheadTokensPerRequest = 1_024,
     imageTokenSafetyMultiplier = 2,
+    verifiedPdfInputsByRequest,
   } = {},
 ) {
   const items = Array.isArray(requests) ? requests : [];
+  if (verifiedPdfInputsByRequest !== undefined && (
+    !Array.isArray(verifiedPdfInputsByRequest) || verifiedPdfInputsByRequest.length !== items.length ||
+    items.some((_, index) => !Object.hasOwn(verifiedPdfInputsByRequest, index))
+  )) throw new Error("Verified PDF budget inputs must match every request.");
   const maximumOutputTokens = positiveInt(maxOutputTokensPerRequest, "maxOutputTokensPerRequest");
   const overhead = Math.max(0, Math.ceil(Number(inputOverheadTokensPerRequest) || 0));
   const imageMultiplier = Math.max(1, Number(imageTokenSafetyMultiplier) || 1);
@@ -288,9 +294,13 @@ export function estimateGeminiMaximumBatchRequestsCostUsd(
   // malformed image data falls back to its encoded byte length. Standard
   // (non-Batch) rates add 2x price headroom over the Batch endpoint.
   const maximumInputTokens = items.reduce(
-    (sum, request) => {
-      const analyzed = analyzeGeminiRequestInput(request);
-      return sum + analyzed.textBytes + Math.ceil(analyzed.imageTokens * imageMultiplier) + overhead;
+    (sum, request, index) => {
+      const analyzed = analyzeGeminiRequestInput(request, {
+        model,
+        verifiedPdfInputs: verifiedPdfInputsByRequest?.[index],
+      });
+      const multiplier = verifiedPdfInputsByRequest?.[index] == null ? imageMultiplier : Math.max(2, imageMultiplier);
+      return sum + analyzed.textBytes + Math.ceil(analyzed.imageTokens * multiplier) + overhead;
     },
     0,
   );
@@ -304,10 +314,34 @@ export function estimateGeminiMaximumBatchRequestsCostUsd(
   );
 }
 
-export function analyzeGeminiRequestInput(request) {
+export function analyzeGeminiRequestInput(request, { model, verifiedPdfInputs } = {}) {
+  const pdfInputs = verifiedPdfInputs == null ? null : verifiedPdfBudgetInputs(request, model, verifiedPdfInputs);
+  let pdfIndex = 0;
+  let pdfBytes = 0;
+  let nativeTextBytes = 0;
   let imageTokens = 0;
-  const scrubbed = scrubInlineImageData(request, (inlineData) => {
+  const scrubbed = scrubInlineImageData(request, (inlineData, part) => {
     const encoded = typeof inlineData?.data === "string" ? inlineData.data : "";
+    const mime = cleanText(inlineData?.mimeType || inlineData?.mime_type).toLowerCase();
+    if (pdfInputs && mime === "application/pdf") {
+      const expected = pdfInputs[pdfIndex++];
+      if (!expected || part.mediaResolution !== undefined || part.media_resolution !== undefined ||
+        (inlineData.mimeType !== undefined && inlineData.mime_type !== undefined) ||
+        encoded.length !== 4 * Math.ceil(expected.byte_length / 3)) {
+        throw new Error("Native PDF budget part binding is invalid.");
+      }
+      const buffer = Buffer.from(encoded, "base64");
+      pdfBytes += buffer.length;
+      if (buffer.toString("base64") !== encoded || buffer.length !== expected.byte_length ||
+        pdfBytes > 16 * 1024 * 1024 || !buffer.subarray(0, 1024).includes(Buffer.from("%PDF-")) ||
+        createHash("sha256").update(buffer).digest("hex") !== expected.sha256) {
+        throw new Error("Native PDF budget bytes do not match verified inputs.");
+      }
+      // Gemini 3 HIGH PDF media: 1120 tokens/page; count all native bytes too.
+      imageTokens += expected.page_count * 1_120;
+      nativeTextBytes += Buffer.byteLength(expected.native_text, "utf8");
+      return;
+    }
     if (!encoded) return;
     const buffer = Buffer.from(encoded, "base64");
     const dimensions = imageDimensions(buffer, inlineData?.mimeType || inlineData?.mime_type);
@@ -315,10 +349,41 @@ export function analyzeGeminiRequestInput(request) {
       ? geminiImageTokens(dimensions.width, dimensions.height)
       : Buffer.byteLength(encoded, "utf8");
   });
+  if (pdfInputs && pdfIndex !== pdfInputs.length) throw new Error("Native PDF budget requires both verified PDF parts.");
   return {
-    textBytes: Buffer.byteLength(JSON.stringify(scrubbed ?? {}), "utf8"),
+    textBytes: Buffer.byteLength(JSON.stringify(scrubbed ?? {}), "utf8") + nativeTextBytes,
     imageTokens,
   };
+}
+
+// These external inputs must come from the producer's verified BOTH-document
+// parse, never request hints. Byte matching below binds that trusted count/text
+// to each actual part; this estimator does not itself establish parse lineage,
+// candidate ownership, approval, or a live claim. No opt-in keeps old fallback.
+function verifiedPdfBudgetInputs(request, model, inputs) {
+  const body = request?.request || request;
+  if (model !== "gemini-3.8-flash" || body?.generationConfig?.mediaResolution !== "MEDIA_RESOLUTION_HIGH" ||
+    body.generation_config !== undefined || body.generationConfig.media_resolution !== undefined ||
+    !Array.isArray(inputs) || inputs.length !== 2) {
+    throw new Error("Native PDF budget requires the supported model, HIGH resolution, and both verified inputs.");
+  }
+  const checked = inputs.map(input => {
+    const keys = ["sha256", "byte_length", "page_count", "native_text"];
+    if (!input || typeof input !== "object" || Array.isArray(input) ||
+      Object.keys(input).length !== keys.length || !keys.every(key => Object.hasOwn(input, key)) ||
+      !/^[0-9a-f]{64}$/.test(input.sha256) ||
+      !Number.isSafeInteger(input.byte_length) || input.byte_length < 1 || input.byte_length > 16 * 1024 * 1024 ||
+      !Number.isSafeInteger(input.page_count) || input.page_count < 1 || input.page_count > 25 ||
+      typeof input.native_text !== "string" || input.native_text.length > 2_500_024 ||
+      Buffer.from(input.native_text, "utf8").toString("utf8") !== input.native_text) {
+      throw new Error("Verified native PDF budget metadata is invalid.");
+    }
+    return { ...input };
+  });
+  if (checked.reduce((sum, input) => sum + input.byte_length, 0) > 16 * 1024 * 1024) {
+    throw new Error("Verified native PDF inputs exceed the combined byte limit.");
+  }
+  return checked;
 }
 
 function scrubInlineImageData(value, observeImage) {
@@ -327,7 +392,7 @@ function scrubInlineImageData(value, observeImage) {
   const next = {};
   for (const [key, child] of Object.entries(value)) {
     if ((key === "inlineData" || key === "inline_data") && child && typeof child === "object") {
-      observeImage(child);
+      observeImage(child, value);
       next[key] = { ...child, data: "" };
     } else {
       next[key] = scrubInlineImageData(child, observeImage);
