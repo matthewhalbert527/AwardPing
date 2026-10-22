@@ -15096,8 +15096,10 @@ function captureFromBaseline(baseline) {
 }
 
 function buildDiffSummary(previousText, nextText, source) {
-  const previousClean = normalizeVisibleText(previousText);
-  const nextClean = normalizeVisibleText(nextText);
+  // Review evidence must retain standalone timeline dates. The default capture
+  // normalization/hash contract remains unchanged for every other caller.
+  const previousClean = normalizeVisibleText(previousText, { preserveAbsoluteDates: true });
+  const nextClean = normalizeVisibleText(nextText, { preserveAbsoluteDates: true });
   const previousSentences = sentenceCandidates(previousClean);
   const nextSentences = sentenceCandidates(nextClean);
   const previousKeys = new Set(previousSentences.map(sentenceKey));
@@ -15108,12 +15110,37 @@ function buildDiffSummary(previousText, nextText, source) {
   const removedText = dedupeText(
     previousSentences.filter((sentence) => !nextKeys.has(sentenceKey(sentence))).filter(isUsefulChangedSentence),
   );
-  const previousDates = new Set(contextualDatePhrases(previousClean));
-  const nextDates = new Set(contextualDatePhrases(nextClean));
+  const dateKey = value => value.replace(/^([a-z]+)\.(?=\s)/i, "$1").toLowerCase();
+  const previousDates = new Map(contextualDatePhrases(previousClean).map(value => [dateKey(value), value]));
+  const nextDates = new Map(contextualDatePhrases(nextClean).map(value => [dateKey(value), value]));
+  // A period can change sentence membership without changing a date's actual
+  // context. Compare ALL occurrences and their complete neighboring raw text,
+  // bounded by adjacent date tokens, not a page-wide "date still exists" test.
+  // This only qualifies date hints; raw/directional evidence and holds remain.
+  const dateContexts = text => {
+    const clean = normalizeText(text);
+    const matches = datePhrases(clean, { includeOffsets: true });
+    const contexts = new Map();
+    const wording = (value, afterDate) => (afterDate ? value.replace(/^\.(?=\s|$)/, "") : value)
+      .replace(/(?<=[\p{L}\p{N}])\.(?=\s|$)/gu, "").trim();
+    for (let index = 0; index < matches.length; index++) {
+      const match = matches[index], key = dateKey(match.value);
+      const context = JSON.stringify([
+        wording(clean.slice(index ? matches[index - 1].end : 0, match.index), index > 0),
+        wording(clean.slice(match.end, matches[index + 1]?.index ?? clean.length), true),
+      ]);
+      if (!contexts.has(key)) contexts.set(key, []);
+      contexts.get(key).push(context);
+    }
+    return new Map([...contexts].map(([key, values]) => [key, JSON.stringify(values.sort())]));
+  };
+  const previousDateContexts = dateContexts(previousText), nextDateContexts = dateContexts(nextText);
+  const unchangedDateContext = key => previousDateContexts.has(key) &&
+    previousDateContexts.get(key) === nextDateContexts.get(key);
   const previousAmounts = new Set(contextualMoneyPhrases(previousClean));
   const nextAmounts = new Set(contextualMoneyPhrases(nextClean));
-  const addedDates = [...nextDates].filter((value) => !previousDates.has(value));
-  const removedDates = [...previousDates].filter((value) => !nextDates.has(value));
+  const addedDates = [...nextDates].filter(([key]) => !previousDates.has(key) && !unchangedDateContext(key)).map(([, value]) => value);
+  const removedDates = [...previousDates].filter(([key]) => !nextDates.has(key) && !unchangedDateContext(key)).map(([, value]) => value);
   const addedAmounts = [...nextAmounts].filter((value) => !previousAmounts.has(value));
   const removedAmounts = [...previousAmounts].filter((value) => !nextAmounts.has(value));
   const changedText = [...addedText, ...removedText, ...addedDates, ...removedDates, ...addedAmounts, ...removedAmounts].join(" ");
@@ -17385,19 +17412,37 @@ function fromArchiveRelative(value) {
   return join(archiveRoot, value);
 }
 
-function normalizeVisibleText(value) {
+function normalizeVisibleText(value, { preserveAbsoluteDates = false } = {}) {
+  const retainedDate = line => preserveAbsoluteDates && datePhrases(line).includes(line.replace(/\.$/, ""));
   const lines = String(value || "")
     .replace(/\u0000/g, "")
     .split(/\r?\n/)
     .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .filter((line) => !isVolatileLine(line));
+    .filter(Boolean);
+  // An exact metadata label owns only its immediately following standalone
+  // timestamp, never a later timeline entry or an inline applicant statement.
+  // This opt-in review normalization does not alter capture/hash defaults;
+  // complete raw inputs remain bound by the separate completeness contract.
+  const stampLabel = line => /^(?:(?:last )?(?:updated|modified)|retrieved(?: on)?|accessed(?: on)?|retrieval (?:date|timestamp)|timestamp|current as of|as of|current date|local time)\s*:?$/i.test(line || "");
+  const stampValue = line => {
+    if (!line) return false;
+    if (datePhrases(line).includes(line.replace(/\.$/, ""))) return true;
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/i.test(line)) return true;
+    const clock = /^(?:at\s+)?\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?(?:\s*(?:(?:UTC|GMT)(?:[+-]\d{1,2}(?::?\d{2})?)?|[ECMP][SD]?T|Z|[+-]\d{2}:?\d{2}))?$/i;
+    if (clock.test(line)) return true;
+    const dates = datePhrases(line, { includeOffsets: true });
+    return dates.length === 1 && dates[0].index === 0 && clock.test(line.slice(dates[0].end).replace(/^[ ,]+/, ""));
+  };
+  const reviewLines = preserveAbsoluteDates ? lines.filter((line, index) =>
+    !(stampLabel(line) && stampValue(lines[index + 1])) &&
+    !(stampValue(line) && stampLabel(lines[index - 1]))) : lines;
+  const cleanLines = reviewLines.filter((line) => retainedDate(line) || !isVolatileLine(line));
 
   const result = [];
   const seenRecent = new Set();
-  for (const line of lines) {
+  for (const line of cleanLines) {
     const key = line.toLowerCase();
-    if (seenRecent.has(key) && !hasAwardRelevantTerms(line)) continue;
+    if (seenRecent.has(key) && !hasAwardRelevantTerms(line) && !retainedDate(line)) continue;
     result.push(line);
     seenRecent.add(key);
     if (seenRecent.size > 200) {
@@ -17490,10 +17535,22 @@ function isUsefulChangedSentence(sentence) {
 }
 
 function contextualDatePhrases(text) {
-  return unique(sentenceCandidates(text).filter(isAwardDateContext).flatMap(datePhrases));
+  // Exclude only the date occurrence owned by an exact inline metadata label.
+  // Keep the original text evidence, applicant wording and any later date,
+  // including a later genuine deadline that repeats this same date value.
+  const hintText = text.split(/\r?\n/).map(line => {
+    const first = datePhrases(line, { includeOffsets: true })[0];
+    if (!first || !/^(?:(?:last )?(?:updated|modified)|retrieved(?: on)?|accessed(?: on)?|retrieval (?:date|timestamp)|timestamp|current as of|as of|current date|local time)\s*:?\s*$/i.test(line.slice(0, first.index))) return line;
+    return line.slice(0, first.index) + " ".repeat(first.end - first.index) + line.slice(first.end);
+  }).join("\n");
+  // Protect month abbreviations only for date-context extraction; do not alter
+  // the sentence boundaries used for raw changed-text evidence.
+  const protectedText = hintText.replace(/\b(jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.(?=\s+\d)/gi,
+    (match) => match.slice(0, -1) + sentenceDotPlaceholder);
+  return unique(sentenceCandidates(protectedText).filter(isAwardDateContext).flatMap(datePhrases));
 }
 
-function datePhrases(text) {
+function datePhrases(text, { includeOffsets = false } = {}) {
   const month =
     "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
   const patterns = [
@@ -17501,13 +17558,16 @@ function datePhrases(text) {
     /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g,
     /\b\d{4}-\d{2}-\d{2}\b/g,
   ];
-  return patterns.flatMap((pattern) => [...text.matchAll(pattern)].map((match) => normalizeText(match[0])));
+  const matches = patterns.flatMap((pattern) => [...text.matchAll(pattern)].map((match) => ({
+    value: normalizeText(match[0]), index: match.index, end: match.index + match[0].length,
+  })));
+  return includeOffsets ? matches.sort((a, b) => a.index - b.index) : matches.map(match => match.value);
 }
 
 function isAwardDateContext(sentence) {
   const lower = String(sentence || "").toLowerCase();
   if (looksLikeRecipientNewsOrPressText(lower)) return false;
-  return /\b(deadline|due|application|apply|opens?|closes?|timeline|round|eligible|eligibility|interview|selection|notification|acceptance|nomination|submit|submission)\b/.test(
+  return /\b(deadlines?|due|applications?|apply|opens?|closes?|timeline|round|eligible|eligibility|interview|selection|notification|acceptance|nomination|submit|submission)\b/.test(
     lower,
   );
 }
