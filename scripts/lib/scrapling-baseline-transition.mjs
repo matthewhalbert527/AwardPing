@@ -4,6 +4,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
 export const scraplingBaselineTransitionSchema = "awardping.scrapling-baseline-transition.v1";
+export const scraplingBaselineTransitionSchemaV2 = "awardping.scrapling-baseline-transition.v2";
 const profile = "scrapling-evidence-v2";
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const digest = /^[a-f0-9]{64}$/;
@@ -67,12 +68,16 @@ function loadReference(path, sha256) {
   if (sha(bytes) !== sha256) fail("pin file SHA256 mismatch");
   const text = decode(bytes); let value;
   try { value = JSON.parse(text); } catch { fail("pin JSON"); }
-  if (JSON.stringify(value, null, 2) + "\n" !== text || !exact(value, ["schema", "sources"]) || value.schema !== scraplingBaselineTransitionSchema || !Array.isArray(value.sources) || value.sources.length < 1 || value.sources.length > 25) fail("pin schema/canonical JSON");
+  if (JSON.stringify(value, null, 2) + "\n" !== text || !exact(value, ["schema", "sources"]) || ![scraplingBaselineTransitionSchema, scraplingBaselineTransitionSchemaV2].includes(value.schema) || !Array.isArray(value.sources) || value.sources.length < 1 || value.sources.length > 25) fail("pin schema/canonical JSON");
+  // v2 pins an already-established same-origin final URL separately from the
+  // approved requested URL. It grants neither a new source nor any other redirect.
+  const finalUrlBound = value.schema === scraplingBaselineTransitionSchemaV2;
   const ids = new Set(); const paths = new Set(); let total = bytes.length;
   for (const row of value.sources) {
-    if (!exact(row, ["source_id", "stored_owner_id", "url", "page_type", "old_baseline", "target_profile", "reference_captured_at", "review_text_sha256", "native_visible_text_sha256", "reference_artifacts"]) || !uuid.test(row.source_id) || !uuid.test(row.stored_owner_id) || ids.has(row.source_id) || !url(row.url) || !pageType(row.page_type) || row.target_profile !== profile || !at(row.reference_captured_at) || !digest.test(row.review_text_sha256) || !digest.test(row.native_visible_text_sha256) || !Array.isArray(row.reference_artifacts) || row.reference_artifacts.length !== 5) fail("reference row identity/schema");
+    if (!exact(row, ["source_id", "stored_owner_id", "url", "page_type", "old_baseline", "target_profile", "reference_captured_at", "review_text_sha256", "native_visible_text_sha256", "reference_artifacts", ...(finalUrlBound ? ["final_url"] : [])]) || !uuid.test(row.source_id) || !uuid.test(row.stored_owner_id) || ids.has(row.source_id) || !url(row.url) || !pageType(row.page_type) || row.target_profile !== profile || !at(row.reference_captured_at) || !digest.test(row.review_text_sha256) || !digest.test(row.native_visible_text_sha256) || !Array.isArray(row.reference_artifacts) || row.reference_artifacts.length !== 5) fail("reference row identity/schema");
+    if (finalUrlBound && (!url(row.final_url) || row.final_url.includes("#") || new URL(row.final_url).origin !== new URL(row.url).origin)) fail("reference final URL binding");
     const old = row.old_baseline;
-    if (!exact(old, ["source_id", "stored_owner_id", "url", "page_type", "capture_profile", "captured_at", "text_hash"]) || !identity({ id: old.source_id, shared_award_id: old.stored_owner_id, url: old.url, page_type: old.page_type }, row) || typeof old.capture_profile !== "string" || !/^[a-z0-9-]{1,80}$/.test(old.capture_profile) || old.capture_profile === profile || !at(old.captured_at) || Date.parse(old.captured_at) >= Date.parse(row.reference_captured_at) || !digest.test(old.text_hash)) fail("old baseline reference binding");
+    if (!exact(old, ["source_id", "stored_owner_id", "url", "page_type", "capture_profile", "captured_at", "text_hash", ...(finalUrlBound ? ["final_url"] : [])]) || !identity({ id: old.source_id, shared_award_id: old.stored_owner_id, url: old.url, page_type: old.page_type }, row) || typeof old.capture_profile !== "string" || !/^[a-z0-9-]{1,80}$/.test(old.capture_profile) || old.capture_profile === profile || !at(old.captured_at) || Date.parse(old.captured_at) >= Date.parse(row.reference_captured_at) || !digest.test(old.text_hash) || (finalUrlBound && old.final_url !== row.final_url)) fail("old baseline reference binding");
     ids.add(row.source_id); const artifacts = {};
     for (const [index, binding] of row.reference_artifacts.entries()) {
       if (!exact(binding, ["kind", "path", "sha256", "byte_length"]) || binding.kind !== slots[index] || typeof binding.path !== "string" || !isAbsolute(binding.path) || !digest.test(binding.sha256) || !Number.isSafeInteger(binding.byte_length) || binding.byte_length < 1 || binding.byte_length > limits[binding.kind]) fail("reference artifact binding");
@@ -86,7 +91,7 @@ function loadReference(path, sha256) {
     let meta; try { meta = JSON.parse(decode(artifacts.meta)); } catch { fail("reference metadata JSON"); }
     const rawText = artifacts.text;
     if (rawText.at(-1) !== 10 || sha(rawText.subarray(0, -1)) !== row.review_text_sha256 || !decode(rawText.subarray(0, -1)).length) fail("reference text writer LF/hash");
-    if (!identity(meta?.source, row) || meta.status_code !== 200 || meta.final_url !== row.url || meta.captured_at !== row.reference_captured_at || meta.capture_profile !== profile || meta.capture_behavior_name !== profile || meta.capture_behavior_version !== 2 || typeof meta.scrapling?.visible_text !== "string" || !meta.scrapling.visible_text.length || sha(meta.scrapling.visible_text) !== row.native_visible_text_sha256 || meta.scrapling.visible_text_sha256 !== row.native_visible_text_sha256) fail("reference metadata identity/native binding");
+    if (!identity(meta?.source, row) || meta.status_code !== 200 || meta.final_url !== (finalUrlBound ? row.final_url : row.url) || meta.captured_at !== row.reference_captured_at || meta.capture_profile !== profile || meta.capture_behavior_name !== profile || meta.capture_behavior_version !== 2 || typeof meta.scrapling?.visible_text !== "string" || !meta.scrapling.visible_text.length || sha(meta.scrapling.visible_text) !== row.native_visible_text_sha256 || meta.scrapling.visible_text_sha256 !== row.native_visible_text_sha256) fail("reference metadata identity/native binding");
   }
   const guard = freeze({ ...value, sha256 }); loaded.add(guard); return guard;
 }
@@ -103,7 +108,7 @@ export function getScraplingBaselineTransitionReference({ guard, source, baselin
   const row = guard.sources.find(item => item.source_id === source?.id);
   if (!row || !identity(source, row) || source.source !== "admin" || source.admin_review_status !== "open") fail("source identity changed or not bound/admin-open");
   const old = row.old_baseline;
-  if (!identity(baseline.source, row) || baseline.capture_profile !== old.capture_profile || baseline.captured_at !== old.captured_at || baseline.text_hash !== old.text_hash) fail("old baseline changed since reference");
+  if (!identity(baseline.source, row) || baseline.capture_profile !== old.capture_profile || baseline.captured_at !== old.captured_at || baseline.text_hash !== old.text_hash || (guard.schema === scraplingBaselineTransitionSchemaV2 && baseline.final_url !== old.final_url)) fail("old baseline changed since reference");
   return row;
 }
 
@@ -112,7 +117,7 @@ export function assertScraplingBaselineTransition({ guard, sourceBefore, sourceA
   const row = getScraplingBaselineTransitionReference({ guard, source: sourceBefore, baseline, baselineRefresh, captureProfile });
   if (!row) return { required: false, factual_approval: false, migration_authority: false };
   if (!identity(sourceAfter, row) || sourceAfter.source !== "admin" || sourceAfter.admin_review_status !== "open" || approvals(sourceBefore) !== approvals(sourceAfter) || !identity(capture?.source, row)) fail("source identity/approval changed or capture absent");
-  if (capture.status_code !== 200 || capture.capture_profile !== profile || capture.capture_behavior_name !== profile || capture.capture_behavior_version !== 2 || capture.final_url !== row.url || !at(capture.captured_at) || Date.parse(capture.captured_at) < Date.parse(row.reference_captured_at) || Date.parse(capture.captured_at) <= Date.parse(row.old_baseline.captured_at)) fail("capture profile/URL/time mismatch");
+  if (capture.status_code !== 200 || capture.capture_profile !== profile || capture.capture_behavior_name !== profile || capture.capture_behavior_version !== 2 || capture.final_url !== (guard.schema === scraplingBaselineTransitionSchemaV2 ? row.final_url : row.url) || !at(capture.captured_at) || Date.parse(capture.captured_at) < Date.parse(row.reference_captured_at) || Date.parse(capture.captured_at) <= Date.parse(row.old_baseline.captured_at)) fail("capture profile/URL/time mismatch");
   if (typeof capture.text !== "string" || !capture.text.length || Buffer.byteLength(capture.text) > 6 * 1024 ** 2 || sha(capture.text) !== row.review_text_sha256 || typeof capture.scrapling?.visible_text !== "string" || !capture.scrapling.visible_text.length || Buffer.byteLength(capture.scrapling.visible_text) > 6 * 1024 ** 2 || sha(capture.scrapling.visible_text) !== row.native_visible_text_sha256 || capture.scrapling.visible_text_sha256 !== row.native_visible_text_sha256) fail("full review/native text changed");
   return { required: true, reference_sha256: guard.sha256, source_id: row.source_id, monitoring_first_coverage_only: true, factual_approval: false, migration_authority: false, website_change_certified: false };
 }

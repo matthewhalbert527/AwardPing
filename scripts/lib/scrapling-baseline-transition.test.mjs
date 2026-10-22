@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { scraplingBaselineTransitionSchema, ScraplingBaselineTransitionError, loadScraplingBaselineTransition, requiresScraplingBaselineTransition, getScraplingBaselineTransitionReference, assertScraplingBaselineTransition } from "./scrapling-baseline-transition.mjs";
+import { scraplingBaselineTransitionSchema, scraplingBaselineTransitionSchemaV2, ScraplingBaselineTransitionError, loadScraplingBaselineTransition, requiresScraplingBaselineTransition, getScraplingBaselineTransitionReference, assertScraplingBaselineTransition } from "./scrapling-baseline-transition.mjs";
 
 const sha = value => createHash("sha256").update(value).digest("hex");
 const roots = [];
@@ -16,17 +16,21 @@ const context = { blocks: [{ kind: "div", text: native, heading_path: [{ level: 
 const review = `${native}\n\nHTML source context: ${JSON.stringify(context)}\n${"Full retained tail with exception. ".repeat(200)}`;
 afterEach(() => { while (roots.length) rmSync(roots.pop(), { recursive: true, force: true }); });
 
-function fixture() {
+function fixture({ schema = scraplingBaselineTransitionSchema, finalUrl = source.url } = {}) {
   const root = mkdtempSync(join(tmpdir(), "awardping-transition-")); roots.push(root);
-  const capture = { source: { ...source }, status_code: 200, capture_profile: profile, capture_behavior_name: profile, capture_behavior_version: 2, final_url: source.url, captured_at: referenceAt, text: review, scrapling: { visible_text: native, visible_text_sha256: sha(native) } };
+  const oldBaseline = structuredClone(baseline);
+  const capture = { source: { ...source }, status_code: 200, capture_profile: profile, capture_behavior_name: profile, capture_behavior_version: 2, final_url: finalUrl, captured_at: referenceAt, text: review, scrapling: { visible_text: native, visible_text_sha256: sha(native) } };
   const row = { source_id: source.id, stored_owner_id: source.shared_award_id, url: source.url, page_type: source.page_type, old_baseline: { source_id: source.id, stored_owner_id: source.shared_award_id, url: source.url, page_type: source.page_type, capture_profile: baseline.capture_profile, captured_at: baseline.captured_at, text_hash: baseline.text_hash }, target_profile: profile, reference_captured_at: referenceAt, review_text_sha256: sha(review), native_visible_text_sha256: sha(native), reference_artifacts: [] };
+  if (schema === scraplingBaselineTransitionSchemaV2) {
+    row.final_url = finalUrl; row.old_baseline.final_url = finalUrl; oldBaseline.final_url = finalUrl;
+  }
   const raws = { meta: Buffer.from(JSON.stringify(capture, null, 2)), text: Buffer.from(review + "\n"), html: Buffer.from("<html><main>Retained reference</main></html>"), page: Buffer.from("synthetic retained page bytes, no image verification claimed"), thumb: Buffer.from("synthetic thumbnail bytes") };
   for (const kind of ["meta", "text", "html", "page", "thumb"]) { const path = join(root, kind + ".bin"); writeFileSync(path, raws[kind], { flag: "wx" }); row.reference_artifacts.push({ kind, path, sha256: sha(raws[kind]), byte_length: raws[kind].length }); }
-  const data = { schema: scraplingBaselineTransitionSchema, sources: [row] }; const path = join(root, "pins.json");
+  const data = { schema, sources: [row] }; const path = join(root, "pins.json");
   const save = () => { const raw = Buffer.from(JSON.stringify(data, null, 2) + "\n"); writeFileSync(path, raw); return { path, sha256: sha(raw) }; };
   const load = () => loadScraplingBaselineTransition(save());
-  const check = (guard = load(), overrides = {}) => assertScraplingBaselineTransition({ guard, sourceBefore: structuredClone(source), sourceAfter: structuredClone(source), baseline: structuredClone(baseline), capture: structuredClone(capture), baselineRefresh: true, captureProfile: profile, ...overrides });
-  return { root, capture, row, data, path, save, load, check, raws };
+  const check = (guard = load(), overrides = {}) => assertScraplingBaselineTransition({ guard, sourceBefore: structuredClone(source), sourceAfter: structuredClone(source), baseline: structuredClone(oldBaseline), capture: structuredClone(capture), baselineRefresh: true, captureProfile: profile, ...overrides });
+  return { root, capture, baseline: oldBaseline, row, data, path, save, load, check, raws };
 }
 
 describe("reviewed first-coverage baseline transition", () => {
@@ -125,4 +129,121 @@ describe("reviewed first-coverage baseline transition", () => {
     symlinkSync(process.platform === "win32" ? f.root : target.path, link, process.platform === "win32" ? "junction" : "file"); target.path = link; expect(() => f.load()).toThrow("file type/size");
     const parent = join(f.root, "directory"); mkdirSync(parent); const linked = join(f.root, "linked-directory"); symlinkSync(parent, linked, process.platform === "win32" ? "junction" : "dir"); const file = join(parent, "html"); writeFileSync(file, f.raws.html); target.path = join(linked, "html"); expect(() => f.load()).toThrow("linked reference ancestor");
   });
+});
+
+describe("v2 reviewed same-origin final URL binding", () => {
+  const finalUrl = "https://example.edu/current-programme/";
+  const redirectFixture = () => fixture({ schema: scraplingBaselineTransitionSchemaV2, finalUrl });
+  function replaceMeta(f, change) {
+    const meta = JSON.parse(f.raws.meta); change(meta);
+    const raw = Buffer.from(JSON.stringify(meta, null, 2)); const binding = f.row.reference_artifacts[0];
+    writeFileSync(binding.path, raw); binding.sha256 = sha(raw); binding.byte_length = raw.length;
+  }
+
+  it.each([source.url, finalUrl, `${finalUrl}?audience=international`])("pins exact historical target %s without relabeling or granting fact authority", target => {
+    const f = fixture({ schema: scraplingBaselineTransitionSchemaV2, finalUrl: target });
+    const before = structuredClone({ source, baseline: f.baseline, capture: f.capture, row: f.row });
+    const guard = f.load(); const result = f.check(guard);
+    expect(guard.schema).toBe(scraplingBaselineTransitionSchemaV2);
+    expect(guard.sources[0].url).toBe(source.url);
+    expect(guard.sources[0].stored_owner_id).toBe(source.shared_award_id);
+    expect(guard.sources[0].final_url).toBe(target);
+    expect(result).toEqual({ required: true, reference_sha256: guard.sha256, source_id: source.id,
+      monitoring_first_coverage_only: true, factual_approval: false, migration_authority: false, website_change_certified: false });
+    expect({ source, baseline: f.baseline, capture: f.capture, row: f.row }).toEqual(before);
+  });
+
+  it("preserves v1 schema, missing-old-final compatibility and redirect refusal", () => {
+    expect(scraplingBaselineTransitionSchema).toBe("awardping.scrapling-baseline-transition.v1");
+    const ordinary = fixture(); expect(ordinary.baseline.final_url).toBeUndefined(); expect(ordinary.check().required).toBe(true);
+    const redirected = fixture({ finalUrl }); expect(() => redirected.load()).toThrow("reference metadata identity/native binding");
+    const extended = redirectFixture(); extended.data.schema = scraplingBaselineTransitionSchema;
+    expect(() => extended.load()).toThrow("reference row identity/schema");
+  });
+
+  it.each([undefined, null, "", 3, "/current-programme/", "http://example.edu/current-programme/",
+    "https://other.edu/current-programme/", "https://sub.example.edu/current-programme/",
+    "https://user:password@example.edu/current-programme/", "https://example.edu:8443/current-programme/",
+    "https://example.edu:443/current-programme/", "https://example.edu/current-programme/#section", "https://example.edu/current-programme/#",
+    "https://EXAMPLE.edu/current-programme/", "https://example.edu/a/../current-programme/"])("refuses malformed or unapproved-origin target %j", target => {
+    const f = redirectFixture(); f.row.final_url = target; f.row.old_baseline.final_url = target;
+    expect(() => f.load()).toThrow();
+  });
+
+  it.each(["row", "old", "v3", "unknown field"])("holds incomplete/unknown reference shape: %s", scenario => {
+    const f = redirectFixture();
+    if (scenario === "row") delete f.row.final_url;
+    if (scenario === "old") delete f.row.old_baseline.final_url;
+    if (scenario === "v3") f.data.schema = "awardping.scrapling-baseline-transition.v3";
+    if (scenario === "unknown field") f.row.allow_redirects = true;
+    expect(() => f.load()).toThrow();
+  });
+
+  it.each([undefined, source.url, `${finalUrl}?different=1`, finalUrl.slice(0, -1)])("holds different/missing old final URL %j before capture", target => {
+    const f = redirectFixture(); const guard = f.load(); const old = { ...f.baseline, final_url: target };
+    expect(() => getScraplingBaselineTransitionReference({ guard, source, baseline: old, baselineRefresh: true, captureProfile: profile })).toThrow("old baseline changed");
+    f.row.old_baseline.final_url = target;
+    expect(() => f.load()).toThrow("old baseline reference binding");
+  });
+
+  it.each([source.url, `${finalUrl}?different=1`, `${finalUrl}#section`, finalUrl.slice(0, -1),
+    "https://other.edu/current-programme/"])("holds exact reference/first-capture target drift %s", target => {
+    const f = redirectFixture(); const guard = f.load();
+    expect(() => f.check(guard, { capture: { ...f.capture, final_url: target } })).toThrow("capture profile/URL/time mismatch");
+    replaceMeta(f, meta => { meta.final_url = target; });
+    expect(() => f.load()).toThrow("reference metadata identity/native binding");
+  });
+
+  it.each(["owner", "source id", "requested URL"])("holds well-hashed contradictory reference %s even at the same final URL", field => {
+    const f = redirectFixture();
+    replaceMeta(f, meta => {
+      if (field === "owner") meta.source.shared_award_id = "32345678-1234-4234-8234-123456789012";
+      if (field === "source id") meta.source.id = "42345678-1234-4234-8234-123456789012";
+      if (field === "requested URL") meta.source.url = finalUrl;
+    });
+    expect(() => f.load()).toThrow("reference metadata identity/native binding");
+  });
+
+  it.each(["sourceBefore", "sourceAfter", "capture"])("cannot reuse an alias reference for another owner with the same requested URL: %s", where => {
+    const f = redirectFixture(); const value = structuredClone(where === "capture" ? f.capture : source);
+    (where === "capture" ? value.source : value).shared_award_id = "32345678-1234-4234-8234-123456789012";
+    expect(() => f.check(f.load(), { [where]: value })).toThrow("source identity");
+  });
+
+  it.each(["approval", "old text", "old time", "old owner", "review text", "native text", "artifact"])("keeps existing %s guards for redirect references", scenario => {
+    const f = redirectFixture(); const guard = f.load(); const options = {};
+    if (scenario === "approval") options.sourceAfter = { ...source, admin_review_note: "changed" };
+    if (scenario.startsWith("old")) {
+      options.baseline = structuredClone(f.baseline);
+      if (scenario === "old text") options.baseline.text_hash = "a".repeat(64);
+      if (scenario === "old time") options.baseline.captured_at = "2026-10-18T12:01:00.000Z";
+      if (scenario === "old owner") options.baseline.source.shared_award_id = "32345678-1234-4234-8234-123456789012";
+    }
+    if (scenario.endsWith(" text") && !scenario.startsWith("old")) {
+      options.capture = structuredClone(f.capture);
+      if (scenario === "review text") options.capture.text += " New requirement.";
+      else { options.capture.scrapling.visible_text += " New requirement."; options.capture.scrapling.visible_text_sha256 = sha(options.capture.scrapling.visible_text); }
+    }
+    if (scenario === "artifact") {
+      writeFileSync(f.row.reference_artifacts[2].path, "changed retained HTML"); expect(() => f.load()).toThrow("reference raw binding mismatch");
+    } else expect(() => f.check(guard, options)).toThrow();
+  });
+
+  it("leaves ordinary same-profile repeat comparison unchanged while holding a later destination change", async () => {
+    const { buildScraplingReviewDiff } = await import("./scrapling-review-diff.mjs");
+    const { scraplingReviewText } = await import("./scrapling-worker.mjs");
+    const { normalizeVisibleText } = await import("./capture-stability.mjs");
+    const doc = { schema: "awardping.scrapling-html-document.v1", title: "Award", text: native,
+      blocks: [{ kind: "p", text: native, heading_path: [], list_path: [], table_row: [] }],
+      links: [{ text: "Apply", raw_href: "/apply", source_url: finalUrl, base_hrefs: [], heading_path: [], list_path: [] }], base_hrefs: [] };
+    const text = scraplingReviewText(doc);
+    const first = { source: { ...source }, capture_profile: profile, final_url: finalUrl,
+      captured_at: referenceAt, text_hash: sha(normalizeVisibleText(text)), text };
+    const repeat = { ...first, captured_at: "2026-10-20T12:01:00.000Z" };
+    const input = { source, baseline: first, previous: { text: text + "\n", meta: structuredClone(first) }, capture: repeat };
+    expect(buildScraplingReviewDiff(input)).toMatchObject({ status: "unchanged", reason: "complete_semantics_equal",
+      publishable: false, baseline_advance_allowed: false, evidence: { source_id: source.id, award_id: source.shared_award_id, source_url: source.url, final_url: finalUrl } });
+    expect(assertScraplingBaselineTransition({ baseline: first, capture: repeat, baselineRefresh: false, captureProfile: profile })).toEqual({ required: false, factual_approval: false, migration_authority: false });
+    expect(buildScraplingReviewDiff({ ...input, capture: { ...repeat, final_url: `${finalUrl}?different=1` } })).toMatchObject({ status: "unavailable", reason: "final_url_changed_requires_baseline_review" });
+  }, 15000);
 });
