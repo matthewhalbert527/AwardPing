@@ -126,8 +126,11 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
   let client;
   try {
     const roster = await loadProgramTextSources(supabase);
-    const selected = roster.sources.filter((source, index) => index % args.shardCount === args.shardIndex &&
-      (!args["source-id"] || source.id === args["source-id"]) && (!args.cohort || source.cohorts.includes(args.cohort))).slice(0, args.limit);
+    const scopedSources = roster.sources.filter((source, index) => index % args.shardCount === args.shardIndex &&
+      (!args["source-id"] || source.id === args["source-id"]) && (!args.cohort || source.cohorts.includes(args.cohort)));
+    // Review --limit caps candidates below, not the source roster they may come
+    // from. Collection keeps its existing per-run source limit.
+    const selected = args.mode === "review" ? scopedSources : scopedSources.slice(0, args.limit);
     if (args["source-id"] && selected.length !== 1) throw new Error("The requested source is not in this shard's required roster");
     const report = { schema: "awardping.program-text-run.v1", mode: args.mode, epoch: config.epoch, apply: args.apply,
       selected_sources: selected.length, checked_at: new Date().toISOString(), coverage: programTextCoverage(roster, config.epoch), results: [] };
