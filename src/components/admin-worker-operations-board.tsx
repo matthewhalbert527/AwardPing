@@ -32,12 +32,10 @@ function AdminEvidenceRecoveryBoard({ result }: { result: AdminWorkerOperations 
     <section className="operator-inbox" aria-labelledby="evidence-recovery-title">
       <div className="card operator-inbox-summary">
         <div>
-          <p className="operator-inbox-kicker">R2 is the recoverable source of truth</p>
-          <h2 id="evidence-recovery-title">6. Evidence recovery</h2>
+          <p className="operator-inbox-kicker">Preserved legacy R2 records</p>
+          <h2 id="evidence-recovery-title">6. Historical image-evidence recovery</h2>
           <p>
-            If a PC loses a baseline file, the worker now downloads the exact immutable R2 generation, verifies its
-            source, timestamp, hashes, and required files, then restores the cache atomically. A mismatch is refused;
-            the last-known-good baseline is never replaced.
+            These retained results describe the previous image-based baseline recovery workflow, not new text-monitoring coverage or readiness. Existing evidence remains available for inspection.
           </p>
         </div>
         <span className={`operator-inbox-summary-status ${attention ? "operator-inbox-summary-status-attention" : ""}`}>
@@ -55,7 +53,7 @@ function AdminEvidenceRecoveryBoard({ result }: { result: AdminWorkerOperations 
         {attention ? <AlertTriangle size={17} aria-hidden="true" /> : <CheckCircle2 size={17} aria-hidden="true" />}
         <div>
           <p className="font-bold">{recovery.statusReason}</p>
-          <p className="mt-1 text-sm font-semibold">Safe action: {recovery.safeAction}</p>
+          <p className="mt-1 text-sm font-semibold">Historical safe action: {recovery.safeAction}</p>
           {recovery.reasons.length > 0 && (
             <p className="mt-1 text-sm font-semibold">Reported reasons: {formatRecoveryReasons(recovery.reasons)}</p>
           )}
@@ -89,15 +87,14 @@ function AdminLanesAndSpendingBoard({ result, now }: { result: AdminWorkerOperat
     <section className="operator-inbox" aria-labelledby="lanes-spending-title">
       <div className="card operator-inbox-summary">
         <div>
-          <p className="operator-inbox-kicker">Independent work, one atomic account budget</p>
-          <h2 id="lanes-spending-title">7. Lanes &amp; spending</h2>
+          <p className="operator-inbox-kicker">Recorded budgets and legacy queues</p>
+          <h2 id="lanes-spending-title">7. Lane records &amp; spending</h2>
           <p>
-            New-page review and changed-page review are the only paid lanes, capped independently at $5 per UTC day.
-            Every other lane is $0 and has its own lease, timeout, retry clock, and oldest-item target.
+            Only changed-text review is active, under the existing $5-per-UTC-day limit. New-page discovery and legacy mutation lanes are on hold. The recorded budgets, queue depths and SLA figures below do not measure new text-monitoring coverage.
           </p>
         </div>
         <span className="operator-inbox-summary-status">
-          <WalletCards size={16} aria-hidden="true" /> Maximum $10/day
+          <WalletCards size={16} aria-hidden="true" /> Changed-text review: maximum $5/day
         </span>
       </div>
 
@@ -115,7 +112,7 @@ function AdminLanesAndSpendingBoard({ result, now }: { result: AdminWorkerOperat
             <article className="card p-5" key={budget.laneKey}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">Paid pipeline</p>
+                  <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">Recorded budget policy</p>
                   <h3 className="mt-1 text-lg font-bold">{budget.label}</h3>
                 </div>
                 <span className="badge">${formatMoney(budget.capUsd)}/day</span>

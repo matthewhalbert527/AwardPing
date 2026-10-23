@@ -1,4 +1,5 @@
 import { SetupNotice } from "@/components/setup-notice";
+import { AdminRunReport } from "@/components/admin-run-report";
 import { isSiteAdminEmail, requireUser } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
@@ -28,7 +29,7 @@ export default async function OpsPage() {
     return (
       <div>
         <div className="dashboard-page-header">
-          <h1 className="dashboard-page-title">Monitoring health</h1>
+          <h1 className="dashboard-page-title">Monitoring records</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           This view is available only to AwardPing site administrators.
@@ -43,7 +44,7 @@ export default async function OpsPage() {
     return (
       <div>
         <div className="dashboard-page-header">
-          <h1 className="dashboard-page-title">Monitoring health</h1>
+          <h1 className="dashboard-page-title">Monitoring records</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           This view is available to office owners and admins.
@@ -56,7 +57,7 @@ export default async function OpsPage() {
     return (
       <div>
         <div className="dashboard-page-header">
-          <h1 className="dashboard-page-title">Monitoring health</h1>
+          <h1 className="dashboard-page-title">Monitoring records</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           Operational data is unavailable because trusted server access is not configured.
@@ -216,16 +217,18 @@ export default async function OpsPage() {
   return (
     <div>
       <div className="dashboard-page-header">
-        <h1 className="dashboard-page-title">Monitoring health</h1>
+        <h1 className="dashboard-page-title">Monitoring records</h1>
         <p className="dashboard-page-copy">
-          Check source monitoring, background jobs, and email delivery.
+          Inspect retained source records, lane status and email delivery. Source, run and queue counters below are historical and do not establish new text-monitoring coverage.
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <MetricCard label="Last worker run" value={lastWorkerRun ? lastWorkerRun.status : "None"} />
-        <MetricCard label="Healthy lanes" value={laneHealthValue} />
-        <MetricCard label="Lane alerts" value={laneAlertValue} />
+      <AdminRunReport compact />
+
+      <div className="mt-6 grid gap-4 md:grid-cols-4">
+        <MetricCard label="Last recorded legacy run" value={lastWorkerRun ? lastWorkerRun.status : "None"} />
+        <MetricCard label="Recorded lane status" value={laneHealthValue} />
+        <MetricCard label="Legacy queue alerts" value={laneAlertValue} />
         <MetricCard
           label="Last digest run"
           value={lastDigestRun ? lastDigestRun.status : digestRunError ? "Unavailable" : "None"}
@@ -233,18 +236,18 @@ export default async function OpsPage() {
       </div>
 
       <div className="mt-6 grid gap-4 md:grid-cols-5">
-        <MetricCard label="Shared sources" value={sharedSourceCount || 0} />
-        <MetricCard label="Sources due" value={dueSharedSourceCount || 0} />
-        <MetricCard label="Source errors" value={failedSharedSourceCount || 0} />
-        <MetricCard label="7-day updates" value={recentSharedChangeCount || 0} />
-        <MetricCard label="Structure due" value={structureDueCount || 0} />
+        <MetricCard label="Recorded source rows" value={sharedSourceCount || 0} />
+        <MetricCard label="Legacy sources due" value={dueSharedSourceCount || 0} />
+        <MetricCard label="Legacy source errors" value={failedSharedSourceCount || 0} />
+        <MetricCard label="7-day recorded events" value={recentSharedChangeCount || 0} />
+        <MetricCard label="Legacy structure due" value={structureDueCount || 0} />
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_0.9fr]">
         <section className="card rounded-3xl p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-2xl font-bold">Local source worker</h2>
+              <h2 className="text-2xl font-bold">Legacy worker history</h2>
               <p className="mt-1 text-sm text-[var(--muted)]">
                 Last run: {lastWorkerRun ? formatDate(lastWorkerRun.started_at) : "No run logged"}
               </p>
@@ -284,7 +287,7 @@ export default async function OpsPage() {
         </section>
 
         <section className="card rounded-3xl p-6">
-          <h2 className="text-2xl font-bold">Recent source checks</h2>
+          <h2 className="text-2xl font-bold">Legacy source-check history</h2>
           <div className="mt-5 grid gap-3">
             {officialRecentSharedSources.map((source) => (
               <a
@@ -317,9 +320,9 @@ export default async function OpsPage() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_0.9fr]">
         <section className="card rounded-3xl p-6">
-          <h2 className="text-2xl font-bold">Downstream lanes</h2>
+          <h2 className="text-2xl font-bold">Recorded lanes and legacy queues</h2>
           <p className="mt-1 text-sm text-[var(--muted)]">
-            Each lane has its own lease, retry state, timeout, and oldest-item service target.
+            Recorded leases remain inspectable. Queue depth, retry state and SLA figures describe legacy queues, not new text-monitoring coverage. Discovery and legacy mutation lanes are on hold.
           </p>
           <div className="mt-5 grid gap-3">
             {laneStatuses.map((lane) => (
@@ -362,7 +365,7 @@ export default async function OpsPage() {
         </section>
 
         <section className="card rounded-3xl p-6">
-          <h2 className="text-2xl font-bold">Needs attention</h2>
+          <h2 className="text-2xl font-bold">Recorded issues</h2>
           <div className="mt-5 grid gap-4">
             <div>
               <h3 className="font-bold">Shared-source errors</h3>
@@ -448,7 +451,7 @@ export default async function OpsPage() {
         </section>
 
         <section className="card rounded-3xl p-6">
-          <h2 className="text-2xl font-bold">Structure scan errors</h2>
+          <h2 className="text-2xl font-bold">Legacy structure-scan errors</h2>
           <div className="mt-5 grid gap-3">
             {(structureErrors || []).map((award) => (
               <div

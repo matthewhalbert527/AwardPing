@@ -38,7 +38,7 @@ beforeEach(() => {
 });
 
 describe.each([
-  { name: "monitoring", page: OpsPage, title: "Monitoring health", titleClass: "dashboard-page-title" },
+  { name: "monitoring", page: OpsPage, title: "Monitoring records", titleClass: "dashboard-page-title" },
   { name: "source intake", page: AdminSourceIntakePage, title: "Source intake", titleClass: "admin-page-title" },
 ])("compact $name access states", ({ page, title, titleClass }) => {
   it("keeps one clear heading and blocks non-admins before any data access", async () => {
@@ -49,6 +49,7 @@ describe.each([
     expect($(".badge")).toHaveLength(0);
     expect($("body").text()).toMatch(/site admin/);
     expect($("body").text()).not.toContain("Private source controls");
+    expect($("body").text()).not.toContain("Text monitoring coverage");
     expect(mocks.createAdmin).not.toHaveBeenCalled();
     expect(mocks.createServer).not.toHaveBeenCalled();
     expect(mocks.requireOfficeContext).not.toHaveBeenCalled();
@@ -76,7 +77,7 @@ it("keeps the separate office-owner/admin requirement for monitoring", async () 
   mocks.isSiteAdminEmail.mockReturnValue(true);
   mocks.canManageOffice.mockReturnValue(false);
   const $ = load(renderToStaticMarkup(await OpsPage()));
-  expect($("h1").text()).toBe("Monitoring health");
+  expect($("h1").text()).toBe("Monitoring records");
   expect($("body").text()).toContain("office owners and admins");
   expect(mocks.createAdmin).not.toHaveBeenCalled();
   expect(mocks.createServer).not.toHaveBeenCalled();

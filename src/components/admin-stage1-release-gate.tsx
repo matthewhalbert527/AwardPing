@@ -26,10 +26,10 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
             </span>
           </div>
           <h2 className="mt-3 text-2xl font-bold" id="stage1-release-gate-title">
-            Stage 1 Beta Release Gate
+            Stage 1 Publication Gate — Legacy Monitoring
           </h2>
           <p className="mt-1 text-sm text-[var(--muted)]">
-            Verified evidence stays valid while its exact keys and hashes still match. Live sources must be checked every 24 hours, and public visibility also requires a current signed R2 recovery drill.
+            These publication and security checks include historical image-based capture and recovery criteria. They do not establish new text-monitoring coverage or readiness. Existing release evidence remains available for inspection.
           </p>
         </div>
         <div className="max-w-xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" role="status">

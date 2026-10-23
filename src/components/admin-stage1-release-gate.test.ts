@@ -11,6 +11,8 @@ describe("AdminStage1ReleaseGate", () => {
     }));
 
     expect(html).toContain("Database release authority");
+    expect(html).toContain("Stage 1 Publication Gate — Legacy Monitoring");
+    expect(html).toContain("They do not establish new text-monitoring coverage or readiness");
     expect(html).toContain("1/5 exact ID + hash");
     expect(html).toContain("legacy_contact_ciphertext_not_safe");
     expect(html).toContain("Authoritative Vault security");

@@ -22,7 +22,8 @@ describe("AdminWorkerOperationsBoard", () => {
     expect(html).toContain("Recovery attempts");
     expect(html).toContain(">2<");
     expect(html).toContain("Scheduled shards 2, 3 did not report");
-    expect(html).toContain("Safe action: Check the Scheduled Task");
+    expect(html).toContain("Historical safe action: Check the Scheduled Task");
+    expect(html).toContain("not new text-monitoring coverage or readiness");
     expect(html).toContain("immutable hash mismatch (1)");
     expect(html).not.toContain("Fail-closed recovery ready");
   });
@@ -51,6 +52,8 @@ describe("AdminWorkerOperationsBoard", () => {
     }));
 
     expect(html).toContain("No waiting item");
+    expect(html).toContain("Only changed-text review is active");
+    expect(html).toContain("do not measure new text-monitoring coverage");
     expect(html).toContain("SLA breached; unclaimed");
     expect(html).toContain("Timeout 4m");
     expect(html).toContain("Lease TTL 6m");

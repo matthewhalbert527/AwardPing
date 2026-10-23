@@ -23,7 +23,7 @@ describe("retired user-level monitor checker", () => {
     expect(smoke).not.toContain('"dashboard auth redirect"');
   });
 
-  it("uses shared-source, worker, and lane state for operations health", () => {
+  it("retains shared-source and lane records without claiming new text-monitoring health", () => {
     const ops = read("src/app/dashboard/ops/page.tsx");
 
     expect(ops).not.toContain('.from("monitors")');
@@ -32,7 +32,12 @@ describe("retired user-level monitor checker", () => {
     expect(ops).not.toContain('label="Due now"');
     expect(ops).toContain('.from("shared_award_sources")');
     expect(ops).toContain('rpc("list_monitoring_downstream_lane_status")');
-    expect(ops).toContain("Downstream lanes");
+    expect(ops).toContain("Recorded lanes and legacy queues");
+    expect(ops).toContain('label="Last recorded legacy run"');
+    expect(ops).toContain('label="7-day recorded events"');
+    expect(ops).toContain("historical and do not establish new text-monitoring coverage");
+    expect(ops).toContain("<AdminRunReport compact />");
+    expect(ops).not.toContain('label="Healthy lanes"');
     expect(ops).not.toContain('lastWorkerRun?.status || "running"');
   });
 
