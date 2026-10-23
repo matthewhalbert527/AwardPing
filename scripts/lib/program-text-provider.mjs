@@ -17,6 +17,32 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) : value &
 const equal = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 const failedStates = new Set(["JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"]);
 
+/** Future requests use the same native Schema surface as the proven intake
+ * format. This is only a provider shape hint: local review validation retains
+ * every quote, string-length, field, ordering and complete-coverage limit. */
+export function programTextGeminiResponseSchema(blockCount) {
+  const response = programTextReviewResponseSchema.properties;
+  if (!Number.isSafeInteger(blockCount) || blockCount < 1 || blockCount > response.blocks.maxItems) fail("invalid_packet_block_count");
+  const block = response.blocks.items.properties, change = block.changes.items.properties;
+  const closed = properties => ({ type: "OBJECT", properties, required: Object.keys(properties),
+    maxProperties: String(Object.keys(properties).length), propertyOrdering: Object.keys(properties) });
+  const text = () => ({ type: "STRING" });
+  const quote = () => ({ ...closed({ block_id: text(), text: text() }), nullable: true });
+  return closed({
+    schema: { type: "STRING", enum: [...response.schema.enum] },
+    comparison_id: text(), packet_id: text(), award_id: text(), source_id: text(), epoch: text(),
+    cycle_id: { type: "STRING", nullable: true },
+    blocks: { type: "ARRAY", minItems: String(blockCount), maxItems: String(blockCount), items: closed({
+      id: text(), disposition: { type: "STRING", enum: [...block.disposition.enum] }, reason: text(),
+      changes: { type: "ARRAY", items: closed({
+        field: { type: "STRING", enum: [...change.field.enum] },
+        operation: { type: "STRING", enum: [...change.operation.enum] }, summary: text(),
+        previous_quote: quote(), current_quote: quote(), applicant_impact: { type: "BOOLEAN" },
+      }) },
+    }) },
+  });
+}
+
 /** Only text parts; downloaded HTML/PDF bytes never enter a model request. */
 export function programTextBatchRequests(candidate, model = geminiStrongWorkerModel()) {
   const plan = candidate.prompt_payload?.packet_plan;
@@ -26,14 +52,8 @@ export function programTextBatchRequests(candidate, model = geminiStrongWorkerMo
   const rebuilt = buildProgramTextReviewPackets(candidate.prompt_payload.comparison, plan.limits);
   if (!["ready", "unchanged"].includes(rebuilt.status) || !equal(plan, rebuilt)) fail("modified_or_incomplete_packet_plan");
   const requests = plan.packets.map(packet => {
-    const schema = structuredClone(programTextReviewResponseSchema);
-    schema.properties.blocks.minItems = packet.blocks.length;
-    schema.properties.blocks.maxItems = packet.blocks.length;
-    // Google warns that large nested array maxima can exceed its grammar
-    // complexity. The local validator still enforces the full 64-change cap.
-    delete schema.properties.blocks.items.properties.changes.maxItems;
     const config = { ...visualReviewGenerationConfigForModel(model), maxOutputTokens: MAX_OUTPUT_TOKENS,
-      responseMimeType: "application/json", responseJsonSchema: schema };
+      responseMimeType: "application/json", responseSchema: programTextGeminiResponseSchema(packet.blocks.length) };
     return { metadata: { key: packet.packet_id }, request: {
       systemInstruction: { parts: [{ text: PROGRAM_TEXT_REVIEW_INSTRUCTIONS }] },
       contents: [{ role: "user", parts: [

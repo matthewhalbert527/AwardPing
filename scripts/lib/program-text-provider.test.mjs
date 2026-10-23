@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildProgramTextCapture } from "./program-text-capture.mjs";
-import { buildProgramTextComparison, buildProgramTextReviewPackets } from "./program-text-review.mjs";
-import { programTextBatchRequests, submitProgramTextBatch, programTextBatchResult, pollProgramTextBatch } from "./program-text-provider.mjs";
+import { buildProgramTextComparison, buildProgramTextReviewPackets, programTextReviewResponseSchema, validateProgramTextReviewResult } from "./program-text-review.mjs";
+import { programTextBatchRequests, programTextGeminiResponseSchema, submitProgramTextBatch, programTextBatchResult, pollProgramTextBatch } from "./program-text-provider.mjs";
 import { geminiStrongWorkerModel } from "./gemini-worker-policy.mjs";
 import { GeminiBudgetUnavailableError, GEMINI_PAID_LANES, estimateGeminiMaximumBatchRequestsCostUsd } from "./gemini-spend-ledger.mjs";
 
@@ -69,22 +69,108 @@ function batchResult(c, { usage = true } = {}) {
     }) }] } }], ...(usage ? { usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, thoughtsTokenCount: 10, totalTokenCount: 160 } } : {}) },
   })) } };
 }
+function invalidArgumentBatchResult(c) {
+  // Shape observed in the three retained October 23 results: successful
+  // outer Batch operation, but every individual request failed before output.
+  const inlinedResponses = { inlinedResponses: c.worker_metadata.provider_request_keys.map(key => ({
+    error: { code: 3, message: "Request contains an invalid argument." }, metadata: { key },
+  })) };
+  return { name: c.gemini_batch_name, done: true,
+    metadata: { "@type": "type.googleapis.com/google.ai.generativelanguage.v1main.GenerateContentBatch",
+      name: c.gemini_batch_name, model: `models/${c.model}`, state: "BATCH_STATE_SUCCEEDED",
+      batchStats: { requestCount: String(inlinedResponses.inlinedResponses.length), failedRequestCount: String(inlinedResponses.inlinedResponses.length) },
+      output: { inlinedResponses: structuredClone(inlinedResponses) } },
+    response: { "@type": "type.googleapis.com/google.ai.generativelanguage.v1main.GenerateContentBatchOutput", inlinedResponses } };
+}
 
 describe("text-only Gemini request and submission boundary", () => {
-  it("uses one documented JSON schema and only text parts without sending raw files", () => {
-    const c = candidate(), requests = programTextBatchRequests(c);
+  it("uses only the native Gemini response schema and text parts without sending raw files", () => {
+    const c = candidate(), original = structuredClone(c), requests = programTextBatchRequests(c);
     expect(requests).toHaveLength(1);
     const request = requests[0].request;
     expect(request.generationConfig.responseMimeType).toBe("application/json");
-    expect(request.generationConfig.responseJsonSchema.type).toBe("object");
-    expect(request.generationConfig.responseSchema).toBeUndefined();
+    expect(request.generationConfig.responseSchema.type).toBe("OBJECT");
+    expect(request.generationConfig.responseJsonSchema).toBeUndefined();
     expect(request.generationConfig.maxOutputTokens).toBe(8192);
-    expect(request.generationConfig.responseJsonSchema.properties.blocks.maxItems).toBe(c.prompt_payload.packet_plan.packets[0].blocks.length);
-    expect(request.generationConfig.responseJsonSchema.properties.blocks.items.properties.changes.maxItems).toBeUndefined();
+    const schema = request.generationConfig.responseSchema;
+    expect(schema.properties.blocks.minItems).toBe(String(c.prompt_payload.packet_plan.packets[0].blocks.length));
+    expect(schema.properties.blocks.maxItems).toBe(String(c.prompt_payload.packet_plan.packets[0].blocks.length));
+    expect(schema.properties.blocks.items.properties.changes.maxItems).toBeUndefined();
+    expect(schema.properties.cycle_id).toEqual({ type: "STRING", nullable: true });
+    const changes = schema.properties.blocks.items.properties.changes.items.properties;
+    expect(changes.previous_quote.nullable).toBe(true);
+    expect(changes.current_quote.nullable).toBe(true);
     expect(request.contents[0].parts.every(part => Object.keys(part).join() === "text")).toBe(true);
     expect(JSON.stringify(request)).not.toContain("inlineData");
     expect(JSON.stringify(request)).not.toContain("fileData");
     expect(JSON.stringify(request)).not.toContain("raw_bytes");
+    expect(requests[0].metadata.key).toBe(c.prompt_payload.packet_plan.packets[0].packet_id);
+    expect(requests[0].metadata.key).toMatch(/^[a-f0-9]{64}$/);
+    expect(c).toEqual(original);
+  });
+
+  it("uses native closed objects, uppercase types and integer-string bounds without JSON-schema-only keywords", () => {
+    const schema = programTextGeminiResponseSchema(32), nodes = [];
+    const visit = node => {
+      nodes.push(node);
+      expect(["OBJECT", "ARRAY", "STRING", "BOOLEAN"]).toContain(node.type);
+      expect(Object.keys(node).every(key => ["type", "properties", "required", "maxProperties", "propertyOrdering", "nullable", "enum", "items", "minItems", "maxItems"].includes(key))).toBe(true);
+      if (node.type === "OBJECT") {
+        expect(node.required).toEqual(Object.keys(node.properties));
+        expect(node.propertyOrdering).toEqual(node.required);
+        expect(node.maxProperties).toBe(String(node.required.length));
+        Object.values(node.properties).forEach(visit);
+      } else if (node.type === "ARRAY") visit(node.items);
+      if (node.minItems !== undefined) expect(node.minItems).toMatch(/^[1-9]\d*$/);
+      if (node.maxItems !== undefined) expect(node.maxItems).toMatch(/^[1-9]\d*$/);
+    };
+    visit(schema);
+    expect(nodes.filter(node => node.type === "OBJECT")).toHaveLength(5);
+    expect(nodes.filter(node => node.type === "ARRAY")).toHaveLength(2);
+    expect(nodes.filter(node => node.nullable)).toHaveLength(3);
+    const local = programTextReviewResponseSchema.properties;
+    const nativeBlock = schema.properties.blocks.items.properties;
+    expect(schema.properties.schema.enum).toEqual(local.schema.enum);
+    expect(nativeBlock.disposition.enum).toEqual(local.blocks.items.properties.disposition.enum);
+    expect(nativeBlock.changes.items.properties.field.enum).toEqual(local.blocks.items.properties.changes.items.properties.field.enum);
+    expect(nativeBlock.changes.items.properties.operation.enum).toEqual(local.blocks.items.properties.changes.items.properties.operation.enum);
+  });
+
+  it.each([0, -1, 33, 1.5, NaN, Infinity, null, "1"])("refuses invalid native packet cardinality %s", count => {
+    expect(() => programTextGeminiResponseSchema(count)).toThrow("invalid_packet_block_count");
+  });
+
+  it("leaves the strict local schema unchanged and returns independent native schemas", () => {
+    const original = structuredClone(programTextReviewResponseSchema);
+    const first = programTextGeminiResponseSchema(1), second = programTextGeminiResponseSchema(2);
+    first.properties.blocks.items.properties.changes.items.properties.field.enum.length = 0;
+    first.properties.blocks.items.properties.changes.items.properties.previous_quote.properties.text.type = "BOOLEAN";
+    expect(second.properties.blocks.items.properties.changes.items.properties.field.enum.length).toBeGreaterThan(0);
+    expect(second.properties.blocks.items.properties.changes.items.properties.previous_quote.properties.text.type).toBe("STRING");
+    expect(second.properties.blocks.maxItems).toBe("2");
+    expect(programTextReviewResponseSchema).toEqual(original);
+    expect(original.properties.blocks.items.properties.changes.maxItems).toBe(64);
+    expect(original.properties.blocks.items.properties.reason.maxLength).toBe(600);
+  });
+
+  it("still holds incomplete block coverage and fabricated quotations after parsing native-format responses", () => {
+    const c = submitted(), envelope = batchResult(c);
+    const response = JSON.parse(envelope.response.inlinedResponses[0].response.candidates[0].content.parts[0].text);
+    response.blocks[0].disposition = "program_change";
+    response.blocks[0].changes = [{ field: "deadline", operation: "replace", summary: "The application deadline changed.",
+      previous_quote: { block_id: "deadline", text: "Deadline: October 1, 2027" },
+      current_quote: { block_id: "deadline", text: "Deadline: October 15, 2027" }, applicant_impact: true }];
+    const encode = () => { envelope.response.inlinedResponses[0].response.candidates[0].content.parts[0].text = JSON.stringify(response); };
+    encode();
+    let parsed = programTextBatchResult(c, envelope);
+    expect(parsed.status).toBe("ready");
+    expect(validateProgramTextReviewResult(c.prompt_payload.comparison, c.prompt_payload.packet_plan, parsed.responses).status).toBe("accepted");
+    response.blocks[0].changes[0].current_quote.text = "Deadline: October 99, 2027";
+    encode(); parsed = programTextBatchResult(c, envelope);
+    expect(validateProgramTextReviewResult(c.prompt_payload.comparison, c.prompt_payload.packet_plan, parsed.responses).status).toBe("held");
+    response.blocks = [];
+    encode(); parsed = programTextBatchResult(c, envelope);
+    expect(validateProgramTextReviewResult(c.prompt_payload.comparison, c.prompt_payload.packet_plan, parsed.responses).status).toBe("held");
   });
 
   it("sends the exact complete source past 24KB and authoritative program identity in every packet request", () => {
@@ -102,6 +188,10 @@ describe("text-only Gemini request and submission boundary", () => {
       expect(full.current_text).toContain("Distant exception: the later deadline applies only");
       expect(parts.every(part => Object.keys(part).join() === "text")).toBe(true);
     }
+    requests.forEach(({ request }, index) => {
+      expect(request.generationConfig.responseSchema.properties.blocks.minItems).toBe(String(c.prompt_payload.packet_plan.packets[index].blocks.length));
+      expect(request.generationConfig.responseSchema.properties.blocks.maxItems).toBe(String(c.prompt_payload.packet_plan.packets[index].blocks.length));
+    });
   });
 
   it("holds an oversized complete page before claims, reservations or a provider call", async () => {
@@ -204,6 +294,35 @@ describe("complete response mapping and conservative settlement", () => {
     const c = submitted(), result = programTextBatchResult(c, batchResult(c));
     expect(result.status).toBe("ready"); expect(result.responses).toHaveLength(1);
     expect(result.accounting).toMatchObject({ mappingComplete: true, responseCount: 1, usageResponseCount: 1 });
+  });
+
+  it("holds an actual-shaped successful Batch containing a code3 failed request, without treating it as model output", () => {
+    const c = submitted(), envelope = invalidArgumentBatchResult(c);
+    expect(envelope.metadata.state).toBe("BATCH_STATE_SUCCEEDED");
+    expect(envelope.metadata.batchStats.failedRequestCount).toBe("1");
+    const parsed = programTextBatchResult(c, envelope);
+    expect(parsed).toMatchObject({ status: "held", reason: "invalid_or_incomplete_provider_result",
+      accounting: { mappingComplete: true, responseCount: 1, usageResponseCount: 0 } });
+    expect(parsed.responses).toBeUndefined();
+  });
+
+  it("settles a code3 failed request conservatively and never retries its terminal candidate", async () => {
+    const c = submitted(), fetcher = vi.fn(async () => asResponse(invalidArgumentBatchResult(c)));
+    const ledger = { load: vi.fn(async () => ({ id: "reservation-1", provider_batch_name: c.gemini_batch_name, model: c.model,
+      attempt_token: "attempt-1", request_count: 1, reserved_micro_usd: 10000 })), settle: vi.fn(async () => {}) };
+    const result = await pollProgramTextBatch(c, { supabase: {}, apiKey: "synthetic-key", fetcher, ledger });
+    expect(result.status).toBe("held");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0][1].method).toBe("GET");
+    expect(ledger.settle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ spentCostUsd: 0.01,
+      spentSource: "terminal_batch_conservative_reserved_maximum" }));
+    const terminal = { ...c, status: "failed", rejection_reason: `manual_review_required:${result.reason}` }, h = harness();
+    expect(await submitProgramTextBatch(terminal, h.dependencies)).toEqual({ status: "skipped" });
+    expect(await pollProgramTextBatch(terminal, { supabase: {}, apiKey: "synthetic-key", fetcher, ledger })).toEqual({ status: "skipped" });
+    expect(h.sequence).toEqual([]);
+    expect(h.dependencies.fetcher).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(ledger.settle).toHaveBeenCalledTimes(1);
   });
 
   it.each([
