@@ -160,7 +160,11 @@ export function programTextBatchResult(candidate, result) {
       const item = mapped.responses.get(key), payload = geminiInlineResponsePayload(item);
       if (geminiInlineError(item) || payload?.candidates?.length !== 1 || extractGeminiFinishReason(payload) !== "STOP") fail("incomplete_provider_response");
       const parts = payload.candidates[0].content?.parts;
-      if (!Array.isArray(parts) || !parts.length || parts.some(part => typeof part.text !== "string" || Object.keys(part).some(k => !["text", "thought"].includes(k)))) fail("nontext_provider_response");
+      // Gemini may attach an opaque thought signature to a text part. It is
+      // metadata, never source text or JSON to interpret or send elsewhere.
+      if (!Array.isArray(parts) || !parts.length || parts.some(part => typeof part.text !== "string" ||
+          (Object.hasOwn(part, "thoughtSignature") && typeof part.thoughtSignature !== "string") ||
+          Object.keys(part).some(k => !["text", "thought", "thoughtSignature"].includes(k)))) fail("nontext_provider_response");
       return JSON.parse(parts.filter(part => !part.thought).map(part => part.text).join(""));
     });
     return { status: "ready", responses: parsed, accounting };

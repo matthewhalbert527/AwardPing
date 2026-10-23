@@ -82,6 +82,18 @@ function invalidArgumentBatchResult(c) {
       output: { inlinedResponses: structuredClone(inlinedResponses) } },
     response: { "@type": "type.googleapis.com/google.ai.generativelanguage.v1main.GenerateContentBatchOutput", inlinedResponses } };
 }
+function nativeSignedBatchResult(c) {
+  const lines = batchResult(c).response.inlinedResponses;
+  lines.forEach((line, index) => {
+    line.response.candidates[0].content.parts[0].thoughtSignature = `opaque-signature-${index}/+==`;
+  });
+  const inlinedResponses = { inlinedResponses: lines };
+  return { name: c.gemini_batch_name, done: true,
+    metadata: { "@type": "type.googleapis.com/google.ai.generativelanguage.v1main.GenerateContentBatch",
+      model: `models/${c.model}`, state: "BATCH_STATE_SUCCEEDED", output: { inlinedResponses: structuredClone(inlinedResponses) },
+      batchStats: { requestCount: String(lines.length), successfulRequestCount: String(lines.length) } },
+    response: { "@type": "type.googleapis.com/google.ai.generativelanguage.v1main.GenerateContentBatchOutput", inlinedResponses } };
+}
 
 describe("text-only Gemini request and submission boundary", () => {
   it("uses only the native Gemini response schema and text parts without sending raw files", () => {
@@ -294,6 +306,65 @@ describe("complete response mapping and conservative settlement", () => {
     const c = submitted(), result = programTextBatchResult(c, batchResult(c));
     expect(result.status).toBe("ready"); expect(result.responses).toHaveLength(1);
     expect(result.accounting).toMatchObject({ mappingComplete: true, responseCount: 1, usageResponseCount: 1 });
+  });
+
+  it("accepts an opaque string thoughtSignature on native text parts without interpreting it", () => {
+    const c = submitted(), envelope = nativeSignedBatchResult(c), part = envelope.response.inlinedResponses.inlinedResponses[0].response.candidates[0].content.parts[0];
+    const expected = JSON.parse(part.text);
+    part.thoughtSignature = 'opaque metadata, not JSON output: {"blocks":[],"schema":"wrong"}';
+    const parsed = programTextBatchResult(c, envelope);
+    expect(parsed.status).toBe("ready");
+    expect(parsed.responses).toEqual([expected]);
+    expect(parsed.accounting).toMatchObject({ mappingComplete: true, responseCount: 1, usageResponseCount: 1 });
+    expect(validateProgramTextReviewResult(c.prompt_payload.comparison, c.prompt_payload.packet_plan, parsed.responses).status).toBe("no_program_change");
+  });
+
+  it.each([null, 1, true, {}, []])("holds a non-string thoughtSignature %s", signature => {
+    const c = submitted(), envelope = nativeSignedBatchResult(c);
+    envelope.response.inlinedResponses.inlinedResponses[0].response.candidates[0].content.parts[0].thoughtSignature = signature;
+    expect(programTextBatchResult(c, envelope)).toMatchObject({ status: "held", reason: "invalid_or_incomplete_provider_result" });
+  });
+
+  it.each([
+    { thoughtSignature: "opaque", thought: false },
+    { text: "", thoughtSignature: "opaque", inlineData: { mimeType: "image/png", data: "fake" } },
+    { text: "", thoughtSignature: "opaque", fileData: { mimeType: "application/pdf", fileUri: "files/not-requested" } },
+    { text: "", thoughtSignature: "opaque", unexpected: true },
+  ])("still rejects signed parts without text or with nontext/unknown fields %s", part => {
+    const c = submitted(), envelope = nativeSignedBatchResult(c);
+    envelope.response.inlinedResponses.inlinedResponses[0].response.candidates[0].content.parts.push(part);
+    expect(programTextBatchResult(c, envelope).status).toBe("held");
+  });
+
+  it("ignores signed thought text while retaining only the complete answer JSON", () => {
+    const c = submitted(), envelope = nativeSignedBatchResult(c), parts = envelope.response.inlinedResponses.inlinedResponses[0].response.candidates[0].content.parts;
+    const expected = JSON.parse(parts[0].text);
+    parts.unshift({ text: "Private reasoning is not the answer JSON.", thought: true, thoughtSignature: "opaque-thought-signature" });
+    expect(programTextBatchResult(c, envelope)).toMatchObject({ status: "ready", responses: [expected] });
+  });
+
+  it("maps both native signed packets exactly and resolves all changed blocks as no program change", () => {
+    const c = { ...longCandidate({ count: 3, changed: 3, width: 100 }), status: "submitted", model: geminiStrongWorkerModel(), gemini_batch_name: "batches/signed-two-packets" };
+    c.prompt_payload.packet_plan = buildProgramTextReviewPackets(c.prompt_payload.comparison, { max_blocks_per_packet: 2 });
+    expect(c.prompt_payload.packet_plan.packets).toHaveLength(2);
+    c.worker_metadata = { provider_request_keys: c.prompt_payload.packet_plan.packets.map(packet => packet.packet_id) };
+    const envelope = nativeSignedBatchResult(c);
+    envelope.response.inlinedResponses.inlinedResponses.reverse();
+    const parsed = programTextBatchResult(c, envelope);
+    expect(parsed.status).toBe("ready");
+    expect(parsed.responses.map(response => response.packet_id)).toEqual(c.worker_metadata.provider_request_keys);
+    expect(parsed.accounting).toMatchObject({ mappingComplete: true, responseCount: 2, usageResponseCount: 2 });
+    expect(validateProgramTextReviewResult(c.prompt_payload.comparison, c.prompt_payload.packet_plan, parsed.responses)).toMatchObject({ status: "no_program_change", changes: [] });
+    for (const invalid of [
+      lines => lines.pop(),
+      lines => lines.push(structuredClone(lines[0])),
+      lines => { lines[0].metadata.key = "wrong-packet-key"; },
+      lines => { lines[0].response.candidates[0].finishReason = "MAX_TOKENS"; },
+    ]) {
+      const corrupted = structuredClone(envelope);
+      invalid(corrupted.response.inlinedResponses.inlinedResponses);
+      expect(programTextBatchResult(c, corrupted).status).toBe("held");
+    }
   });
 
   it("holds an actual-shaped successful Batch containing a code3 failed request, without treating it as model output", () => {
