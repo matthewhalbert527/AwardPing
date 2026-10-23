@@ -180,14 +180,19 @@ describe("paid review retry approval migration", () => {
       worker.indexOf("async function submitCandidateChunk("),
       worker.indexOf("async function persistSubmittedClaim("),
     );
-    expect(submit).toContain("geminiBatchRequestForCandidate(candidate)");
-    expect(submit).toContain("failVisualProviderRequestEvidence(");
-    expect(submit.indexOf("geminiBatchRequestForCandidate(candidate)")).toBeLessThan(
-      submit.indexOf("reserveGeminiSpend({"),
-    );
-    expect(submit.indexOf("failVisualProviderRequestEvidence(")).toBeLessThan(
-      submit.indexOf("reserveGeminiSpend({"),
-    );
+    const prepare = submit.indexOf("await prepareNativePdfReview({ candidate, source, archiveRoot })");
+    const request = submit.indexOf("geminiBatchRequestForCandidate(candidate, nativePdfInput)");
+    const reject = submit.indexOf("await failVisualProviderRequestEvidence(");
+    const reserve = submit.indexOf("await reserveGeminiSpend({");
+    const create = submit.indexOf("await createGeminiBatchJob({");
+    for (const index of [prepare, request, reject, reserve, create]) {
+      expect(index).toBeGreaterThanOrEqual(0);
+    }
+    expect(prepare).toBeLessThan(request);
+    expect(request).toBeLessThan(reject);
+    expect(reject).toBeLessThan(reserve);
+    expect(reserve).toBeLessThan(create);
+    expect(submit).toContain("if (!claimedCandidates.length) return;");
     expect(worker).toContain('rejection_reason: "provider_request_evidence_invalid"');
   });
 

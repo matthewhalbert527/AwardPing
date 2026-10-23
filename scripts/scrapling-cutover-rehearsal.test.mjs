@@ -10,6 +10,7 @@ import {
   assertScraplingBaselineCompatibility, SCRAPLING_WORKER_PROFILE,
   selectScraplingSource, validateScraplingSourceManifest,
 } from "./lib/scrapling-worker.mjs";
+import { getScraplingBaselineTransitionReference, ScraplingBaselineTransitionError } from "./lib/scrapling-baseline-transition.mjs";
 
 // Execute the current worker's orchestration, writer and restoration functions,
 // not its CLI (which loads live credentials). All remote boundaries are fakes.
@@ -87,6 +88,9 @@ function fixture({ initialProfile = "stable-daily", useScrapling = true, refresh
   let pendingCapture;
   const deps = {
     SOURCE_HTML_PROFILE, SCRAPLING_WORKER_PROFILE,
+    // This legacy v1 rehearsal has no pinned v2 transition. Use the actual
+    // imported preflight, just as the worker does with its default null guard.
+    getScraplingBaselineTransitionReference, ScraplingBaselineTransitionError, scraplingBaselineTransition: null,
     archiveRoot: root, dirname, relative, resolve, mkdirSync, readFileSync, existsSync, rmSync, atomicWriteJson,
     baselinePathForSource: id => join(root, "sources", id, "baseline.json"),
     localBaselineEvidenceCache: new Map(),

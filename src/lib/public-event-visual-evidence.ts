@@ -16,7 +16,7 @@ export async function loadPublicEventVisualEvidence(
       .select("*")
       .in("change_event_id", uniqueIds.slice(index, index + 200));
     if (error) {
-      throw new Error("Immutable visual evidence is unavailable.");
+      throw new Error("Immutable update evidence is unavailable.");
     }
     rows.push(...((data || []) as PublicChangeEventVisualEvidence[]));
   }

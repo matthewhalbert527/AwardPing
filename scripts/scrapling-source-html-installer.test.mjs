@@ -60,6 +60,8 @@ describe.skipIf(process.platform !== "win32")("source-only and bounded-intake in
         $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-AwardPingInstalledRuntimeProblems' }, $true)
         if (-not $definition) { throw 'Actual runtime guard is missing' }
         . ([scriptblock]::Create($definition.Extent.Text))
+        $textDefinition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-AwardPingProgramTextRuntimeRelativePaths' }, $true)
+        . ([scriptblock]::Create($textDefinition.Extent.Text))
         function Get-AwardPingRootedActionPaths { return @() }
         function Get-MissingWorkerRuntimeDependencies { return @() }
         function Get-AwardPingInteractiveTaskNames { return @() }

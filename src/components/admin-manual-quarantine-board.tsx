@@ -156,7 +156,7 @@ export function AdminManualQuarantineBoard({
             !result.registryAvailable
               ? "Historical inventory state is unavailable; no imported or missing status is inferred."
               : historicalImported
-              ? "Older screenshots that cannot be localized exactly are retained and labeled honestly."
+              ? "Historical records remain privately retained; new monitoring uses source text."
               : "Import the retained historical inventory before treating this number as complete."
           }
           icon={History}
@@ -212,12 +212,12 @@ export function AdminManualQuarantineBoard({
           <QuarantineGroup
             detail={
               historicalImported
-                ? "Retained screenshots without trustworthy exact-location data remain visible without pretending a fuzzy crop is exact."
+                ? "Historical capture limitations do not establish a verified program change."
                 : "The historical inventory has not been imported, so AwardPing does not report a false zero."
             }
             historicalUnavailable={!historicalImported}
             icon={History}
-            label="Historical screenshot limits"
+            label="Historical capture limits"
             summary={summary.byCategory.historical_localization}
           />
         </div>

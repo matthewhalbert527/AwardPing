@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/run-tests.mjs",
     "start": "next start",
     "lint": "eslint",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build",

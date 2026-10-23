@@ -1,17 +1,9 @@
 import { ExternalLink } from "lucide-react";
-import { buildChangeEvidence } from "@/lib/change-evidence";
-import { readableSourceTitle } from "@/lib/display-text";
-import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 
 export function ChangeEvidencePanel({
-  changeEventId,
-  sourceId,
   sourceUrl,
-  sourceTitle,
-  sourcePageTypeLabel,
-  summary,
   changeDetails,
-  detectedAt,
   compact = false,
   hideSourceLink = false,
 }: {
@@ -26,42 +18,49 @@ export function ChangeEvidencePanel({
   compact?: boolean;
   hideSourceLink?: boolean;
 }) {
-  const evidence = buildChangeEvidence({
-    sourceUrl,
-    sourceTitle,
-    summary,
-    changeDetails,
-  });
-  const snapshotTitle = readableSourceTitle(sourceTitle, sourceUrl);
+  const presentation = programChangePresentation(changeDetails);
+  const hasSourceLink = Boolean(sourceUrl && !hideSourceLink && officialSourceUrl(sourceUrl));
+  const quotes = presentation?.quotes ?? [];
+  if (!hasSourceLink && quotes.length === 0) return null;
 
   return (
     <div className={compact ? "change-evidence change-evidence-compact" : "change-evidence"}>
-      <div className="change-evidence-actions">
-        {(changeEventId || sourceId) && sourceUrl ? (
-          <SourceSnapshotViewerButton
-            changeEventId={changeEventId}
-            changeDetectedAt={detectedAt}
-            changeDetails={changeDetails}
-            changeSummary={summary}
-            sourceId={sourceId}
-            sourcePageTypeLabel={sourcePageTypeLabel}
-            sourceTitle={snapshotTitle}
-            sourceUrl={sourceUrl}
-          />
-        ) : null}
-        {sourceUrl && !hideSourceLink && (
-          <a className="change-evidence-source-link" href={sourceUrl} rel="noreferrer" target="_blank">
+      {hasSourceLink && (
+        <div className="change-evidence-actions">
+          <a className="change-evidence-source-link" href={sourceUrl!} rel="noreferrer" target="_blank">
             <ExternalLink size={14} aria-hidden="true" />
             Official source
           </a>
-        )}
-      </div>
-      {evidence.relationshipNote && <p className="change-evidence-note">{evidence.relationshipNote}</p>}
-      {evidence.isFirstObservation && (
-        <p className="change-evidence-note">
-          First retained observation; publication date not established.
-        </p>
+        </div>
+      )}
+      {quotes.length > 0 && (
+        <details className="program-change-wording">
+          <summary>Exact wording</summary>
+          <div className="program-change-quotes">
+            {quotes.map((quote, index) => (
+              <section key={index} aria-label={quote.label}>
+                <h4>{quote.label}</h4>
+                {quote.previous !== null && (
+                  <div><span>Previously</span><blockquote>{quote.previous}</blockquote></div>
+                )}
+                {quote.current !== null && (
+                  <div><span>Now</span><blockquote>{quote.current}</blockquote></div>
+                )}
+              </section>
+            ))}
+          </div>
+        </details>
       )}
     </div>
   );
+}
+
+function officialSourceUrl(value: string | null | undefined) {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }

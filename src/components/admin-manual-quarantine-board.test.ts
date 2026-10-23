@@ -47,7 +47,7 @@ describe("AdminManualQuarantineBoard", () => {
     expect(html).toContain("452");
     expect(html).toContain("Visual review");
     expect(html).toContain("New document evidence");
-    expect(html).toContain("Historical screenshot limits");
+    expect(html).toContain("Historical capture limits");
     expect(html).toContain("Exact grouped backlog");
   });
 

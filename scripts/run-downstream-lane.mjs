@@ -15,67 +15,45 @@ const root = resolve(import.meta.dirname, "..");
 
 export const downstreamLaneDefinitions = Object.freeze({
   new_page_review: {
-    script: "scripts/process-new-page-review-lane.mjs",
-    args: [],
+    // New discovery waits while the reviewed 25-award baseline is established.
+    script: "scripts/program-text-worker.mjs",
+    args: ["--mode=new_page_review", "--apply=true"],
   },
   changed_page_review: {
-    script: "scripts/process-visual-review-batch.mjs",
-    args: [
-      "--limit=100",
-      "--max-requests-per-batch=100",
-      "--inline-threshold=100",
-      "--poll=true",
-      "--submit=true",
-      "--apply=true",
-      "--paid-lane=changed_page_review",
-    ],
+    script: "scripts/program-text-worker.mjs",
+    args: ["--mode=review", "--apply=true", "--limit=100"],
   },
   feedback_promotion: {
-    script: "scripts/process-monitoring-feedback-promotions.mjs",
-    args: ["--apply=true"],
+    script: "scripts/program-text-worker.mjs",
+    args: ["--mode=legacy_hold", "--apply=true"],
   },
   suppression: {
-    script: "scripts/cleanup-change-event-noise.mjs",
-    args: [
-      "--limit=1000",
-      "--batch-size=250",
-      "--suppression-source=scheduled-independent-policy-sweep",
-      "--apply=true",
-    ],
+    script: "scripts/program-text-worker.mjs",
+    args: ["--mode=legacy_hold", "--apply=true"],
   },
   reconciliation: {
-    script: "scripts/reconcile-impacted-award-pages.mjs",
-    args: [
-      "--limit=250",
-      "--only-pending=true",
-      "--only-failed=false",
-      "--dry-run=false",
-      "--apply=true",
-      "--include-warnings=true",
-    ],
+    script: "scripts/program-text-worker.mjs",
+    args: ["--mode=legacy_hold", "--apply=true"],
   },
   page_audit: {
-    // This is intentionally deterministic. Gemini page-audit submission is not
-    // a permanent paid lane and must never be reintroduced here.
+    // Observation-only deterministic checks do not capture pages or invoke AI.
     script: "scripts/evaluate-public-page-audit-canaries.mjs",
     args: ["--all=true", "--apply=true", "--fail-on-critical=false"],
   },
   manual_quarantine: {
-    script: "scripts/sync-manual-quarantine-registry.mjs",
-    args: ["--apply=true"],
+    script: "scripts/program-text-worker.mjs",
+    args: ["--mode=legacy_hold", "--apply=true"],
   },
   nightly_report: {
-    script: "scripts/report-visual-nightly.mjs",
-    args: ["--write=true"],
-    includeEnv: false,
+    script: "scripts/program-text-worker.mjs",
+    args: ["--mode=report", "--apply=true"],
   },
 });
-
 export function normalizeDownstreamLaneKey(value) {
   return String(value || "").trim().toLowerCase().replaceAll("-", "_");
 }
 
-export function commandForDownstreamLane(laneKey, { envFile = ".env.worker.local", timeBudgetMs } = {}) {
+export function commandForDownstreamLane(laneKey, { envFile = ".env.worker.local" } = {}) {
   const normalized = normalizeDownstreamLaneKey(laneKey);
   const definition = downstreamLaneDefinitions[normalized];
   if (!definition) throw new Error(`Unknown downstream lane: ${laneKey || "(missing)"}`);
@@ -84,10 +62,6 @@ export function commandForDownstreamLane(laneKey, { envFile = ".env.worker.local
   // accept --key=value arguments. Keeping one canonical form prevents a lane
   // from silently falling back to .env.local on the installed worker.
   if (definition.includeEnv !== false) args.push(`--env=${envFile}`);
-  if (normalized === "nightly_report") args.push("--reports-dir", resolve(root, "reports"));
-  if (normalized === "new_page_review" && Number.isFinite(Number(timeBudgetMs))) {
-    args.push(`--time-budget-ms=${Math.max(1_000, Math.floor(Number(timeBudgetMs) - 15_000))}`);
-  }
   args.push(...definition.args);
   return { laneKey: normalized, command: process.execPath, args };
 }

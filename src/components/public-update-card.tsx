@@ -2,13 +2,15 @@ import Link from "next/link";
 import { ArrowRight, ExternalLink } from "lucide-react";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { changeSummaryPresentation } from "@/lib/change-summary";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 import type { LiveUpdateItem } from "@/lib/live-updates";
 import { liveUpdateAwardHref } from "@/lib/public-award-links";
 
 /** One reader-facing update presentation shared by home and the full feed. */
 export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
   const awardHref = liveUpdateAwardHref(update);
-  const presentation = changeSummaryPresentation(update.summary, update.sourceUrl, update.sourceTitle, update.changeDetails);
+  const presentation = programChangePresentation(update.changeDetails) ??
+    changeSummaryPresentation(update.summary, update.sourceUrl, update.sourceTitle, update.changeDetails);
   const normalizedTitle = normalizedSentence(presentation.title);
   // Keep the existing compact metadata slot, not another category badge or
   // a second copy of a complete summary. Generic fallbacks add no information.

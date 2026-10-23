@@ -1,201 +1,102 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { load } from "cheerio";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
-import * as snapshotViewer from "@/components/source-snapshot-viewer";
-import * as changeEvidence from "@/lib/change-evidence";
 
-type PanelProps = Parameters<typeof ChangeEvidencePanel>[0];
-
-function changeDetails() {
-  return {
-    reader_summary: "Applications open on September 10, 2025.",
-    before: "Applications open on September 1, 2025.",
-    after: "Applications open on September 10, 2025.",
-    exact_before: "Applications open on September 1, 2025.",
-    exact_after: "Applications open on September 10, 2025.",
-    section: "Deadline",
-    change_type: "deadline",
-    advisor_impact: "Update advising calendars.",
-    is_alert_worthy: true,
-    confidence: "high",
-    structured_diff: {
-      added_text: ["Applications open on September 10, 2025."],
-      removed_text: ["Applications open on September 1, 2025."],
-      likely_section: "Deadline",
-      page_type: "deadline",
-      date_changes: ["Added September 10, 2025"],
-      amount_changes: [],
-      noise_flags: [],
-    },
-    source: {},
-    quality_flags: [],
-    generated_at: "2026-05-28T20:00:00.000Z",
-    generation_provider: "gemini",
-    generation_status: "generated",
-    generation_model: "gemini-2.5-flash-lite",
-  };
+const previous = "Applications close April 1 at 5 p.m. Eastern Time, including all required documents.";
+const current = "Applications close April 15 at 5 p.m. Eastern Time, including all required documents.";
+function quote(text: string) { return { block_id: "deadline-1", start_utf16: 0, end_utf16: text.length, text }; }
+function details() {
+  return { schema: "awardping.program-change.v1", event_kind: "program_details_changed",
+    summary: "The deadline moved from April 1 to April 15; the submission time and document requirement are unchanged.",
+    program_changes: [{ field: "deadline", operation: "replace", summary: "The deadline moved to April 15.",
+      previous_quote: quote(previous), current_quote: quote(current) }] };
+}
+function render(changeDetails: unknown, overrides = {}) {
+  return load(renderToStaticMarkup(createElement(ChangeEvidencePanel, {
+    changeEventId: "event-1", sourceId: "source-1",
+    sourceUrl: "https://example.edu/application", changeDetails, ...overrides,
+  })));
 }
 
-function props(overrides: Partial<PanelProps> = {}): PanelProps {
-  return {
-    changeEventId: "change-1",
-    sourceId: "source-1",
-    sourceUrl: "https://example.edu/award?cycle=2027&view=all#requirements",
-    sourceTitle: "Application page",
-    sourcePageTypeLabel: "Deadline",
-    summary: "Added date context: Applications open on September 10, 2025.",
-    changeDetails: changeDetails(),
-    detectedAt: "2026-05-27T20:00:00.000Z",
-    ...overrides,
-  };
-}
-
-function render(input: PanelProps) {
-  return load(renderToStaticMarkup(createElement(ChangeEvidencePanel, input)));
-}
-
-function expectActions($: ReturnType<typeof load>, sourceUrl: string) {
-  expect($("details, summary")).toHaveLength(0);
-  expect($("button")).toHaveLength(1);
-  expect($("button").text().trim()).toBe("View evidence");
-  expect($("button").attr("aria-haspopup")).toBe("dialog");
-  expect($("button").attr("aria-expanded")).toBe("false");
-  expect($("button").attr("type")).toBe("button");
-  expect($("a")).toHaveLength(1);
-  expect($("a").text().trim()).toBe("Official source");
-  expect($("a").attr("href")).toBe(sourceUrl);
-  expect($("a").attr("target")).toBe("_blank");
-  expect($("a").attr("rel")).toBe("noreferrer");
-  expect($("[role='dialog']")).toHaveLength(0);
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value && typeof value === "object") {
-    Object.values(value).forEach(deepFreeze);
-    Object.freeze(value);
-  }
-  return value;
-}
-
-afterEach(() => vi.restoreAllMocks());
-
-describe("ChangeEvidencePanel compact evidence actions", () => {
-  it.each([false, true])("shows the same two actions without repeating update content (compact=%s)", (compact) => {
-    const input = deepFreeze(props({ compact }));
-    const before = structuredClone(input);
-    const $ = render(input);
-
-    expectActions($, input.sourceUrl!);
-    expect($("dl, dt, dd, mark, blockquote, h4, h5")).toHaveLength(0);
-    for (const repeatedText of [
-      input.summary!, "Applications open on September 10, 2025.",
-      "Applications open on September 1, 2025.", "Current wording", "Previous wording",
-      "What changed", "AI-generated description", "High confidence", "Application page",
-      "Deadline", "Advisor impact", "Update advising calendars.", "Detected",
-      "May 27", "2026-05-27T20:00:00.000Z",
-    ]) {
-      expect($("body").text()).not.toContain(repeatedText);
-    }
-    const withoutActions = $("body").clone();
-    withoutActions.find("button, a").remove();
-    expect(withoutActions.text().trim()).toBe("");
-    expect(input).toEqual(before);
+describe("program-change wording and source action", () => {
+  it("offers collapsed exact wording for accepted program changes without repeating the summary or showing visuals", () => {
+    const input = details(), original = structuredClone(input);
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    try {
+      const $ = render(input);
+      expect($("details")).toHaveLength(1);
+      expect($("details").attr("open")).toBeUndefined();
+      expect($("summary").text()).toBe("Exact wording");
+      expect($("blockquote").map((_index, node) => $(node).text()).get()).toEqual([previous, current]);
+      expect($("h4").text()).toBe("Deadline");
+      expect($(".program-change-quotes span").map((_index, node) => $(node).text()).get()).toEqual(["Previously", "Now"]);
+      expect($.text()).not.toContain(input.summary);
+      expect($("img, iframe, object, button, [role='dialog'], mark, del")).toHaveLength(0);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(input).toEqual(original);
+    } finally { vi.unstubAllGlobals(); }
   });
 
-  it.each([
-    { changeEventId: "event-only", sourceId: null },
-    { changeEventId: null, sourceId: "source-only" },
-    { changeEventId: "event-and-source", sourceId: "source-1" },
-  ])("offers one evidence action for identifiers $changeEventId / $sourceId", (identifiers) => {
-    const input = props(identifiers);
-    expectActions(render(input), input.sourceUrl!);
+  it("withholds legacy quotation recovery and keeps only the official source", () => {
+    const $ = render({ reader_summary: "The page changed.", before: previous, after: current,
+      exact_before: previous, exact_after: current, structured_diff: { added_text: [current], removed_text: [previous] } });
+    expect($("details, blockquote, img, iframe, object, button")).toHaveLength(0);
+    expect($.text()).toBe("Official source");
   });
 
-  it.each([null, undefined, ""])("offers only Official source when identifiers are %s", (missing) => {
-    const input = props({ changeEventId: missing, sourceId: missing });
+  it.each(["field", "offsets", "operation", "schema", "extra"])("withholds malformed %s contract quotes", mutation => {
+    const input = details();
+    if (mutation === "field") input.program_changes[0].field = "alumni_profiles";
+    if (mutation === "offsets") input.program_changes[0].current_quote.end_utf16++;
+    if (mutation === "operation") input.program_changes[0].operation = "unproven";
+    if (mutation === "schema") input.schema = "visual-event-evidence-v2";
+    if (mutation === "extra") Object.assign(input, { crop: { url: "https://private.test/image.jpg" } });
     const $ = render(input);
-    expect($("details, summary, button")).toHaveLength(0);
+    expect($("details, blockquote, img")).toHaveLength(0);
+    expect($.text()).toBe("Official source");
+  });
+
+  it.each(["add", "remove"] as const)("does not invent the unavailable side of a %s", operation => {
+    const input = details();
+    Object.assign(input.program_changes[0], { operation,
+      previous_quote: operation === "add" ? null : quote(previous),
+      current_quote: operation === "remove" ? null : quote(current) });
+    const $ = render(input);
+    expect($("blockquote")).toHaveLength(1);
+    expect($("blockquote").text()).toBe(operation === "add" ? current : previous);
+    expect($(".program-change-quotes span").text()).toBe(operation === "add" ? "Now" : "Previously");
+  });
+
+  it("preserves exact whitespace, qualifications and literal markup without executing it", () => {
+    const input = details();
+    const text = 'Only if nominated:\n\tSubmit the form <script>alert("x")</script> by 5 p.m. ET.';
+    input.program_changes[0].current_quote = quote(text);
+    const $ = render(input);
+    expect($("blockquote").last().text()).toBe(text);
+    expect($("script, img, iframe, object")).toHaveLength(0);
+  });
+
+  it("uses the publisher PDF as an ordinary source link without a saved-PDF action", () => {
+    const $ = render(null, { sourceUrl: "https://example.edu/guidance.pdf" });
     expect($("a")).toHaveLength(1);
-    expect($("a").text().trim()).toBe("Official source");
-    expect($("a").attr("href")).toBe(input.sourceUrl);
-    expect($("body").text().trim()).toBe("Official source");
+    expect($("a").attr("href")).toBe("https://example.edu/guidance.pdf");
+    expect($("a").attr("rel")).toBe("noreferrer");
+    expect($("a").text()).toBe("Official source");
+    expect($("button, iframe, object, img, details")).toHaveLength(0);
   });
 
-  it.each([null, undefined, ""])("offers no evidence or source link when sourceUrl is %s", (sourceUrl) => {
-    const $ = render(props({ sourceUrl }));
-    expect($("details, summary, button, a")).toHaveLength(0);
-    expect($("body").text().trim()).toBe("");
-  });
-
-  it("keeps evidence available without duplicating a source link already supplied by its parent", () => {
-    const $ = render(props({ hideSourceLink: true }));
-    expect($("button")).toHaveLength(1);
-    expect($("button").text().trim()).toBe("View evidence");
+  it("does not duplicate a source link provided by the parent", () => {
+    const $ = render(details(), { hideSourceLink: true });
     expect($("a")).toHaveLength(0);
-    expect($("body").text().trim()).toBe("View evidence");
+    expect($("details")).toHaveLength(1);
+    expect(render(null, { hideSourceLink: true }).text()).toBe("");
   });
 
-  it("preserves event/source identity and raw evidence props for the snapshot viewer", () => {
-    const viewer = vi.spyOn(snapshotViewer, "SourceSnapshotViewerButton").mockImplementation(() => (
-      createElement("button", { type: "button" }, "View evidence")
-    ));
-    const input = deepFreeze(props({ sourceId: null }));
-    const before = structuredClone(input);
-    render(input);
-
-    expect(viewer).toHaveBeenCalledOnce();
-    const received = viewer.mock.calls[0][0];
-    expect(received).toMatchObject({
-      changeEventId: input.changeEventId,
-      sourceId: null,
-      sourceUrl: input.sourceUrl,
-      sourcePageTypeLabel: input.sourcePageTypeLabel,
-      changeSummary: input.summary,
-      changeDetectedAt: input.detectedAt,
-    });
-    expect(received.changeDetails).toBe(input.changeDetails);
-    expect(input).toEqual(before);
-  });
-
-  it("retains only the concise first-observation caveat without claiming publication timing", () => {
-    const input = deepFreeze(props({
-      sourceUrl: "https://example.edu/2027-guidance.pdf",
-      summary: "The publisher posted this PDF today.",
-      changeDetails: {
-        ...changeDetails(),
-        event_kind: "new_official_document",
-        change_type: "new_official_document",
-        reader_summary: "The publisher posted this PDF today.",
-        first_observed_at: "2026-06-21T14:00:00.000Z",
-        recognized_at: "2026-07-16T18:00:00.000Z",
-      },
-    }));
-    const before = structuredClone(input);
-    const $ = render(input);
-
-    expectActions($, input.sourceUrl!);
-    expect($("p")).toHaveLength(1);
-    expect($("p").text()).toBe("First retained observation; publication date not established.");
-    expect($("dl, mark, blockquote, h4, h5")).toHaveLength(0);
-    expect($("body").text()).not.toMatch(/publisher posted|today|Previous wording|Current wording|First retained capture|Recognized as an update|2026-06-21|2026-07-16|Applications open/);
-    expect(input).toEqual(before);
-  });
-
-  it("keeps a supplied relationship caveat without restoring duplicated evidence", () => {
-    // The panel does not accept comparison samples; isolate its contract for a
-    // relationship warning supplied by the evidence helper, not its detection.
-    const input = props();
-    const relationshipNote = "The stored added and removed text appears in different parts of the page, so this update is not shown as a direct replacement.";
-    const evidence = changeEvidence.buildChangeEvidence(input);
-    vi.spyOn(changeEvidence, "buildChangeEvidence").mockReturnValue({ ...evidence, relationshipNote });
-    const $ = render(input);
-
-    expectActions($, input.sourceUrl!);
-    expect($("p")).toHaveLength(1);
-    expect($("p").text()).toBe(relationshipNote);
-    expect($("body").text()).not.toContain("Applications open");
-    expect($("mark, blockquote, dl, h4, h5")).toHaveLength(0);
-  });
+  it.each(["javascript:alert(1)", "data:text/html,test", "https://user:password@example.edu/"])(
+    "does not render an unsafe source link %s", sourceUrl => {
+      expect(render(null, { sourceUrl })("a")).toHaveLength(0);
+    },
+  );
 });

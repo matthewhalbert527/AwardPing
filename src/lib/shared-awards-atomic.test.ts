@@ -171,6 +171,7 @@ function sharedSource(overrides: Partial<SharedSource> = {}): SharedSource {
     title: "Official source",
     display_title: null,
     page_description: null,
+    text_monitoring_state: {},
     page_metadata: {
       baseline_facts: {
         award_relevance: "primary",

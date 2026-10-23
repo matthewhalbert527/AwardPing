@@ -10,9 +10,10 @@ import {
   laneExecutionFailureReason,
   normalizeDownstreamLaneKey,
 } from "./run-downstream-lane.mjs";
+import { parseProgramTextArgs } from "./program-text-worker.mjs";
 
 describe("independent downstream lane runner", () => {
-  it("defines exactly two paid-review commands and six no-cost operational commands", () => {
+  it("preserves all eight downstream lane identities", () => {
     expect(Object.keys(downstreamLaneDefinitions)).toEqual([
       "new_page_review",
       "changed_page_review",
@@ -34,11 +35,13 @@ describe("independent downstream lane runner", () => {
     expect(command.args.join(" ")).not.toContain("--submit=true");
   });
 
-  it("explicitly authorizes mutation for the scheduled quarantine sync", () => {
-    const command = commandForDownstreamLane("manual-quarantine");
-
-    expect(command.args[0]).toMatch(/sync-manual-quarantine-registry\.mjs$/);
-    expect(command.args).toContain("--apply=true");
+  it("holds all legacy mutation lanes without executing their former workers", () => {
+    for (const lane of ["feedback_promotion", "suppression", "reconciliation", "manual_quarantine"]) {
+      const command = commandForDownstreamLane(lane);
+      expect(command.args[0]).toMatch(/program-text-worker\.mjs$/);
+      expect(command.args).toContain("--mode=legacy_hold");
+      expect(command.args).toContain("--apply=true");
+    }
   });
 
   it("makes the scheduled --all page audit rotate a bounded full-catalog batch", () => {
@@ -61,14 +64,27 @@ describe("independent downstream lane runner", () => {
     expect(source).toContain('report.status = "succeeded_with_deferred_failures"');
   });
 
-  it("normalizes task-friendly lane keys and bounds the new-page child budget", () => {
+  it("routes only changed text to paid review and defers discovery", () => {
     expect(normalizeDownstreamLaneKey("New-Page-Review")).toBe("new_page_review");
     const command = commandForDownstreamLane("new-page-review", { timeBudgetMs: 600_000 });
-    expect(command.args[0]).toMatch(/process-new-page-review-lane\.mjs$/);
-    expect(command.args).toContain("--time-budget-ms=585000");
+    expect(command.args[0]).toMatch(/program-text-worker\.mjs$/);
+    expect(command.args).toContain("--mode=new_page_review");
+    expect(command.args.join(" ")).not.toContain("--time-budget-ms");
     const changed = commandForDownstreamLane("changed-page-review");
-    expect(changed.args[0]).toMatch(/process-visual-review-batch\.mjs$/);
-    expect(changed.args).toContain("--paid-lane=changed_page_review");
+    expect(changed.args[0]).toMatch(/program-text-worker\.mjs$/);
+    expect(changed.args).toContain("--mode=review");
+    expect(changed.args).toContain("--limit=100");
+  });
+
+  it("all text lane arguments are accepted by the real strict CLI parser", () => {
+    for (const lane of Object.keys(downstreamLaneDefinitions).filter(key => key !== "page_audit")) {
+      const command = commandForDownstreamLane(lane, { envFile: "fixture.env", timeBudgetMs: 600_000 });
+      const parsed = parseProgramTextArgs(command.args.slice(1));
+      expect(parsed.apply).toBe(true);
+      expect(parsed.env).toBe("fixture.env");
+      expect(command.args.join(" ")).not.toMatch(/visual|screenshot|reports-dir|time-budget-ms|paid-lane/);
+      expect(parsed.mode).toBe(lane === "changed_page_review" ? "review" : lane === "new_page_review" ? "new_page_review" : lane === "nightly_report" ? "report" : "legacy_hold");
+    }
   });
 
   it("uses the exact lane claim and completion RPC contracts", () => {

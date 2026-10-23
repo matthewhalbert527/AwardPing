@@ -125,6 +125,21 @@ describe("public update digest helpers", () => {
     ]);
   });
 
+  it("omits first coverage and unavailable-summary rows without hiding real legacy program updates", () => {
+    const base = { shared_award_id: "award-a", source_title: "Application guidance",
+      source_url: "https://example.edu/award/apply", detected_at: "2026-10-23T12:00:00.000Z" };
+    const candidates: PublicDigestCandidate[] = [
+      { ...base, id: "first-coverage", summary: "AwardPing first recorded this official document. This does not establish when it was published.",
+        change_details: { event_kind: "new_official_document", after: "Applicants must submit two references." } },
+      { ...base, id: "unavailable", summary: "A complete concise summary is unavailable. Review the official source." },
+      { ...base, id: "real-change", summary: "Applications for the 2026 Marshall Scholarship are now closed." },
+    ];
+    const original = structuredClone(candidates);
+    const changes = buildPublicDigestChanges(candidates, new Map([["award-a", "Marshall Scholarship"]]));
+    expect(changes.map(change => change.eventId)).toEqual(["real-change"]);
+    expect(candidates).toEqual(original);
+  });
+
   it("keeps structured alert-worthy details even when legacy summary is vague", () => {
     const candidates: PublicDigestCandidate[] = [
       {

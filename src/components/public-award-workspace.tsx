@@ -22,6 +22,7 @@ import { readableSourceTitle } from "@/lib/display-text";
 import { publicAwardHref, publicAwardQueryId, publicAwardSection } from "@/lib/public-award-links";
 import { awardFactCurrentnessNotices, presentAwardDeadlines, type AwardFactCurrentnessNotice } from "@/lib/award-page-presentation";
 import { changeSummaryPresentation } from "@/lib/change-summary";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import {
   PUBLIC_AWARD_PANEL_HEADING_ID,
@@ -727,7 +728,7 @@ function OverviewPanel({
           {latestChange && <ChangeTimestamp value={latestChange.detectedAt} />}</div>
         {latestChange ? <>
           <ChangeSummaryDisplay summary={latestChange.summary} changeDetails={latestChange.changeDetails} sourceTitle={latestChange.sourceTitle} sourceUrl={latestChange.sourceUrl} compact />
-          <button className="public-award-context-link" type="button" onClick={() => onViewUpdates(latestChange.id)}>View updates & evidence <ArrowRight size={15} aria-hidden="true" /></button>
+          <button className="public-award-context-link" type="button" onClick={() => onViewUpdates(latestChange.id)}>View updates <ArrowRight size={15} aria-hidden="true" /></button>
         </> : <p>No updates are available in this view yet. This does not confirm that the official pages have stayed unchanged.</p>}
       </section>
     </div>
@@ -829,7 +830,7 @@ function ChangesPanel({
             >
               <ChangeTimestamp value={change.detectedAt} />
               <div>
-                <h3>{changeSummaryPresentation(change.summary, change.sourceUrl, change.sourceTitle, change.changeDetails).title}</h3>
+                <h3>{(programChangePresentation(change.changeDetails) ?? changeSummaryPresentation(change.summary, change.sourceUrl, change.sourceTitle, change.changeDetails)).title}</h3>
                 <p className="public-award-update-source">{listedSourceNames.get(change.id) ?? change.sourceTitle}</p>
                 <ChangeSummaryDisplay
                   summary={change.summary}

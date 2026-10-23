@@ -43,7 +43,6 @@ export function AdminManualQuarantineBacklogQueue({
   const requestIds = useRef(new Map<string, string>());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [busyAction, setBusyAction] = useState<BulkAction | null>(null);
-  const [busyResolutionId, setBusyResolutionId] = useState<string | null>(null);
   const [message, setMessage] = useState<ActionMessage | null>(null);
   const selectedItems = useMemo(
     () => items.filter((item) => selectedIds.has(item.id)),
@@ -142,62 +141,6 @@ export function AdminManualQuarantineBacklogQueue({
     }
   }
 
-  async function approveDiscoveredPdfReview(item: AdminManualQuarantineBacklogItem) {
-    if (busyAction || busyResolutionId) return;
-    setBusyResolutionId(item.id);
-    setMessage(null);
-    try {
-      const response = await fetch("/api/admin/manual-quarantine/discovered-pdf", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "approve_new_live_review",
-          caseId: item.id,
-          evidenceHash: item.evidenceHash,
-        }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as {
-        createsApiChargeNow?: boolean;
-        error?: string;
-        message?: string;
-        ok?: boolean;
-        reviewMayCharge?: boolean;
-      };
-      if (!response.ok) {
-        throw new Error(payload.error || "The discovered-PDF review could not be approved.");
-      }
-      if (
-        payload.ok !== true ||
-        payload.createsApiChargeNow !== false ||
-        payload.reviewMayCharge !== true
-      ) {
-        throw new Error("The resolution returned an incomplete charge disclosure. Refresh before trying again.");
-      }
-      setMessage({
-        tone: "success",
-        text: payload.message || "One New Page Review was queued and may create an API charge within that lane's daily budget.",
-      });
-      refreshManualQuarantineQueue(router, refreshHref);
-    } catch (error) {
-      setMessage({
-        tone: "error",
-        text: error instanceof Error
-          ? error.message
-          : "The discovered-PDF review could not be approved.",
-      });
-    } finally {
-      setBusyResolutionId(null);
-    }
-  }
-
-  if (items.length === 0) {
-    return (
-      <div className="card manual-backlog-empty-copy">
-        <CheckSquare2 aria-hidden="true" size={20} />
-        <p>No quarantine cases are on this page.</p>
-      </div>
-    );
-  }
 
   return (
     <div className="manual-backlog-case-queue">
@@ -386,30 +329,9 @@ export function AdminManualQuarantineBacklogQueue({
                 </dl>
 
                 {discoveryResolution.visible && (
-                  <div className="manual-backlog-case-links">
-                    <button
-                      className="admin-issue-button"
-                      disabled={
-                        !available ||
-                        busyAction !== null ||
-                        busyResolutionId !== null ||
-                        !discoveryResolution.allowed
-                      }
-                      onClick={() => approveDiscoveredPdfReview(item)}
-                      type="button"
-                    >
-                      <ShieldCheck aria-hidden="true" size={15} />
-                      {busyResolutionId === item.id
-                        ? "Approving review…"
-                        : "Approve one New Page Review (may charge)"}
-                    </button>
-                    <p>
-                      This queues one review under the $5/day New Page Review lane. The button itself does not create a charge.
-                      {!discoveryResolution.allowed
-                        ? " Assign this case to yourself and start review first."
-                        : ""}
-                    </p>
-                  </div>
+                  <p className="manual-backlog-case-links">
+                    Historical PDF-discovery reviews are on hold. Existing records are preserved.
+                  </p>
                 )}
 
                 {(item.awardHref || item.sourceHref) && (

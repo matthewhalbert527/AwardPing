@@ -6,7 +6,7 @@ export function CheckNowButton({ monitorId: _monitorId }: { monitorId: string })
   void _monitorId;
 
   return (
-    <button className="button-secondary" type="button" disabled title="Checked by the daily screenshot worker">
+    <button className="button-secondary" type="button" disabled title="Checked by the daily source monitor">
       <Clock size={15} aria-hidden="true" />
       Daily scan
     </button>

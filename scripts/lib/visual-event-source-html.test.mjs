@@ -8,6 +8,7 @@ import { buildScraplingReviewDiff } from "./scrapling-review-diff.mjs";
 import { SOURCE_HTML_PROFILE } from "./source-html-evidence.mjs";
 import { buildVisualReviewPromptPayload } from "./visual-review-queue.mjs";
 import { preflightPublishedSourceHtmlEventEvidence, preparePublishedVisualEventEvidence } from "./visual-event-evidence.mjs";
+import { NATIVE_PDF_REVIEW_PROFILE } from "./native-pdf-review.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const source = { id: "10000000-0000-0000-0000-000000000001", shared_award_id: "20000000-0000-0000-0000-000000000001",
@@ -194,6 +195,7 @@ function processorHarness(f) {
     assertVisualReviewCompletedResult: () => {},
     markPublicationCandidate: async (candidate, claim, value) => { calls.push("mark"); marks.push({ candidate, claim, value }); },
     INITIAL_OFFICIAL_DOCUMENT_SCOPE: "initial_official_document",
+    NATIVE_PDF_REVIEW_PROFILE,
     visualReviewSourceIdentityFreshness: () => ({ allowed: true }),
     findPriorNonterminalPublication: async () => null,
     rebuildVisualReviewCandidateForCurrentPolicy: candidate => candidate,

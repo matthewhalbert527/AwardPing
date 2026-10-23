@@ -11,7 +11,6 @@ const eventSurfaces = [
   "src/app/award-directory/page.tsx",
   "src/app/api/shared-awards/[id]/route.ts",
   "src/app/api/shared-award-change-reads/route.ts",
-  "src/app/api/change-events/[eventId]/visual-evidence/route.ts",
 ];
 
 describe("Stage 1 public-surface boundary", () => {
@@ -96,13 +95,13 @@ describe("Stage 1 public-surface boundary", () => {
     expect(pipelineRedirect).toMatch(/admin\s*\.from\("shared_awards"\)/);
   });
 
-  it("authorizes raw snapshot operators before querying mutable evidence", () => {
-    const route = read("src/app/api/source-snapshots/[sourceId]/route.ts");
-    const authorization = route.indexOf("if (!canViewSnapshot(user))");
-    const lookup = route.indexOf('.from("shared_award_source_visual_snapshots")');
-
-    expect(authorization).toBeGreaterThan(0);
-    expect(lookup).toBeGreaterThan(authorization);
-    expect(route).not.toContain("{ error: error.message }");
+  it("retires both visual asset routes without reading private evidence or signing assets", () => {
+    for (const path of ["src/app/api/source-snapshots/[sourceId]/route.ts", "src/app/api/change-events/[eventId]/visual-evidence/route.ts"]) {
+      const route = read(path);
+      expect(route).toContain("status: 410");
+      expect(route).toContain("no-store");
+      expect(route).not.toMatch(/\.from\(|createSupabase|signed|signR2|getSignedUrl/);
+      expect(route).not.toContain("{ error: error.message }");
+    }
   });
 });

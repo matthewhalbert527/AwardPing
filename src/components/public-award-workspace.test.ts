@@ -9,7 +9,6 @@ import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import { PublicAwardWorkspace, AwardSourcesPanel, AwardFactsPanel, filterAwardSources, changeIdsToMarkRead, awardPanelNavigation } from "@/components/public-award-workspace";
 import { PUBLIC_AWARD_PANEL_HEADING_ID } from "@/lib/public-award-panel-focus";
-import * as SnapshotViewer from "@/components/source-snapshot-viewer";
 import * as ChangeEvidence from "@/components/change-evidence-panel";
 
 describe("PublicAwardWorkspace", () => {
@@ -579,7 +578,7 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).not.toContain("Selected update");
   });
 
-  it("preserves an explicit matching Sources context with one evidence action and one source link", () => {
+  it("preserves matching Sources context with one official source and no visual evidence", () => {
     const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, {
       data: makeDeepLinkPageData(), initialSection: "sources",
       initialSourceId: "source-apply", initialChangeId: "change-apply",
@@ -588,15 +587,14 @@ describe("PublicAwardWorkspace", () => {
     const $ = load(panel);
     expect($("h2").text()).toBe("Application Instructions");
     expectSingleHighlightedChange(panel, "The application instructions changed.");
-    expect($(".source-snapshot-trigger")).toHaveLength(1);
-    expect($(".source-snapshot-trigger").text().trim()).toBe("View evidence");
+    expect($(".source-snapshot-trigger, img, iframe, object")).toHaveLength(0);
     expect($("a").filter((_index, link) => $(link).text().trim() === "Official source")).toHaveLength(1);
     expect($(".source-snapshot-inline")).toHaveLength(0);
     expect($(".change-evidence-source-link")).toHaveLength(0);
     expect($("[role='dialog']")).toHaveLength(0);
   });
 
-  it("offers one optional evidence action and source link per update without fetching inline previews", () => {
+  it("offers one official source per update without visual evidence or previews", () => {
     const data = makeDeepLinkPageData();
     const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
       data, initialSection: "updates",
@@ -604,8 +602,7 @@ describe("PublicAwardWorkspace", () => {
     const rows = $(".public-award-change-line");
     expect(rows).toHaveLength(data.changes.length);
     rows.each((index, row) => {
-      expect($(row).find(".source-snapshot-trigger")).toHaveLength(1);
-      expect($(row).find(".source-snapshot-trigger").text().trim()).toBe("View evidence");
+      expect($(row).find(".source-snapshot-trigger, img, iframe, object")).toHaveLength(0);
       expect($(row).find(".change-evidence-source-link")).toHaveLength(1);
       expect($(row).find(".change-evidence-source-link").attr("href")).toBe(data.changes[index].sourceUrl);
       expect($(row).find(".source-snapshot-inline, [role='dialog']")).toHaveLength(0);
@@ -1233,7 +1230,6 @@ describe("public award update source display titles", () => {
     };
     const original = structuredClone(data);
     // Spies call the real components; the SSR tree and evidence remain real.
-    const preview = vi.spyOn(SnapshotViewer, "SourceSnapshotInlinePreview");
     const evidence = vi.spyOn(ChangeEvidence, "ChangeEvidencePanel");
     try {
       const panel = updatePanel(data, "source-application");
@@ -1244,19 +1240,17 @@ describe("public award update source display titles", () => {
         changeDetails: data.changes[0].changeDetails,
       };
       const evidenceProps = evidence.mock.calls.find(([props]) => props.changeEventId === "change-target")?.[0];
-      expect(preview).not.toHaveBeenCalled();
       expect(evidenceProps).toMatchObject({ ...expectedProps, summary: targetSummary, hideSourceLink: true });
       expect(evidenceProps?.changeDetails).toBe(data.changes[0].changeDetails);
       expect(targetRow(panel)).not.toContain("Loading screenshot preview...");
-      expect(targetRow(panel)).toContain(">View evidence</button>");
+      expect(targetRow(panel)).not.toContain(">View evidence</button>");
       expect(load(panel)("a").filter((_index, link) => load(link).text().trim() === "Official source")).toHaveLength(1);
-      expect(load(targetRow(panel))(".change-evidence-actions button")).toHaveLength(1);
+      expect(load(targetRow(panel))(".change-evidence-actions button, img, iframe, object, blockquote")).toHaveLength(0);
       expect(load(targetRow(panel))(".change-evidence-source-link")).toHaveLength(0);
       expect(targetRow(panel)).not.toContain("View change explanation");
       expect(load(targetRow(panel))(".change-summary p").text()).toBe(targetSummary);
       expect(data).toEqual(original);
     } finally {
-      preview.mockRestore();
       evidence.mockRestore();
     }
   });

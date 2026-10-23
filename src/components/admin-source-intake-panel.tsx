@@ -311,9 +311,9 @@ export function AdminSourceIntakePanel({
             <span className="badge">Source Intake</span>
             <h2 className="mt-3 text-2xl font-bold">Paste new official sources</h2>
             <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-[var(--muted)]">
-              One URL per line. You can also paste lines as <code>url | award name | notes</code>.
-              The worker will capture, quality-gate, Gemini Batch review, match/create the award,
-              add accepted sources, and queue reconciliation.
+              One URL per line, or <code>url | award name | notes</code>. New-source processing
+              is deferred while the approved awards move to text monitoring. Saved requests
+              do not start a capture or AI review here.
             </p>
           </div>
           {message && (
@@ -373,7 +373,7 @@ export function AdminSourceIntakePanel({
           <div>
             <h2 className="text-2xl font-bold">Recent intake requests</h2>
             <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
-              Ambiguous requests should be attached or retried; rejected requests stay available for audit.
+              Historical requests stay available for source management and audit. Capture and AI retries are on hold.
             </p>
           </div>
           <span className="badge">{requests.length} shown</span>
@@ -538,8 +538,10 @@ function SourceIntakeRow({
     request.status,
     actionContext,
   );
-  const canRetry = sourceIntakeActionAllowedWithContext("retry", request.status, actionContext);
-  const canRerunAi = sourceIntakeActionAllowedWithContext("rerun_ai_review", request.status, actionContext);
+  const legacyRetryHeld = ["retry", "rerun_capture", "rerun_ai_review"].some(action =>
+    sourceIntakeActionAllowedWithContext(action as SourceIntakeOperatorAction, request.status, actionContext));
+  const canRetry = false;
+  const canRerunAi = false;
   const canReject = sourceIntakeActionAllowedWithContext("reject", request.status, actionContext);
   const protectedRecovery = sourceIntakeProtectedRecovery(request.status, actionContext);
   const savedCaptureRestored = request.status === "needs_manual_review" &&
@@ -586,7 +588,7 @@ function SourceIntakeRow({
               {protectedRecovery.explanation} This request remains held for manual review.
             </p>
           ) : request.error ? <p className="mt-3 text-sm font-bold text-[var(--brand-burgundy)]">{request.error}</p> : null}
-          {restrictedRecovery && !savedCaptureRestored && (
+          {restrictedRecovery && !savedCaptureRestored && !legacyRetryHeld && (
             <p className={`mt-3 text-sm font-bold ${protectedRecovery.mode !== "manual_only" ? "text-[var(--brand-green)]" : "text-[var(--brand-burgundy)]"}`}>
               {protectedRecovery.protected
                 ? protectedRecovery.explanation
@@ -601,7 +603,7 @@ function SourceIntakeRow({
             <p className={`mt-3 text-sm font-bold ${canApproveBackfill ? "text-[var(--brand-green)]" : "text-[var(--brand-burgundy)]"}`}>
               {canApproveBackfill
                 ? "The paid page review is complete and cryptographically bound to this retained capture. Choose the matching award once to activate this source as baseline-only for $0. This will not fetch the page again, rerun AI, publish a first-observation update, or change the award homepage."
-                : "This historical provider result is not cryptographically bound to the retained capture, so $0 approval is blocked. Use Rerun AI to create a new bound review from the saved capture; the page will not be fetched again, but the review may create a charge."}
+                : "This historical provider result is not cryptographically bound to the retained capture, so $0 approval is blocked. Historical intake capture and AI retries are on hold; existing records are preserved."}
             </p>
           )}
         </div>
@@ -622,6 +624,7 @@ function SourceIntakeRow({
             </select>
           )}
           <div className="flex flex-wrap gap-2">
+            {legacyRetryHeld && <p className="text-sm text-[var(--muted)]">Historical intake capture and AI retries are on hold. Existing records are preserved.</p>}
             {!restrictedRecovery && canAttach && (
               <button
                 className="button-secondary"

@@ -377,7 +377,7 @@ describe("explicit inline monitoring-only restoration", () => {
   it("keeps Retire's native confirmation and DELETE unchanged", async () => {
     vi.mocked(window.confirm).mockReturnValue(true); await button(render(), "Retire source").props.onClick!();
     expect(window.confirm).toHaveBeenCalledExactlyOnceWith(
-      `Retire this source from AwardPing?\n\n${source.sourceTitle}\n\nThis removes it from active monitoring and linked watchlists. Published updates and immutable visual evidence are preserved.`,
+      `Retire this source from AwardPing?\n\n${source.sourceTitle}\n\nThis removes it from active monitoring and linked watchlists. Published updates and retained review history are preserved.`,
     );
     expect(send).toHaveBeenCalledExactlyOnceWith(`/api/admin/page-issues/${source.sourceId}`, {
       method: "DELETE", headers: undefined, body: undefined,

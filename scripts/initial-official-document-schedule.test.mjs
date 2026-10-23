@@ -34,25 +34,22 @@ describe("permanent first-observation discovery schedule", () => {
     expect(discovery).toContain("--discovery-onboarding-batch-id=${discoveryOnboardingBatchId}");
   });
 
-  it("installs the same live-discovery contract into the permanent 6 PM wrapper", () => {
+  it("replaces scheduled discovery and image capture with required-source text collection", () => {
     const launcher = installer.slice(
       installer.indexOf("function Write-LauncherScripts"),
-      installer.indexOf("function Write-Downstream", installer.indexOf("function Write-LauncherScripts")),
+      installer.indexOf("function Install-Dependencies", installer.indexOf("function Write-LauncherScripts")),
     );
-    expect(launcher).toContain('`$workerArgs += "--discovery-mode=true"');
-    expect(launcher).toContain('`$workerArgs += "--discovery-intent=live_recurring"');
-    expect(launcher).toContain('`$workerArgs += "--discovery-onboarding-batch-id="');
-    expect(launcher).toContain('`$workerArgs += "--discover-pdf-subpages=true"');
-    expect(launcher).toContain('"--visual-review-mode=batch"');
-    expect(launcher).toContain('"--localization-repair=false"');
-    expect(launcher).toContain('"--r2-snapshot-sync=true"');
-    expect(launcher).toContain('"--max-expansion-state-screenshots=24"');
-    expect(launcher).toContain('"--expansion-state-timeout-per-state-ms=60000"');
+    expect(launcher).toContain('"scripts\\program-text-worker.mjs"');
+    expect(launcher).toContain('"--mode=collect"');
+    expect(launcher).toContain('"--apply=true"');
+    expect(launcher).toContain('"--shard-count"');
+    expect(launcher).toContain('"--run-trigger"');
+    expect(launcher).not.toMatch(/--(?:discovery|discover-pdf|visual-review|localization-repair|r2-snapshot|expansion-state|max-expansion-state)/);
     expect(launcher).not.toContain('"--source-timeout-ms=1500000"');
     expect(launcher).not.toContain("`$BaselineRefresh");
     expect(launcher).not.toContain("`$CompleteMissingBaselines");
     expect(launcher).not.toContain("--discovery-mode=false");
-    expect(installer).toContain("queues newly linked official PDFs for review daily");
+    expect(installer).toContain("New discovery and historical new-page reviews remain deferred");
   });
 
   it("validates the scheduled contract in the capture process before work starts", () => {

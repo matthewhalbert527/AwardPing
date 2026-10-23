@@ -7,11 +7,9 @@ import { createSourceHtmlPublicationFixture, sourceHtmlFixtureSource as source, 
 import { hasPublishableEventVisualEvidence, eventVisualEvidencePresentation, type PublicChangeEventVisualEvidence } from "./public-change-event";
 import { buildEventVisualEvidenceSide } from "./change-event-visual-evidence";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
-import { isSourceHtmlOnlyUpdate, SourceSnapshotViewerButton, SourceSnapshotInlinePreview } from "@/components/source-snapshot-viewer";
 
 vi.mock("server-only", () => ({}));
 
-const profile = "scrapling-source-html-v1";
 const props = { changeEventId: event.id, sourceId: source.id, sourceTitle: source.title, sourceUrl: source.url,
   changeSummary: event.summary, changeDetails: details };
 let root: string;
@@ -98,19 +96,10 @@ describe("source-only public presentation contract", () => {
   });
 
   it("renders only the official-source action with no snapshot trigger, image, or loading placeholder", () => {
-    expect(renderToStaticMarkup(createElement(SourceSnapshotViewerButton, props))).toBe("");
-    expect(renderToStaticMarkup(createElement(SourceSnapshotInlinePreview, props))).toBe("");
     const html = renderToStaticMarkup(createElement(ChangeEvidencePanel, props));
     expect(html).toContain(`href="${source.url}"`);
     expect(html).toContain("Official source");
     expect(html).not.toMatch(/<button|<img|screenshot|Snapshot|Loading|Changed section/i);
   });
 
-  it("does not classify ordinary browser updates from only one display marker", () => {
-    expect(isSourceHtmlOnlyUpdate(details)).toBe(true);
-    expect(isSourceHtmlOnlyUpdate({ evidence_kind: "source_html" })).toBe(false);
-    expect(isSourceHtmlOnlyUpdate({ capture_profile: profile })).toBe(false);
-    expect(isSourceHtmlOnlyUpdate(null)).toBe(false);
-    expect(renderToStaticMarkup(createElement(SourceSnapshotViewerButton, { ...props, changeDetails: {} }))).toContain("button");
-  });
 });

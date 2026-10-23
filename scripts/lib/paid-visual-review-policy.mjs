@@ -5,6 +5,9 @@ const INITIAL_OFFICIAL_DOCUMENT_SCOPE = "initial_official_document";
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 export function paidVisualReviewLaneForCandidate(candidate) {
+  if (candidate?.candidate_scope === "program_text_change") {
+    throw new Error("Program text candidates require the text-only provider.");
+  }
   return candidate?.candidate_scope === INITIAL_OFFICIAL_DOCUMENT_SCOPE
     ? GEMINI_PAID_LANES.NEW_PAGE_REVIEW
     : GEMINI_PAID_LANES.CHANGED_PAGE_REVIEW;

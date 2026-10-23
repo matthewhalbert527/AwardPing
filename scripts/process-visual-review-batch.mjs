@@ -4682,6 +4682,7 @@ function isRetryableNetworkFailure(error) {
 }
 
 function applyPaidLaneCandidateScopeFilter(query) {
+  query = query.neq("candidate_scope", "program_text_change");
   if (paidLane === GEMINI_PAID_LANES.NEW_PAGE_REVIEW) {
     return query.eq("candidate_scope", INITIAL_OFFICIAL_DOCUMENT_SCOPE);
   }

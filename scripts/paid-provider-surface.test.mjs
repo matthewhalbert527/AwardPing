@@ -73,6 +73,7 @@ describe("paid provider surface", () => {
       "scripts/backfill-baseline-facts.mjs",
       "scripts/capture-visual-snapshots.mjs",
       "scripts/lib/gemini-cli-analysis.mjs",
+      "scripts/lib/program-text-provider.mjs",
       "scripts/process-page-audit-batch.mjs",
       "scripts/process-source-intake-requests.mjs",
       "scripts/process-visual-review-batch.mjs",
@@ -81,10 +82,11 @@ describe("paid provider surface", () => {
     ]);
   });
 
-  it("allows provider creation only in the two paid lane processors", () => {
+  it("keeps every authorized provider creator inside the same two paid lanes", () => {
     const authorized = [
       "scripts/process-source-intake-requests.mjs",
       "scripts/process-visual-review-batch.mjs",
+      "scripts/lib/program-text-provider.mjs",
     ];
     expect(
       authorized
@@ -97,6 +99,53 @@ describe("paid provider surface", () => {
     expect(source(authorized[1])).toContain(
       "paidVisualReviewLaneForCandidate as paidReviewLaneForCandidate",
     );
+    expect(source(authorized[2])).toContain("GEMINI_PAID_LANES.CHANGED_PAGE_REVIEW");
+    expect(source(authorized[2])).not.toContain("GEMINI_PAID_LANES.NEW_PAGE_REVIEW");
+  });
+
+  it("preflights complete bounded text and journals the existing changed-page spend lane before create", () => {
+    const provider = source("scripts/lib/program-text-provider.mjs");
+    const requests = provider.slice(
+      provider.indexOf("export function programTextBatchRequests("),
+      provider.indexOf("async function api("),
+    );
+    expect(requests).toContain("buildProgramTextReviewPackets(candidate.prompt_payload.comparison, plan.limits)");
+    expect(requests).toContain("!equal(plan, rebuilt)");
+    expect(requests).toContain("previous_text: candidate.prompt_payload.comparison.previous_text");
+    expect(requests).toContain("current_text: candidate.prompt_payload.comparison.current_text");
+    expect(requests).toContain("candidate.prompt_payload.program_identity");
+    expect(requests).toContain("Buffer.byteLength(JSON.stringify(request)) > 750_000");
+    expect(requests).toContain('fail("complete_page_context_exceeds_request_limit")');
+    expect(requests).toContain(") > MAX_INLINE_BYTES");
+    expect(requests).toContain('fail("complete_batch_exceeds_inline_limit")');
+    expect(provider).toContain("const MAX_INLINE_BYTES = 14 * 1024 * 1024;");
+    expect(requests).not.toMatch(/inlineData|fileData|\.slice\(|\.substring\(/);
+
+    const submit = provider.slice(
+      provider.indexOf("export async function submitProgramTextBatch("),
+      provider.indexOf("export function programTextBatchResult("),
+    );
+    const ordered = [
+      "requests = programTextBatchRequests(candidate, model)",
+      "await verify(candidate)",
+      "await claim(candidate, token, model)",
+      "await spend.reserve({",
+      "await verify(row)",
+      "await spend.start({",
+      "batch_create_started_at:",
+      "await save(row, token, { worker_metadata: row.worker_metadata })",
+      "await api(apiKey, `models/${model}:batchGenerateContent`",
+      "await save(row, token, { gemini_batch_name: name, submitted_at: row.submitted_at })",
+      "await spend.submit({",
+    ].map((statement) => submit.indexOf(statement));
+    for (const index of ordered) expect(index).toBeGreaterThanOrEqual(0);
+    expect(ordered).toEqual([...ordered].sort((a, b) => a - b));
+    expect(submit).toContain("reserve: reserveGeminiSpend, start: markGeminiSpendCreateStarted");
+    expect(submit).toContain("submit: submitGeminiSpendReservation");
+    expect(submit).toContain("laneKey: GEMINI_PAID_LANES.CHANGED_PAGE_REVIEW");
+    expect(submit).toContain("requestCount: requests.length");
+    expect(occurrences(submit, ":batchGenerateContent")).toBe(1);
+    expect(submit).toContain('rejection_reason: "manual_review_required:provider_create_or_journal_uncertain"');
   });
 
   it("retires the direct baseline-facts provider before any runtime setup", () => {

@@ -113,7 +113,7 @@ export type VisualReviewCandidateStatus =
   | "published"
   | "superseded";
 export type VisualReviewCandidateScope =
-  "content_change" | "initial_official_document";
+  "content_change" | "initial_official_document" | "program_text_change";
 export type SourceAcquisitionKind =
   | "live_discovery"
   | "user_request"
@@ -139,6 +139,7 @@ export type SourceDiscoveryNotificationDisposition =
   | "operator_approved_new_live_review_bound";
 export type ChangeEventVisualEvidenceStatus =
   | "verified"
+  | "verified_text"
   | "unavailable_exact_text_missing"
   | "unavailable_geometry_missing"
   | "unavailable_image_missing"
@@ -1740,6 +1741,7 @@ export type Database = {
           display_title: string | null;
           page_description: string | null;
           page_metadata: Json;
+          text_monitoring_state: Json;
           page_metadata_generated_at: string | null;
           page_metadata_model: string | null;
           admin_review_status: "open" | "review_later";
@@ -1767,6 +1769,7 @@ export type Database = {
           display_title?: string | null;
           page_description?: string | null;
           page_metadata?: Json;
+          text_monitoring_state?: Json;
           page_metadata_generated_at?: string | null;
           page_metadata_model?: string | null;
           admin_review_status?: "open" | "review_later";
@@ -1791,6 +1794,7 @@ export type Database = {
           display_title?: string | null;
           page_description?: string | null;
           page_metadata?: Json;
+          text_monitoring_state?: Json;
           page_metadata_generated_at?: string | null;
           page_metadata_model?: string | null;
           admin_review_status?: "open" | "review_later";
@@ -3708,6 +3712,18 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      program_text_source_is_approved: {
+        Args: { p_source_id: string };
+        Returns: boolean;
+      };
+      set_program_text_source_state: {
+        Args: { p_source_id: string; p_expected_state: Json; p_next_state: Json };
+        Returns: Json;
+      };
+      publish_program_text_event: {
+        Args: { p_candidate_id: string; p_details: Json; p_localization: Json };
+        Returns: Json;
+      };
       record_shared_award_regression_audit: {
         Args: {
           p_shared_award_id: string;

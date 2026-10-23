@@ -183,8 +183,9 @@ describe("AdminManualQuarantineBacklogQueue", () => {
         refreshHref: "/dashboard/admin/issues?tab=quarantine",
       }),
     );
-    expect(html).toContain("Approve one New Page Review (may charge)");
-    expect(html).toContain("$5/day New Page Review lane");
+    expect(html).not.toContain("Approve one New Page Review (may charge)");
+    expect(html).not.toContain("$5/day New Page Review lane");
+    expect(html).toContain("Historical PDF-discovery reviews are on hold");
   });
 
   it("retains idempotency keys only when the outcome is ambiguous", () => {

@@ -13,10 +13,6 @@ import {
 } from "lucide-react";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
-import {
-  SourceSnapshotInlinePreview,
-  SourceSnapshotViewerButton,
-} from "@/components/source-snapshot-viewer";
 import { pageTypeLabel, type AwardPageType } from "@/lib/award-discovery-types";
 import { normalizeImportantDateItems } from "@/lib/important-dates";
 import {
@@ -67,7 +63,6 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   onTrackSources,
   onUntrackSources,
   renderSourceActions,
-  showSnapshotActions = true,
   layout = "inline",
   initiallyExpanded,
   groupByHost = true,
@@ -85,7 +80,6 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   onTrackSources?: (sources: T[], label: string, actionId: string) => void;
   onUntrackSources?: (sources: T[], label: string, actionId: string) => void;
   renderSourceActions?: (source: T) => ReactNode;
-  showSnapshotActions?: boolean;
   layout?: "inline" | "split";
   initiallyExpanded?: boolean;
   groupByHost?: boolean;
@@ -229,7 +223,6 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
       onTrackSources,
       onUntrackSources,
       renderSourceActions,
-      showSnapshotActions,
       toggleNode,
       toggleSource,
       variant: layout === "split" ? "summary" : "inline",
@@ -262,7 +255,6 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
             source={selectedSource}
             renderSourceActions={renderSourceActions}
             selectedChangeId={selectedChangeId}
-            showSnapshotActions={showSnapshotActions}
             readChangeIds={readChangeIds}
           />
         </div>
@@ -289,7 +281,6 @@ function renderNode<T extends SourcePageTreeSource>({
   onTrackSources,
   onUntrackSources,
   renderSourceActions,
-  showSnapshotActions,
   toggleNode,
   toggleSource,
   variant,
@@ -307,7 +298,6 @@ function renderNode<T extends SourcePageTreeSource>({
   onTrackSources?: (sources: T[], label: string, actionId: string) => void;
   onUntrackSources?: (sources: T[], label: string, actionId: string) => void;
   renderSourceActions?: (source: T) => ReactNode;
-  showSnapshotActions: boolean;
   toggleNode: (nodeId: string) => void;
   toggleSource: (sourceId: string) => void;
   variant: "inline" | "summary";
@@ -338,7 +328,6 @@ function renderNode<T extends SourcePageTreeSource>({
           })
         }
         active={selectedSourceId === source.id}
-        showSnapshotActions={showSnapshotActions}
         source={source}
         toggleSource={toggleSource}
         variant={variant}
@@ -404,7 +393,6 @@ function renderNode<T extends SourcePageTreeSource>({
                 })
               }
               active={selectedSourceId === source.id}
-              showSnapshotActions={showSnapshotActions}
               source={source}
               toggleSource={toggleSource}
               variant={variant}
@@ -424,7 +412,6 @@ function renderNode<T extends SourcePageTreeSource>({
               onTrackSources,
               onUntrackSources,
               renderSourceActions,
-              showSnapshotActions,
               toggleNode,
               toggleSource,
               variant,
@@ -475,7 +462,6 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   open,
   active = false,
   renderSourceActions,
-  showSnapshotActions,
   toggleSource,
   variant = "inline",
   onSelectSource,
@@ -486,7 +472,6 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   open: boolean;
   active?: boolean;
   renderSourceActions?: (source: T) => ReactNode;
-  showSnapshotActions: boolean;
   toggleSource: (sourceId: string) => void;
   variant?: "inline" | "summary";
   onSelectSource?: (sourceId: string) => void;
@@ -500,8 +485,6 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   const rowStatus = sourceRowStatus(source, latestChange, unreadCount);
   const showUpdateDot = summaryMode ? latestChanges.length > 0 : unreadCount > 0;
   const rowActions = renderSourceActions?.(source);
-  const snapshotSourceId =
-    source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
   const checkedLabel = source.lastCheckedAt
     ? formatCentralDateTime(source.lastCheckedAt)
     : "Not checked yet";
@@ -579,20 +562,8 @@ function SourcePageRow<T extends SourcePageTreeSource>({
           )}
         </div>
 
-        {!summaryMode && (showSnapshotActions || rowActions) && (
+        {!summaryMode && rowActions && (
           <div className="source-tree-row-actions">
-            {showSnapshotActions && (latestChange?.id || snapshotSourceId) && (
-              <SourceSnapshotViewerButton
-                changeEventId={latestChange?.id}
-                changeDetectedAt={latestChange?.detectedAt}
-                changeDetails={latestChange?.changeDetails}
-                changeSummary={latestChange?.summary}
-                sourceId={snapshotSourceId}
-                sourcePageTypeLabel={source.pageType ? pageTypeLabel(source.pageType) : null}
-                sourceTitle={title}
-                sourceUrl={source.url}
-              />
-            )}
             {rowActions}
           </div>
         )}
@@ -605,13 +576,11 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
   source,
   renderSourceActions,
   selectedChangeId,
-  showSnapshotActions,
   readChangeIds,
 }: {
   source: T | null;
   renderSourceActions?: (source: T) => ReactNode;
   selectedChangeId?: string | null;
-  showSnapshotActions: boolean;
   readChangeIds: Set<string>;
 }) {
   if (!source) {
@@ -630,8 +599,6 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
   const selectedChange = orderedChanges[0] || null;
   const rowStatus = sourceRowStatus(source, selectedChange, unreadCount);
   const rowActions = renderSourceActions?.(source);
-  const snapshotSourceId =
-    source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
 
   return (
     <aside className="source-tree-detail-panel">
@@ -658,20 +625,8 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
           <p className="source-tree-detail-host">{sourceHost(source.url)}</p>
         </div>
 
-        {(showSnapshotActions || rowActions) && (
+        {rowActions && (
           <div className="source-tree-row-actions">
-            {showSnapshotActions && (selectedChange?.id || snapshotSourceId) && (
-              <SourceSnapshotViewerButton
-                changeEventId={selectedChange?.id}
-                changeDetectedAt={selectedChange?.detectedAt}
-                changeDetails={selectedChange?.changeDetails}
-                changeSummary={selectedChange?.summary}
-                sourceId={snapshotSourceId}
-                sourcePageTypeLabel={source.pageType ? pageTypeLabel(source.pageType) : null}
-                sourceTitle={title}
-                sourceUrl={source.url}
-              />
-            )}
             {rowActions}
           </div>
         )}
@@ -695,7 +650,7 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
   latestChanges: SourcePageTreeChange[];
   selectedChangeId?: string | null;
 }) {
-  const snapshotSourceId =
+  const sharedSourceId =
     source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
 
   return (
@@ -718,18 +673,10 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
               sourceTitle={change.sourceTitle}
               changeDetails={change.changeDetails}
             />
-            <SourceSnapshotInlinePreview
-              changeEventId={change.id}
-              changeDetails={change.changeDetails}
-              changeSummary={change.summary}
-              sourceId={snapshotSourceId}
-              sourceTitle={change.sourceTitle || sourceTreeSourceLabel(source)}
-              sourceUrl={change.sourceUrl}
-            />
             <ChangeEvidencePanel
               changeEventId={change.id}
               compact
-              sourceId={snapshotSourceId}
+              sourceId={sharedSourceId}
               sourceUrl={change.sourceUrl}
               sourceTitle={change.sourceTitle}
               sourcePageTypeLabel={

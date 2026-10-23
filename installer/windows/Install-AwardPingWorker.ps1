@@ -708,6 +708,101 @@ function Set-AwardPingWorkerEnvFileAcl {
   }
 }
 
+function Get-AwardPingProgramTextArchiveProblems {
+  param([string]$Path, [object[]]$TaskSnapshots)
+
+  $problems = @()
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path) -or
+      -not (Test-Path -LiteralPath $Path -PathType Container)) {
+    return @("private program text archive is missing or not absolute")
+  }
+  try {
+    $cursor = [IO.Path]::GetFullPath($Path)
+    while ($cursor) {
+      if ((Get-Item -LiteralPath $cursor -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "archive path traverses a reparse point: $cursor"
+      }
+      $cursor = Split-Path -Parent $cursor
+    }
+    $allowedEntries = @(Get-AwardPingWorkerEnvAllowedSecurityIdentifiers -TaskSnapshots $TaskSnapshots)
+    $allowed = @{}
+    foreach ($entry in $allowedEntries) { $allowed[$entry.Sid.Value] = $true }
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if (-not $allowed.ContainsKey($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value)) {
+      $problems += "private program text archive has an unapproved owner: $Path"
+    }
+    if (-not $acl.AreAccessRulesProtected) { $problems += "private program text archive inherits permissions: $Path" }
+    $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    foreach ($rule in $rules) {
+      if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+          -not $allowed.ContainsKey($rule.IdentityReference.Value)) {
+        $problems += "private program text archive grants access to unapproved SID $($rule.IdentityReference.Value): $Path"
+      }
+    }
+    $inheritedByChildren = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($entry in $allowedEntries) {
+      $required = [Security.AccessControl.FileSystemRights]::Modify
+      $matching = @($rules | Where-Object {
+          $_.IdentityReference.Value -eq $entry.Sid.Value -and
+          $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+          ($_.FileSystemRights -band $required) -eq $required -and
+          ($_.InheritanceFlags -band $inheritedByChildren) -eq $inheritedByChildren -and
+          $_.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None
+        })
+      $denials = @($rules | Where-Object {
+          $_.IdentityReference.Value -eq $entry.Sid.Value -and
+          $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny -and
+          ($_.FileSystemRights -band $required) -ne 0
+        })
+      if ($matching.Count -eq 0 -or $denials.Count -gt 0) {
+        $problems += "private program text archive lacks inheritable worker access for SID $($entry.Sid.Value): $Path"
+      }
+    }
+  } catch { $problems += "could not validate private program text archive: $($_.Exception.Message)" }
+  return $problems
+}
+
+function Set-AwardPingProgramTextEnvironment {
+  param([string]$Path, [string]$InstallRoot, [object[]]$TaskSnapshots)
+
+  $archive = Join-Path ([IO.Path]::GetFullPath($InstallRoot)) "runtime\program-text-archive"
+  # Inspect existing ancestors before creating anything; a junction must never
+  # redirect private capture retention into an unrelated directory.
+  $cursor = $archive
+  while ($cursor) {
+    if (Test-Path -LiteralPath $cursor) {
+      if ((Get-Item -LiteralPath $cursor -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "Cannot initialize a private program text archive through a reparse point: $cursor"
+      }
+    }
+    $cursor = Split-Path -Parent $cursor
+  }
+  if (-not (Test-Path -LiteralPath $archive -PathType Container)) {
+    [void](New-Item -ItemType Directory -Path $archive -Force -ErrorAction Stop)
+  }
+  # As with the environment file, write only the DACL. Historical snapshot
+  # folders and any existing captures are neither deleted nor rewritten.
+  $acl = [Security.AccessControl.DirectorySecurity]::new()
+  $acl.SetAccessRuleProtection($true, $false)
+  $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+  foreach ($entry in @(Get-AwardPingWorkerEnvAllowedSecurityIdentifiers -TaskSnapshots $TaskSnapshots)) {
+    $rights = [Security.AccessControl.FileSystemRights]::Modify
+    if ($entry.Rights -eq [Security.AccessControl.FileSystemRights]::FullControl) { $rights = $entry.Rights }
+    [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+      $entry.Sid, $rights, $inheritance, [Security.AccessControl.PropagationFlags]::None,
+      [Security.AccessControl.AccessControlType]::Allow))
+  }
+  [IO.Directory]::SetAccessControl($archive, $acl)
+  $problems = @(Get-AwardPingProgramTextArchiveProblems -Path $archive -TaskSnapshots $TaskSnapshots)
+  if ($problems.Count -gt 0) { throw "Private program text archive did not validate: $($problems -join ' | ')" }
+  $content = [IO.File]::ReadAllText($Path)
+  $line = "AWARDPING_PROGRAM_TEXT_ARCHIVE=$archive"
+  if ($content -match '(?m)^AWARDPING_PROGRAM_TEXT_ARCHIVE=') {
+    $content = [regex]::Replace($content, '(?m)^AWARDPING_PROGRAM_TEXT_ARCHIVE=[^\r\n]*', [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $line })
+  } else { $content = $content.TrimEnd("`r", "`n") + "`r`n$line`r`n" }
+  [IO.File]::WriteAllText($Path, $content, [Text.UTF8Encoding]::new($false))
+}
+
 function Get-AwardPingSourceRevision {
   param([string]$SourceRoot)
 
@@ -1164,6 +1259,25 @@ function Get-AwardPingManagedTaskScheduleProblems {
   return $problems
 }
 
+function Get-AwardPingProgramTextRuntimeRelativePaths {
+  return @(
+    "config\program-text-monitoring.json",
+    "scripts\program-text-worker.mjs",
+    "scripts\program-text-ocr-windows.ps1",
+    "scripts\lib\program-change-contract.mjs",
+    "scripts\lib\program-text-capture.mjs",
+    "scripts\lib\program-text-ocr.mjs",
+    "scripts\lib\program-text-pdf-worker.mjs",
+    "scripts\lib\program-text-storage.mjs",
+    "scripts\lib\program-text-review.mjs",
+    "scripts\lib\program-text-monitor.mjs",
+    "scripts\lib\program-text-repository.mjs",
+    "scripts\lib\program-text-provider.mjs",
+    "scripts\lib\gemini-worker-policy.mjs",
+    "scripts\lib\lane-failure-receipt.mjs"
+  )
+}
+
 function Get-AwardPingInstalledRuntimeProblems {
   param(
     [string]$InstallRoot,
@@ -1273,6 +1387,7 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "config\award-decision-memory.json")
     )
     $requiredPaths += @(Get-AwardPingScraplingRuntimeRelativePaths | ForEach-Object { Join-Path $AppDir $_ })
+    $requiredPaths += @(Get-AwardPingProgramTextRuntimeRelativePaths | ForEach-Object { Join-Path $AppDir $_ })
   }
   $requiredPaths += @(Get-AwardPingRootedActionPaths -Snapshots $TaskSnapshots -InstallRoot $InstallRoot)
 
@@ -1310,6 +1425,9 @@ function Get-AwardPingInstalledRuntimeProblems {
       -Path $workerEnvPath `
       -TaskSnapshots $TaskSnapshots)
     $workerEnv = Read-WorkerEnvValues -Path $workerEnvPath
+    if ($RequireManagedRuntime) {
+      $problems += @(Get-AwardPingProgramTextArchiveProblems -Path ([string]$workerEnv["AWARDPING_PROGRAM_TEXT_ARCHIVE"]) -TaskSnapshots $TaskSnapshots)
+    }
     if ($workerEnv["AWARDPING_SCRAPLING_MANIFEST"] -or $workerEnv["AWARDPING_SCRAPLING_PYTHON"]) {
       try {
         Assert-AwardPingScraplingInstalledConfiguration -InstallRoot $InstallRoot -AppDir $AppDir -WorkerEnv $workerEnv
@@ -1380,6 +1498,9 @@ function Get-AwardPingInstalledRuntimeProblems {
     }
     if (-not [string]::IsNullOrWhiteSpace($AppSourceRoot)) {
       foreach ($relativePath in @(Get-AwardPingScraplingRuntimeRelativePaths)) {
+        $hashPairs += [pscustomobject]@{ Source = Join-Path $AppSourceRoot $relativePath; Target = Join-Path $AppDir $relativePath }
+      }
+      foreach ($relativePath in @(Get-AwardPingProgramTextRuntimeRelativePaths)) {
         $hashPairs += [pscustomobject]@{ Source = Join-Path $AppSourceRoot $relativePath; Target = Join-Path $AppDir $relativePath }
       }
       foreach ($relativePath in @(
@@ -2152,7 +2273,8 @@ param(
   [switch]`$All,
   [int]`$DomainDelayMs = 1500,
   [int]`$WebConcurrency = 4,
-  [int]`$MaxRestarts = 3,
+  [ValidateRange(0, 0)]
+  [int]`$MaxRestarts = 0,
   [int]`$ShardCount = 1,
   [int]`$ShardIndex = 0,
   [ValidateSet("scheduled", "maintenance", "manual")]
@@ -2170,7 +2292,7 @@ if (`$RunTrigger -eq "scheduled" -and (
   `$Limit -lt 50000 -or
   `$ShardCount -ne 3
 )) {
-  throw "Scheduled 6 PM evidence must be a complete three-shard all-source scan."
+  throw "Scheduled 6 PM collection must cover the required source set across all three shards."
 }
 `$ShardLabel = if (`$ShardCount -gt 1) { "shard-`$(`$ShardIndex + 1)-of-`$ShardCount" } else { "single" }
 `$LockName = if (`$ShardCount -gt 1) { "visual-worker-`$ShardLabel.lock" } else { "visual-worker.lock" }
@@ -2207,91 +2329,62 @@ function Test-VisualLockActive {
 }
 
 if (Test-VisualLockActive -Path `$LockPath) {
-  Write-Host "AwardPing visual snapshot worker is already running. Skipping this launch."
+  Write-Host "AwardPing source collection is already running. Skipping this launch."
   exit 0
 }
 
 `$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-`$mode = "snapshots"
-`$logPrefix = "awardping-visual-snapshots"
+`$mode = "program_text"
+`$logPrefix = "awardping-program-text"
 `$logPrefix = if (`$ShardCount -gt 1) { "`$logPrefix-`$ShardLabel" } else { `$logPrefix }
 `$logPath = Join-Path `$LogDir "`$logPrefix-`$stamp.log"
 
 `$nodePath = (Get-Command node.exe -ErrorAction Stop).Source
-`$workerScript = Join-Path `$AppDir "scripts\capture-visual-snapshots.mjs"
+`$workerScript = Join-Path `$AppDir "scripts\program-text-worker.mjs"
 if (-not (Test-Path -LiteralPath `$workerScript)) {
-  throw "Missing AwardPing visual snapshot worker script: `$workerScript"
+  throw "Missing AwardPing program-text worker script: `$workerScript"
 }
 
 `$workerArgs = @(
   `$workerScript,
+  "--mode=collect",
+  "--apply=true",
   "--env",
   ".env.worker.local",
   "--limit",
   [string]`$Limit,
   "--domain-delay-ms",
   [string]`$DomainDelayMs,
-  "--web-concurrency",
-  [string]`$WebConcurrency,
   "--shard-count",
   [string]`$ShardCount,
   "--shard-index",
   [string]`$ShardIndex,
   "--run-trigger",
-  `$RunTrigger,
-  "--extract-baseline-info=false",
-  "--localization-repair=false",
-  "--reset-previous-snapshot=false",
-  "--force-r2-snapshot-refresh=false",
-  "--visual-review-mode=batch",
-  "--interpret-visual-changes=true",
-  "--r2-snapshot-sync=true",
-  "--max-expansion-state-screenshots=24",
-  "--expansion-state-timeout-per-state-ms=60000"
+  `$RunTrigger
 )
-if (`$All) { `$workerArgs += "--all=true" }
-# The permanent capture path is the authoritative live discovery surface.
-# It queues newly linked PDFs for the separately capped new-page review lane.
-`$workerArgs += "--discovery-mode=true"
-`$workerArgs += "--discovery-intent=live_recurring"
-`$workerArgs += "--discovery-onboarding-batch-id="
-`$workerArgs += "--discover-pdf-subpages=true"
-`$workerArgs += "--discover-html-subpages=false"
-`$workerArgs += "--max-html-subpage-discoveries=0"
-`$workerArgs += "--max-discoveries-per-award=5"
-`$workerArgs += "--max-discoveries-per-source=3"
-`$workerArgs += "--max-discoveries-per-domain=100"
+# All/WebConcurrency remain accepted for existing task action compatibility.
+# Collection uses approved required sources only; new discovery is deferred.
 
-Write-Host "Running AwardPing visual snapshot worker (`$ShardLabel). Log: `$logPath"
+Write-Host "Running AwardPing program-text collector (`$ShardLabel). Log: `$logPath"
 Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex log=`$logPath" -Encoding ASCII
 `$exitCode = 1
-Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode trigger=`$RunTrigger shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All" -Encoding UTF8
+Set-Content -Path `$logPath -Value "PROGRAM_TEXT_WORKER_START pid=`$PID mode=`$mode trigger=`$RunTrigger shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All" -Encoding UTF8
 try {
-  `$attempt = 0
-  do {
-    `$attempt += 1
-    if (`$attempt -gt 1) {
-      `$waitSeconds = [Math]::Min(60, 10 * `$attempt)
-      Add-Content -Path `$logPath -Value "VISUAL_WORKER_RESTART attempt=`$attempt max_restarts=`$MaxRestarts wait_seconds=`$waitSeconds started=`$(Get-Date -Format o)" -Encoding UTF8
-      Start-Sleep -Seconds `$waitSeconds
+  `$previousErrorActionPreference = `$ErrorActionPreference
+  `$ErrorActionPreference = "Continue"
+  try {
+    & `$nodePath @workerArgs 2>&1 | ForEach-Object {
+      `$line = [string]`$_
+      Write-Host `$line
+      Add-Content -Path `$logPath -Value `$line -Encoding UTF8
     }
-
-    `$previousErrorActionPreference = `$ErrorActionPreference
-    `$ErrorActionPreference = "Continue"
-    try {
-      & `$nodePath @workerArgs 2>&1 | ForEach-Object {
-        `$line = [string]`$_
-        Write-Host `$line
-        Add-Content -Path `$logPath -Value `$line -Encoding UTF8
-      }
-    } finally {
-      `$ErrorActionPreference = `$previousErrorActionPreference
-    }
-    `$exitCode = `$LASTEXITCODE
-    Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT attempt=`$attempt exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
-  } while (`$exitCode -ne 0 -and `$attempt -le `$MaxRestarts)
+  } finally {
+    `$ErrorActionPreference = `$previousErrorActionPreference
+  }
+  `$exitCode = `$LASTEXITCODE
+  Add-Content -Path `$logPath -Value "PROGRAM_TEXT_WORKER_EXIT exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
 } catch {
-  Add-Content -Path `$logPath -Value "VISUAL_WORKER_WRAPPER_ERROR message=`$(`$_.Exception.Message) finished=`$(Get-Date -Format o)" -Encoding UTF8
+  Add-Content -Path `$logPath -Value "PROGRAM_TEXT_WORKER_WRAPPER_ERROR message=`$(`$_.Exception.Message) finished=`$(Get-Date -Format o)" -Encoding UTF8
   throw
 } finally {
   Remove-Item -Path `$LockPath -Force -ErrorAction SilentlyContinue
@@ -2304,8 +2397,8 @@ exit `$exitCode
   $visualCheckPath = Join-Path $InstallRoot "3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat"
   $visualCheckContent = @"
 @echo off
-echo Running AwardPing visual snapshot check now.
-echo This captures screenshots and normalized visible text under D:\AwardPingVisualSnapshots.
+echo Running AwardPing program text check now.
+echo This reads approved source pages and keeps raw originals plus extracted text privately.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 20000
 echo.
 pause
@@ -2317,147 +2410,9 @@ pause
   $visualStatusScriptContent = @"
 `$ErrorActionPreference = "Stop"
 `$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
+`$AppDir = Join-Path `$InstallRoot "app"
 `$LogDir = Join-Path `$InstallRoot "logs"
-`$LockPath = Join-Path `$InstallRoot "visual-worker.lock"
-`$ReportDir = Join-Path `$InstallRoot "app\reports"
-`$NightlyReportPath = Join-Path `$ReportDir "visual-nightly-report-latest.json"
-
-function Count-Matches {
-  param(
-    [string[]]`$Lines,
-    [string]`$Pattern
-  )
-
-  return (`$Lines | Select-String -Pattern `$Pattern | Measure-Object).Count
-}
-
-function Read-JsonIfExists {
-  param([string]`$Path)
-
-  if (-not `$Path -or -not (Test-Path `$Path)) {
-    return `$null
-  }
-
-  try {
-    return Get-Content -Path `$Path -Raw | ConvertFrom-Json
-  } catch {
-    return `$null
-  }
-}
-
-`$running = Get-CimInstance Win32_Process | Where-Object {
-  `$cmd = `$_.CommandLine
-  `$cmd -and
-  `$cmd -notlike "*Show-AwardPingVisualStatus.ps1*" -and
-  `$cmd -notlike "*Get-CimInstance Win32_Process*" -and
-  (
-    `$cmd -like "*Run-AwardPingVisualSnapshots.ps1*" -or
-    `$cmd -like "*source:visual-snapshots*" -or
-    `$cmd -like "*capture-visual-snapshots.mjs*"
-  )
-}
-`$lockText = if (Test-Path `$LockPath) { Get-Content -Path `$LockPath -Raw -ErrorAction SilentlyContinue } else { "" }
-`$latestLog = Get-ChildItem -Path `$LogDir -Filter "awardping-visual*.log" -ErrorAction SilentlyContinue |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1
-`$lines = if (`$latestLog) { Get-Content -Path `$latestLog.FullName -ErrorAction SilentlyContinue } else { @() }
-`$reportLine = `$lines | Select-String -Pattern "^REPORT " | Select-Object -Last 1
-`$reportPath = if (`$reportLine) { `$reportLine.Line -replace "^REPORT\s+", "" } else { "" }
-`$report = Read-JsonIfExists -Path `$reportPath
-`$nightlyReport = Read-JsonIfExists -Path `$NightlyReportPath
-
-if (-not `$running -and -not `$report -and (Test-Path `$ReportDir)) {
-  `$latestReport = Get-ChildItem -Path `$ReportDir -Filter "visual-snapshot-run-*.json" -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-  if (`$latestReport) {
-    `$report = Read-JsonIfExists -Path `$latestReport.FullName
-    `$reportPath = `$latestReport.FullName
-  }
-}
-
-Write-Host "AwardPing visual snapshot status"
-Write-Host ""
-Write-Host "Running: `$([bool]`$running)"
-if (`$running) {
-  Write-Host "Process IDs: `$((`$running | Select-Object -ExpandProperty ProcessId) -join ', ')"
-}
-if (`$lockText) {
-  Write-Host "Lock: `$(`$lockText.Trim())"
-}
-Write-Host ""
-
-if (`$latestLog) {
-  Write-Host "Latest log: `$(`$latestLog.FullName)"
-  Write-Host "Log updated: `$(`$latestLog.LastWriteTime)"
-  Write-Host "Baselines: `$(Count-Matches `$lines '^BASELINE ')"
-  Write-Host "Unchanged: `$(Count-Matches `$lines '^UNCHANGED')"
-  Write-Host "PDF checked: `$(Count-Matches `$lines '^BASELINE PDF |^UNCHANGED pdf_|^REVIEW pdf_')"
-  Write-Host "PDF skipped: `$(Count-Matches `$lines '^NOISE skipped_pdf ')"
-  Write-Host "Failed: `$(Count-Matches `$lines '^FAILED ')"
-  Write-Host "Candidate changes: `$(Count-Matches `$lines '^AI TRUE|^AI REJECTED|^REVIEW ')"
-  Write-Host ""
-  Write-Host "Last log line:"
-  Write-Host (`$lines | Select-Object -Last 1)
-} else {
-  Write-Host "No visual snapshot logs found."
-}
-
-Write-Host ""
-if (`$report) {
-  Write-Host "Latest report: `$reportPath"
-  Write-Host "Status: `$(`$report.status)"
-  Write-Host "Started: `$(`$report.started_at)"
-  Write-Host "Finished: `$(`$report.finished_at)"
-  Write-Host "Checked: `$(`$report.checked)"
-  Write-Host "Baselined: `$(`$report.baselined)"
-  Write-Host "Unchanged: `$(`$report.unchanged)"
-  Write-Host "AI true changes: `$(`$report.ai_true_changes)"
-  Write-Host "AI rejected: `$(`$report.ai_rejected)"
-  Write-Host "Review: `$(`$report.review)"
-  Write-Host "Failed: `$(`$report.failed)"
-  if (`$null -ne `$report.skipped_existing_baseline) {
-    Write-Host "Skipped existing baselines: `$(`$report.skipped_existing_baseline)"
-  }
-  Write-Host "PDF skipped: `$(`$report.skipped_pdf)"
-  if (`$null -ne `$report.pdf_checked) {
-    Write-Host "PDF checked: `$(`$report.pdf_checked)"
-    Write-Host "PDF changed: `$(`$report.pdf_changed)"
-    Write-Host "PDF unchanged: `$(`$report.pdf_unchanged)"
-  }
-  if (`$report.gemini_usage) {
-    Write-Host "Gemini calls: `$(`$report.gemini_usage.calls)"
-    Write-Host "Gemini tokens: `$(`$report.gemini_usage.total_tokens)"
-  }
-  if (`$report.baseline_coverage_start) {
-    Write-Host "Baseline coverage start: existing `$(`$report.baseline_coverage_start.existing_baselines) / `$(`$report.baseline_coverage_start.loaded_sources); missing `$(`$report.baseline_coverage_start.missing_baselines); actionable missing `$(`$report.baseline_coverage_start.actionable_missing_baselines); known broken missing `$(`$report.baseline_coverage_start.known_broken_missing_baselines)"
-  }
-  if (`$report.baseline_coverage_finish) {
-    Write-Host "Baseline coverage finish: existing `$(`$report.baseline_coverage_finish.existing_baselines) / `$(`$report.baseline_coverage_finish.loaded_sources); missing `$(`$report.baseline_coverage_finish.missing_baselines); actionable missing `$(`$report.baseline_coverage_finish.actionable_missing_baselines); known broken missing `$(`$report.baseline_coverage_finish.known_broken_missing_baselines)"
-  }
-}
-
-if (`$nightlyReport) {
-  Write-Host ""
-  Write-Host "Latest 6 PM capture report"
-  Write-Host "Monitoring date: `$(`$nightlyReport.monitoring_date)"
-  Write-Host "Operational status: `$(`$nightlyReport.status)"
-  Write-Host "Shards complete: `$(`$nightlyReport.completed_shards) / `$(`$nightlyReport.expected_shards)"
-  if (@(`$nightlyReport.missing_shards).Count -gt 0) {
-    Write-Host "Missing shards: `$(@(`$nightlyReport.missing_shards) -join ', ')"
-  }
-  Write-Host "Sources loaded: `$(`$nightlyReport.totals.loaded_sources)"
-  Write-Host "Pages captured: `$(`$nightlyReport.totals.pages_captured)"
-  Write-Host "Source failures: `$(`$nightlyReport.totals.source_failures)"
-  Write-Host "Failures / loaded sources: `$(`$nightlyReport.totals.failure_rate_percent)%"
-  foreach (`$failureGroup in @(`$nightlyReport.failure_groups)) {
-    Write-Host ""
-    Write-Host "`$(`$failureGroup.count) x `$(`$failureGroup.label) [`$(`$failureGroup.retry_mode)]"
-    Write-Host "Solution: `$(`$failureGroup.solution)"
-  }
-  Write-Host "Nightly report: `$NightlyReportPath"
-}
-
+Write-Host "AwardPing program monitoring status"
 Write-Host ""
 foreach (`$shardNumber in 1..3) {
   `$taskName = "AwardPing Visual Snapshot Worker Shard `$shardNumber"
@@ -2466,6 +2421,19 @@ foreach (`$shardNumber in 1..3) {
     Write-Host "`$taskName next=`$(`$taskInfo.NextRunTime) last=`$(`$taskInfo.LastRunTime) result=`$(`$taskInfo.LastTaskResult)"
   }
 }
+`$latestLog = Get-ChildItem -LiteralPath `$LogDir -Filter "awardping-program-text*.log" -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (`$latestLog) { Write-Host "Latest text collection log: `$(`$latestLog.FullName)" }
+Write-Host ""
+Write-Host "Current required-source coverage (first coverage is not a program update):"
+`$nodePath = (Get-Command node.exe -ErrorAction Stop).Source
+`$workerScript = Join-Path `$AppDir "scripts\program-text-worker.mjs"
+Push-Location `$AppDir
+try {
+  & `$nodePath `$workerScript "--env=.env.worker.local" "--mode=report"
+  `$exitCode = `$LASTEXITCODE
+} finally { Pop-Location }
+exit `$exitCode
 "@
 
   Set-Content -Path $visualStatusScriptPath -Value $visualStatusScriptContent -Encoding UTF8
@@ -2488,7 +2456,7 @@ pause
 
 if (-not (Test-Path `$SummaryPath)) {
   Write-Host "No AwardPing Gemini usage records yet."
-  Write-Host "Gemini usage is recorded only when the visual checker finds a screenshot change and asks Gemini to review it."
+  Write-Host "Gemini is used to review changed program text, under the existing daily review limit."
   Write-Host "Dollar spend/cap is shown in Google AI Studio > Spend; the Gemini API response does not return account dollar spend."
   Write-Host "Usage folder: `$UsageDir"
   exit 0
@@ -2545,14 +2513,16 @@ $InstallRoot
 
 Use:
 3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
-  Runs the disk-backed visual screenshot checker across all source pages.
-  The three daily 6 PM visual shard tasks use the same runner.
+  Collects approved required pages as private original files and program text.
+  The three daily 6 PM tasks use this same collector, without screenshots.
+  The historical launcher filenames are retained for task compatibility.
 
 4-SHOW-GEMINI-USAGE.bat
   Shows AwardPing Gemini usage recorded by this PC, grouped by day and month.
 
 6-SHOW-VISUAL-SNAPSHOT-STATUS.bat
-  Shows whether the visual worker is running, live log counts, the latest report, and the next scheduled run.
+  Shows the next scheduled runs, current text logs and required-source coverage.
+  First coverage is not a program update. Discovery and legacy queues are held.
 
 OPEN-LOGS.bat
   Opens crawler logs.
@@ -2598,6 +2568,8 @@ function Get-MissingWorkerRuntimeDependencies {
     "@aws-sdk\client-s3",
     "@aws-sdk\s3-request-presigner",
     "@supabase\supabase-js",
+    "cheerio",
+    "pdf-parse",
     "playwright-core",
     "sharp",
     "undici"
@@ -2738,7 +2710,7 @@ function Register-VisualSnapshotTask {
     [bool]$RegisterDisabled
   )
 
-  Write-Step "Creating AwardPing visual snapshot shard tasks"
+  Write-Step "Creating AwardPing program text collection tasks"
   $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
 
   for ($shardIndex = 0; $shardIndex -lt 3; $shardIndex += 1) {
@@ -2751,7 +2723,7 @@ function Register-VisualSnapshotTask {
     $settings.StopIfGoingOnBatteries = $false
     $settings.Hidden = $true
     if ($RegisterDisabled) { $settings.Enabled = $false }
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots and queues newly linked official PDFs for review daily from this PC. Domain shard $($shardIndex + 1) of 3." -Force | Out-Null
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Collects approved AwardPing program source text daily from this PC. First coverage establishes a baseline; only verified program-detail changes become updates. Shard $($shardIndex + 1) of 3." -Force | Out-Null
     Write-Host "Scheduled task created: $taskName daily at 6:00 PM"
   }
 }
@@ -2781,14 +2753,14 @@ function Register-DownstreamLaneTasks {
   Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $InstallRoot "Launch-Hidden.vbs") -Force -ErrorAction Stop
 
   $laneDefinitions = @(
-    [pscustomobject]@{ Key = "new_page_review"; TaskName = "AwardPing New Page Review Lane"; StaggerMinutes = 0; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Processes queued new-page source intake and its paid Gemini Batch review independently. Database policy fixes this lane at `$5/day." },
-    [pscustomobject]@{ Key = "changed_page_review"; TaskName = "AwardPing Changed Page Review Lane"; StaggerMinutes = 2; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Processes queued changed-page visual candidates and their paid Gemini Batch review independently. Database policy fixes this lane at `$5/day." },
-    [pscustomobject]@{ Key = "feedback_promotion"; TaskName = "AwardPing Feedback Promotion Lane"; StaggerMinutes = 4; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Advances verified feedback-rule promotions without submitting a paid AI request." },
-    [pscustomobject]@{ Key = "suppression"; TaskName = "AwardPing Suppression Lane"; StaggerMinutes = 6; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Applies the active suppression policy and retroactive sweep checkpoints without submitting a paid AI request." },
-    [pscustomobject]@{ Key = "reconciliation"; TaskName = "AwardPing Reconciliation Lane"; StaggerMinutes = 8; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Reconciles pending public award facts without submitting a paid AI request." },
+    [pscustomobject]@{ Key = "new_page_review"; TaskName = "AwardPing New Page Review Lane"; StaggerMinutes = 0; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Reports required-source coverage. New discovery and historical new-page reviews remain deferred." },
+    [pscustomobject]@{ Key = "changed_page_review"; TaskName = "AwardPing Changed Page Review Lane"; StaggerMinutes = 2; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Reviews new program-text comparisons under the existing `$5/day changed-page review limit." },
+    [pscustomobject]@{ Key = "feedback_promotion"; TaskName = "AwardPing Feedback Promotion Lane"; StaggerMinutes = 4; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Reports text monitoring coverage while preserving historical feedback queues." },
+    [pscustomobject]@{ Key = "suppression"; TaskName = "AwardPing Suppression Lane"; StaggerMinutes = 6; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Reports text monitoring coverage while preserving historical suppression queues." },
+    [pscustomobject]@{ Key = "reconciliation"; TaskName = "AwardPing Reconciliation Lane"; StaggerMinutes = 8; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Reports text monitoring coverage while preserving historical fact-reconciliation queues." },
     [pscustomobject]@{ Key = "page_audit"; TaskName = "AwardPing Page Audit Lane"; StaggerMinutes = 10; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Runs deterministic public-page audit checks only. This lane never submits pages to Gemini." },
-    [pscustomobject]@{ Key = "manual_quarantine"; TaskName = "AwardPing Manual Quarantine Lane"; StaggerMinutes = 12; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Refreshes the durable manual-quarantine registry without submitting a paid AI request." },
-    [pscustomobject]@{ Key = "nightly_report"; TaskName = "AwardPing Nightly Report Lane"; StaggerMinutes = 14; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Finalizes the due three-shard 6 PM capture report without submitting a paid AI request." }
+    [pscustomobject]@{ Key = "manual_quarantine"; TaskName = "AwardPing Manual Quarantine Lane"; StaggerMinutes = 12; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Reports text monitoring coverage while preserving historical quarantine records." },
+    [pscustomobject]@{ Key = "nightly_report"; TaskName = "AwardPing Nightly Report Lane"; StaggerMinutes = 14; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Reports coverage of the reviewed source sets and repeat text captures without a paid AI request." }
   )
 
   $now = Get-Date
@@ -2928,6 +2900,7 @@ try {
       -Path (Join-Path $stagingAppDir ".env.worker.local") `
       -SupabaseUrl $SupabaseUrl
     Set-AwardPingScraplingEnvironment -Path (Join-Path $stagingAppDir ".env.worker.local") -FinalAppDir $appDir -Binding $scraplingBinding
+    Set-AwardPingProgramTextEnvironment -Path (Join-Path $stagingAppDir ".env.worker.local") -InstallRoot $InstallRoot -TaskSnapshots $taskSnapshots
     Set-AwardPingWorkerEnvFileAcl `
       -Path (Join-Path $stagingAppDir ".env.worker.local") `
       -TaskSnapshots $taskSnapshots
@@ -2947,8 +2920,8 @@ try {
     $supabaseServiceRoleKey = Read-SupabaseSecretKey -SupabaseUrl $SupabaseUrl
     $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
     $r2Configuration = Read-R2WorkerConfiguration
-    $runTest = Read-YesNo "Run a one-page visual snapshot test after install?" $true
-    Write-Host "The three 6 PM visual shards and eight independent downstream lanes will be scheduled. Only New Page Review and Changed Page Review are paid; database policy fixes each at `$5/day, and every other lane is `$0. Legacy catch-up workers will be removed."
+    $runTest = Read-YesNo "Run a one-page program text collection check after install?" $true
+    Write-Host "The three 6 PM text-collection shards and eight downstream lanes keep their schedules. Only Changed Page Review can make paid AI calls, under the existing daily limit. Discovery and legacy mutation lanes remain on hold. Initial coverage is not a website change."
     Write-EnvFile `
       -Path $envPath `
       -SupabaseUrl $SupabaseUrl `
@@ -2983,6 +2956,7 @@ try {
     $finalizationSnapshots = @(Get-AwardPingTaskSnapshotsForFinalization `
       -InitialSnapshots @() `
       -InstallRoot $InstallRoot)
+    Set-AwardPingProgramTextEnvironment -Path $envPath -InstallRoot $InstallRoot -TaskSnapshots $finalizationSnapshots
     Set-AwardPingWorkerEnvFileAcl `
       -Path $envPath `
       -TaskSnapshots $finalizationSnapshots
@@ -3004,11 +2978,11 @@ try {
       throw "Retired AwardPing artifacts remain after cleanup: $($retirementProblems -join ' | ')"
     }
     if ($runTest) {
-      Write-Step "Running one-page visual snapshot test before enabling recurring tasks"
+      Write-Step "Running one-page program text collection check before enabling recurring tasks"
       $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $visualRunScript -All -Limit 1
       if ($LASTEXITCODE -ne 0) {
-        throw "The one-page visual snapshot test failed while recurring tasks were disabled. Check logs under $logDir."
+        throw "The one-page program text collection check failed while recurring tasks were disabled. Check logs under $logDir."
       }
     }
     Restore-AwardPingTasksAfterUpdate `
@@ -3240,8 +3214,8 @@ if ($restoreFailure) {
 
 Write-Step "Done"
 Write-Host "Installed at: $InstallRoot"
-Write-Host "Run the daily screenshot checker manually with:"
+Write-Host "Run the daily program text collector manually with:"
 Write-Host "`"$InstallRoot\3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat`""
-Write-Host "Check visual worker status with:"
+Write-Host "Check program monitoring status with:"
 Write-Host "`"$InstallRoot\6-SHOW-VISUAL-SNAPSHOT-STATUS.bat`""
 Write-Host "Logs are in: $logDir"

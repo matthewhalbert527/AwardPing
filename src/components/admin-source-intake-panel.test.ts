@@ -21,7 +21,7 @@ const reviewReasons = [
 ] as const;
 
 describe("source intake review explanations", () => {
-  it.each(reviewReasons)("explains %s without changing ordinary review controls", (reason) => {
+  it.each(reviewReasons)("explains %s while keeping historical paid retries on hold", (reason) => {
     const request = ordinaryReviewRequest(reason);
     const html = renderRequest(request);
     const explanation = sourceIntakeReviewExplanation(request.status, reason);
@@ -30,8 +30,9 @@ describe("source intake review explanations", () => {
     expect(html).toContain(explanation);
     expect(html).toContain(reason);
     expect(html).toContain("Saved diagnostic stays visible.");
-    expect(html).toContain(">Retry<");
-    expect(html).toContain(">Rerun AI<");
+    expect(html).not.toContain(">Retry<");
+    expect(html).not.toContain(">Rerun AI<");
+    expect(html).toContain("Historical intake capture and AI retries are on hold");
     expect(html).toContain(">Reject<");
     expect(html).toMatch(/<button[^>]* disabled=""[^>]*>Attach<\/button>/);
     expect(html.match(/<button\b[^>]*>[^<]*<\/button>/g)).toEqual(
@@ -105,44 +106,44 @@ describe("admin source intake reconciliation retry", () => {
     expect(html).toContain(">Reject<");
   });
 
-  it("offers capture retry before any capture or provider result and discloses charge/refetch", () => {
+  it("holds capture retries before any capture or provider result", () => {
     const request = reconciliationRequest();
     request.status_reason = "initial_capture_failed_closed";
     request.ai_review = {};
     request.capture_metadata = {};
     const html = renderRequest(request);
 
-    expect(html).toContain("Retry capture + review");
-    expect(html).toContain("page will be fetched again");
-    expect(html).toContain("may create a charge");
+    expect(html).not.toContain("Retry capture + review");
+    expect(html).not.toContain("page will be fetched again");
+    expect(html).not.toContain("may create a charge");
     expect(html).not.toContain(">Attach<");
     expect(html).not.toContain(">Rerun AI<");
   });
 
-  it("offers exact staged-capture resume before review and discloses possible charge", () => {
+  it("holds staged-capture reviews without discarding their retained evidence", () => {
     const request = reconciliationRequest();
     request.status_reason = "intake_r2_upload_failed";
     request.ai_review = {};
     request.capture_metadata = stagedCaptureMetadata(request.capture_metadata);
     const html = renderRequest(request);
 
-    expect(html).toContain("Resume saved capture + review");
-    expect(html).toContain("Resume the exact saved capture");
-    expect(html).toContain("will not be fetched again");
-    expect(html).toContain("may create a charge");
+    expect(html).not.toContain("Resume saved capture + review");
+    expect(html).not.toContain("Resume the exact saved capture");
+    expect(html).not.toContain("will not be fetched again");
+    expect(html).not.toContain("may create a charge");
     expect(html).not.toContain(">Attach<");
     expect(html).not.toContain(">Rerun AI<");
   });
 
-  it("offers AI-only review for a completed retained capture without an accepted result", () => {
+  it("holds new AI reviews of historical retained captures", () => {
     const request = reconciliationRequest();
     request.status_reason = "prior_review_rejected_safely";
     request.ai_review = {};
     const html = renderRequest(request);
 
-    expect(html).toContain("Review saved capture with AI");
-    expect(html).toContain("page will not be fetched again");
-    expect(html).toContain("may create a charge");
+    expect(html).not.toContain("Review saved capture with AI");
+    expect(html).not.toContain("page will not be fetched again");
+    expect(html).not.toContain("may create a charge");
     expect(html).not.toContain(">Attach<");
     expect(html).not.toContain("Retry capture + review");
   });
@@ -162,7 +163,7 @@ describe("admin source intake reconciliation retry", () => {
     expect(html).toContain(">Reject<");
   });
 
-  it("offers an ordinary non-PDF matching failure a disclosed page-and-review retry", () => {
+  it("holds ordinary non-PDF page-and-review retries", () => {
     const request = reconciliationRequest();
     request.homepage_url = "https://example.org/award-guidance";
     request.normalized_url = request.homepage_url;
@@ -171,14 +172,14 @@ describe("admin source intake reconciliation retry", () => {
     request.capture_metadata = {};
     const html = renderRequest(request);
 
-    expect(html).toContain("Retry page + review");
-    expect(html).toContain("page may be fetched again");
-    expect(html).toContain("AI review may create a charge");
+    expect(html).not.toContain("Retry page + review");
+    expect(html).not.toContain("page may be fetched again");
+    expect(html).not.toContain("AI review may create a charge");
     expect(html).not.toContain("Replay retained result - $0");
     expect(html).not.toContain(">Attach<");
   });
 
-  it("keeps ordinary recovery controls for a non-live stale-matching failure", () => {
+  it("preserves source attachment while holding non-live capture and AI retries", () => {
     const request = reconciliationRequest();
     request.status = "failed";
     request.status_reason = "stale_matching_failed_closed_operator_retry_required";
@@ -187,8 +188,8 @@ describe("admin source intake reconciliation retry", () => {
     request.capture_metadata = {};
     const html = renderRequest(request);
 
-    expect(html).toContain(">Retry<");
-    expect(html).toContain(">Rerun AI<");
+    expect(html).not.toContain(">Retry<");
+    expect(html).not.toContain(">Rerun AI<");
     expect(html).toContain(">Attach<");
     expect(html).not.toContain("Replay retained result - $0");
   });
@@ -205,7 +206,7 @@ describe("admin source intake reconciliation retry", () => {
     expect(html).not.toContain(">Rerun AI<");
   });
 
-  it("labels historical unbound onboarding truthfully and offers a new paid saved-capture review", () => {
+  it("labels historical unbound onboarding truthfully without offering a paid review", () => {
     const request = manualBackfillActivationRequest();
     const aiReview = request.ai_review as Record<string, unknown>;
     request.ai_review = {
@@ -217,7 +218,7 @@ describe("admin source intake reconciliation retry", () => {
 
     expect(html).toContain("historical provider result is not cryptographically bound");
     expect(html).toContain("$0 approval is blocked");
-    expect(html).toContain(">Rerun AI<");
+    expect(html).not.toContain(">Rerun AI<");
     expect(html).not.toContain("Approve baseline-only source - $0");
   });
 

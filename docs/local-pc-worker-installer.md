@@ -12,17 +12,27 @@
   live HTTPS app URL as `NEXT_PUBLIC_APP_URL`, so app/worker promotion checks
   cannot pass with an unknown or stale deployment.
 - Installs npm dependencies.
-- Runs the optional one-page visual/R2 snapshot test while all recurring tasks
+- Runs the optional one-page program-text collection check while all recurring tasks
   are still disabled. A failed smoke test leaves them disabled.
 - Creates Windows Scheduled Tasks named `AwardPing Visual Snapshot Worker Shard 1-3`
-  that run the screenshot/PDF checker daily.
+  that collect the approved required HTML/PDF sources daily as private originals
+  and extracted text. Existing task names remain for compatibility; no screenshot,
+  crop, image-AI or discovery flags are sent to the new collector.
 - Creates eight independent, staggered downstream tasks for new-page review,
   changed-page review, feedback promotion, suppression, reconciliation,
   deterministic page audit, manual quarantine, and nightly reporting. A slow or
   failed lane cannot block the other seven.
-- Exactly two lanes can incur an API charge: **New Page Review** and **Changed
-  Page Review**. Database policy fixes each at **$5/day**. The other six lanes
-  and all three 6 PM capture shards have **$0 direct AI/API cost**.
+- Only **Changed Page Review** can incur an AI charge, under the existing
+  **$5/day** lane limit. New Page Review reports deferred discovery; feedback,
+  suppression, reconciliation and quarantine report a read-only legacy hold.
+  Page audit remains deterministic, and nightly reporting reads text coverage.
+- Creates `runtime/program-text-archive` with protected, inheritable private
+  permissions for the operator, system/administrators and existing worker task
+  principals. It validates the directory before setting
+  `AWARDPING_PROGRAM_TEXT_ARCHIVE`; historical snapshot folders stay untouched.
+- Keeps the text configuration disabled until the exact app, database and worker
+  release is staged and verified. An initial baseline is collection coverage,
+  not a program update. Collection failure exits once; wrappers do not retry it.
 
 ## Windows Install
 
@@ -71,13 +81,14 @@ Deploy a reviewed revision in this order:
    as an older commit. A distribution without `.git` must carry a packaged
    `.awardping-worker-revision` manifest created from that committed revision.
 2. From that clean commit, apply and verify its Supabase migrations.
-3. Deploy the same commit to Vercel and verify the live identity endpoint before
-   changing the worker:
+3. Stage the exact reviewed commit on Vercel, verify its text-only UI and identity,
+   and only then promote that same deployment. Follow the current release
+   coordination record; do not deploy directly from a dirty development tree.
+   Verify the promoted identity endpoint before changing the worker:
 
    ```powershell
    $ReleaseSha = (git rev-parse HEAD).Trim()
    $ProductionAppUrl = "https://awardping.vercel.app"
-   npx --yes vercel@56.2.1 --prod --yes
    $Identity = Invoke-RestMethod "$ProductionAppUrl/api/monitoring-policy-identity"
    if ($Identity.revision -ne $ReleaseSha) {
      throw "Production does not match the reviewed release commit."
@@ -99,8 +110,7 @@ Deploy a reviewed revision in this order:
    configuration is still complete, and never prompts for or replaces those
    secrets. It removes obsolete persistent discovery/onboarding, visual-review,
    localization-repair, snapshot-reset, and forced-R2-refresh mode keys without
-   printing their former values. Those modes are run-scoped command-line choices,
-   not durable worker defaults. It then pauses only AwardPing tasks and
+   printing their former values. Those historical modes are not part of text-only collection. It then pauses only AwardPing tasks and
    worker processes whose command lines target this exact install root, copies
    local environment/report state, and switches complete app directories. A
    workspace catch-up running from this repository is outside that process
@@ -127,19 +137,14 @@ Deploy a reviewed revision in this order:
    interactive logon and no valid operational-mode acceptance has already been
    recorded. It does not change task principals or make them capable of running
    while logged off.
-5. Compare repository and installed hashes for both policy JSON files, the lane
-   wrapper/runner, and the policy, suppression, visual-review, capture, immutable-evidence,
-   evidence-coverage/backfill, quarantine-sync, and baseline worker scripts.
-   Confirm the staged dependency validation includes
-   `scripts/run-downstream-lane.mjs`,
-   `scripts/lib/gemini-spend-ledger.mjs`,
-   `scripts/lib/r2-baseline-rehydration.mjs`,
-   `scripts/lib/award-fact-reconciliation.mjs`,
-   `scripts/lib/source-backfill-intake.mjs`,
-   `scripts/sync-manual-quarantine-registry.mjs`, and the native `sharp` crop
-   package. Confirm the three visual shard tasks still run daily at 6 PM and all
-   eight downstream lane tasks repeat every 15 minutes with different stagger
-   offsets, lane keys, local locks, and timeouts.
+5. Compare repository and installed hashes for the monitoring policies, lane
+   wrapper/runner, text configuration and the complete program-text capture,
+   storage, OCR, review, monitor, repository, provider and CLI modules. The
+   installer requires matching bytes and all dependencies, including `pdf-parse`
+   and `cheerio`. The pinned Scrapling Python runtime is retained; the old
+   selector manifest does not admit or exclude awards in the new text roster.
+   Confirm the same three shard tasks run daily at 6 PM and all eight downstream
+   lane tasks retain their 15-minute cadence, offsets, lane keys, locks and timeouts.
 6. Inspect the first log for each lane after deployment. Each log must name only
    its own lane and finish with a zero exit code. A failure in one log must not
    prevent the other task logs from advancing. Confirm `AwardPing Page Audit
@@ -157,38 +162,27 @@ the worker credentials.
 The permanent worker schedule contains the three 6 PM capture shards and these
 eight downstream tasks. There is no monolithic downstream pipeline.
 
-Every 6 PM shard passes one explicit, fail-closed run contract: all sources,
-`live_recurring` discovery with no onboarding batch, PDF-link discovery on,
-HTML-link discovery off, Batch visual review on, localization/snapshot repair
-off, and immutable R2 snapshot sync on. Command-line values outrank the local
-environment file, so a stale onboarding or repair setting cannot silently change
-the scheduled job. The capture process validates the same contract before doing
-work and exits nonzero if any required setting is missing or contradictory.
+Every 6 PM shard calls `scripts/program-text-worker.mjs --mode=collect --apply=true`
+with only environment, limit, domain delay, shard and run-trigger arguments.
+The approved required-source roster comes from the reviewed 25-award manifest,
+not an old selector. No screenshot, image review, crop or discovery is requested.
+A collection failure exits once and does not restart automatically.
 
-| Windows task | What it does | Direct AI/API cost |
+| Windows task | Text-only behavior | Direct AI/API cost |
 | --- | --- | --- |
-| `AwardPing New Page Review Lane` | Processes submitted source pages. | Fixed **$5/day** maximum, enforced by database policy. |
-| `AwardPing Changed Page Review Lane` | Reviews visual-change candidates. | Fixed **$5/day** maximum, enforced by database policy. |
-| `AwardPing Feedback Promotion Lane` | Verifies and promotes feedback rules. | **$0** |
-| `AwardPing Suppression Lane` | Applies suppression and retroactive sweeps. | **$0** |
-| `AwardPing Reconciliation Lane` | Reconciles pending public award facts. | **$0** |
+| `AwardPing New Page Review Lane` | Reports deferred discovery; preserves the old intake queue. | **$0** |
+| `AwardPing Changed Page Review Lane` | Reviews saved program-text comparisons; never auto-retries failed paid reviews. | Existing **$5/day** maximum. |
+| `AwardPing Feedback Promotion Lane` | Reports a read-only legacy hold. | **$0** |
+| `AwardPing Suppression Lane` | Reports a read-only legacy hold. | **$0** |
+| `AwardPing Reconciliation Lane` | Reports a read-only legacy hold. | **$0** |
 | `AwardPing Page Audit Lane` | Runs deterministic public-page checks; never submits to Gemini. | **$0** |
-| `AwardPing Manual Quarantine Lane` | Refreshes durable operator cases. | **$0** |
-| `AwardPing Nightly Report Lane` | Finalizes the due three-shard 6 PM report. | **$0** |
+| `AwardPing Manual Quarantine Lane` | Reports a read-only legacy hold. | **$0** |
+| `AwardPing Nightly Report Lane` | Reports required-source text coverage. | **$0** |
 
-Each task repeats every 15 minutes at its own stagger offset. Each also has its
-own Windows execution timeout, local lock, and database lease. If one lane is
-busy, times out, or fails, Windows can still start every other lane. The new-page
-lane processes up to 25 queued requests and polls at most five existing batches
-within its own budget. Failed intake requests wait for an operator-selected
-retry instead of cycling forever.
-
-The reconciliation lane never treats an API row cap as a complete candidate
-set. For each award it obtains an exact count, reads every row in deterministic
-`created_at`/ID pages twice, and records the verified count and revision hash in
-the run report. A changed count/content revision or a total above the configured
-safe maximum fails that queue item for operator quarantine; no partial set is
-ranked or published.
+Each lane retains its stagger, Windows execution timeout, local lock and database
+lease. A slow or failed lane does not block the other seven. First collection
+creates a private baseline only. Public updates require a later complete capture,
+an actual approved program-detail change and validated exact text provenance.
 
 Lane logs are retained only under the installed worker's `logs` directory.
 Per-run logs expire after 14 days and are also capped at the newest 2,000 files;
@@ -235,7 +229,11 @@ command center no longer offers the retired `daily`, `catchup`, `baseline`, or
 `cleanup` bundles. Manual source discovery remains available as a bounded,
 baseline-only onboarding action; it does not launch those retired workflows.
 
-## Manual Quarantine Registry
+## Historical Manual Quarantine Registry (held)
+
+This section describes preserved pre-text records only. The current scheduled
+quarantine lane does not mutate them. Do not run the old sync/recovery commands
+as part of text-only monitoring.
 
 Manual quarantine is durable database state, not a count copied from one
 catch-up report. The registry groups a latest critical page audit with its
@@ -276,7 +274,11 @@ detailed, paginated repair view. Its totals come from the full registry before
 pagination, its default clusters bind domain + evidence failure + policy reason
 + likely repair, and its assignment/start-review controls cannot retry or spend.
 
-## Verified Feedback Promotions
+## Historical Feedback Promotions (held)
+
+These previous visual-review and promotion procedures are retained as private
+operational reference, not current run instructions. Current feedback/suppression/
+reconciliation lanes make no legacy-queue mutations.
 
 The `AwardPing Feedback Promotion Lane` makes the broader feedback workflow
 automatic after an operator clusters feedback and drafts an inactive rule:
@@ -354,98 +356,35 @@ retains a current `sb_secret_...`; if it finds a legacy JWT or missing key, it
 keeps the scheduled tasks stopped and requests a validated replacement in the
 staged environment before switching versions.
 
-## Manual Run
+## Manual Text Collection and Coverage
 
-To run the visual screenshot/PDF checker immediately, double-click:
-
-```text
-3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
-```
-
-Or run this in PowerShell:
+Only after the reviewed text configuration and matching release have been
+explicitly enabled, the compatibility launcher collects required pages:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingVisualSnapshots.ps1" -All -Limit 50000
 ```
 
-The wrapper above uses the normal live-discovery/canonical-review settings even
-for an immediate manual run. For an intentional repair, historical-onboarding,
-targeted, or no-review run, invoke `scripts/capture-visual-snapshots.mjs` with
-`--run-trigger=manual` or `--run-trigger=maintenance` and the desired explicit
-options. The worker rejects those modes when `--run-trigger=scheduled` is used.
+The old filename is not a visual-capture instruction. It invokes the new
+program-text collector, does not call an AI provider, and does not publish a
+baseline as a change. Logs remain under
+`%LOCALAPPDATA%\AwardPingWorker\logs`.
 
-Logs are written to:
-
-```text
-%LOCALAPPDATA%\AwardPingWorker\logs
-```
-
-## 6 PM Capture Reports
-
-The three scheduled visual shards share one Chicago monitoring date and report
-independently. A process can exit successfully while individual pages fail, so
-the report keeps execution status separate from operational health:
-
-- `healthy`: all three shards reported and no failure was recorded.
-- `degraded`: all three shards reported, but one or more source or downstream
-  failures need attention.
-- `failed`: a shard stopped or was blocked.
-- `incomplete`: the scan window ended without all three shard reports.
-
-Each shard writes an atomic start record, refreshes its heartbeat while it is
-active, and finishes with `run_health`, grouped failures, and a `repair_plan`.
-A stale heartbeat is reported separately from a shard that never launched.
-After every scheduled shard finishes, the worker atomically rebuilds:
-
-```text
-%LOCALAPPDATA%\AwardPingWorker\app\reports\visual-nightly-report-YYYY-MM-DD.json
-%LOCALAPPDATA%\AwardPingWorker\app\reports\visual-nightly-report-latest.json
-```
-
-The final report keeps only the newest attempt for each shard, so a retry does
-not double-count the scan. It lists a safe recovery for every failure class and
-never recommends changing a baseline simply to make an error disappear.
-The independent `AwardPing Nightly Report Lane` runs the same locked finalizer,
-so a common-cause shard launch failure still produces a three-shards-missing
-report after the 6 PM launch grace period. Rebuilds read only the due monitoring
-window, not the full report history.
-
-To read the latest local report and the three Scheduled Task results, run
-`6-SHOW-VISUAL-SNAPSHOT-STATUS.bat`. To rebuild or print a report directly from
-the installed app:
+To read required-source coverage without collection, AI requests or publication:
 
 ```powershell
 Push-Location "$env:LOCALAPPDATA\AwardPingWorker\app"
-npm run source:visual-nightly-report
+node scripts/program-text-worker.mjs --mode=report --env=.env.worker.local
 Pop-Location
 ```
 
-The Admin dashboard shows the same operational view from
-`local_worker_runs.metadata`: three shard rows, captured-page and failure
-totals, failure groups, and the corresponding guarded repair instructions.
-
-To audit published evidence itself rather than source-pointer layout metadata:
-
-```powershell
-Push-Location "$env:LOCALAPPDATA\AwardPingWorker\app"
-npm run source:visual-evidence-coverage -- --env .env.worker.local
-Pop-Location
-```
-
-Historical evidence recovery is an operator-only, dry-run-by-default command;
-it is not another scheduled worker:
-
-```powershell
-npm run source:backfill-visual-event-evidence -- --env .env.worker.local
-npm run source:backfill-visual-event-evidence -- --env .env.worker.local --apply=true
-```
-
-Repairable linkage or archive gaps never become immutable “unrecoverable” rows
-automatically. Apply mode reports all pending event IDs, continues recovering
-independent later events, and leaves its contiguous checkpoint before the first
-gap. Recording terminal loss requires an event-specific reviewed JSON file with
-the current reason code, reason, actor, and confirmation timestamp, passed with
-`--terminal-loss-confirmations <path>`.
+The compatibility `6-SHOW-VISUAL-SNAPSHOT-STATUS.bat` shows this same text
+coverage report, the latest collection log and scheduled task results. Complete
+coverage counts complete reviewed source sets, not awards with only one page.
+An unavailable PDF/OCR extraction or unresolved source remains a gap; it is not
+hidden by a successful process exit. Historical screenshots, visual queues and
+their evidence are preserved privately and are not rendered by the website or
+retrieved by the retired visual API routes.
 
 ## Uninstall Scheduled Task
 

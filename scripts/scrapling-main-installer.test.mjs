@@ -81,6 +81,8 @@ describe.skipIf(process.platform !== "win32")("Scrapling main installer temp-onl
       $ast = [System.Management.Automation.Language.Parser]::ParseFile(${quote(join(root, "installer/windows/Install-AwardPingWorker.ps1"))}, [ref]$tokens, [ref]$parseErrors)
       $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-AwardPingInstalledRuntimeProblems' }, $true)
       . ([scriptblock]::Create($definition.Extent.Text))
+      $textDefinition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-AwardPingProgramTextRuntimeRelativePaths' }, $true)
+      . ([scriptblock]::Create($textDefinition.Extent.Text))
       $script:dependencyCalls = 0
       $script:dependencies = @(Get-AwardPingScraplingRuntimeRelativePaths)
       function Get-AwardPingScraplingRuntimeRelativePaths { $script:dependencyCalls += 1; return $script:dependencies }

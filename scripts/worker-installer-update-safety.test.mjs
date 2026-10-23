@@ -551,14 +551,14 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain("WasEnabled = $wasEnabled");
   });
 
-  it("runs the optional capture/R2 smoke test before recurring tasks can be enabled", () => {
+  it("runs the optional text collection smoke check before recurring tasks can be enabled", () => {
     const mainStart = installer.indexOf("$packageRoot = Resolve-Path");
     const registrationIndex = installer.indexOf(
       "Register-DownstreamLaneTasks `",
       mainStart,
     );
     const smokeIndex = installer.indexOf(
-      'Write-Step "Running one-page visual snapshot test before enabling recurring tasks"',
+      'Write-Step "Running one-page program text collection check before enabling recurring tasks"',
       registrationIndex,
     );
     const restoreIndex = installer.indexOf(
@@ -572,10 +572,10 @@ describe("Windows worker update safety", () => {
     expect(restoreIndex).toBeGreaterThan(smokeIndex);
     expect(outerCatchIndex).toBeGreaterThan(restoreIndex);
     expect(installer).toContain(
-      "The one-page visual snapshot test failed while recurring tasks were disabled.",
+      "The one-page program text collection check failed while recurring tasks were disabled.",
     );
     expect(
-      installer.split("Running one-page visual snapshot test before enabling recurring tasks")
+      installer.split("Running one-page program text collection check before enabling recurring tasks")
         .length - 1,
     ).toBe(1);
   });
@@ -1164,11 +1164,11 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain(
       '"scripts\\lib\\monitoring-feedback-promotion-verification.mjs"',
     );
-    expect(installer).toContain("durable manual-quarantine registry");
+    expect(installer).toContain("preserving historical quarantine records");
     expect(installerDocs).toContain("AWARDPING_WORKER_REVISION");
     expect(installerDocs).toContain("NEXT_PUBLIC_APP_URL");
     expect(installerDocs).toContain("AwardPing Feedback Promotion Lane");
-    expect(installerDocs).toContain("sync-manual-quarantine-registry.mjs");
+    expect(installerDocs).toContain("AWARDPING_PROGRAM_TEXT_ARCHIVE");
     expect(installerDocs).toContain("refuses a dirty git worktree");
     expect(installer).not.toContain("AWARDPING_GEMINI_API_DAILY_COST_CAP_USD=15");
     expect(installer).not.toContain('"AWARDPING_GEMINI_API_DAILY_COST_CAP_USD" = "15"');
@@ -1263,26 +1263,20 @@ describe("Windows worker update safety", () => {
     expect(installerDocs).toMatch(/Do not\r?\ncopy individual files/);
   });
 
-  it("wires the three 6 PM shards into scheduled cohort reporting", () => {
+  it("wires the same three 6 PM shards into text-only collection and reporting", () => {
     expect(installer).toContain("-ShardIndex $shardIndex -RunTrigger scheduled");
     expect(installer).toContain('"--run-trigger"');
     expect(installer).toContain('`$RunTrigger');
-    expect(installer).toContain('`$workerArgs += "--discovery-mode=true"');
-    expect(installer).toContain('`$workerArgs += "--discovery-intent=live_recurring"');
-    expect(installer).toContain('`$workerArgs += "--discovery-onboarding-batch-id="');
-    expect(installer).toContain('"--localization-repair=false"');
-    expect(installer).toContain('"--reset-previous-snapshot=false"');
-    expect(installer).toContain('"--force-r2-snapshot-refresh=false"');
-    expect(installer).toContain('"--visual-review-mode=batch"');
-    expect(installer).toContain('"--interpret-visual-changes=true"');
-    expect(installer).toContain('"--r2-snapshot-sync=true"');
-    expect(installer).toContain("scripts\\lib\\visual-capture-run-report.mjs");
-    expect(installer).toContain("scripts\\lib\\visual-nightly-run-contract.mjs");
-    expect(installer).toContain("scripts\\report-visual-nightly.mjs");
-    expect(installer).toContain("visual-nightly-report-latest.json");
-    expect(installer).toContain("Failures / loaded sources");
-    expect(installerDocs).toContain("6 PM Capture Reports");
-    expect(installerDocs).toContain("newest attempt for each shard");
+    const generated = extractPowerShellFunction(installer, "Write-LauncherScripts", "Register-VisualSnapshotTask");
+    expect(generated).toContain("scripts\\program-text-worker.mjs");
+    expect(generated).toContain('"--mode=collect"');
+    expect(generated).toContain('"--mode=report"');
+    expect(generated).toContain('[int]`$MaxRestarts = 0');
+    expect(generated).not.toMatch(/--(?:discovery|visual-review|interpret-visual|r2-snapshot|localization-repair|reset-previous-snapshot|force-r2-snapshot)/);
+    expect(generated).not.toContain("while (`$true)");
+    expect(generated).toContain("first coverage is not a program update");
+    expect(installer).toContain("AWARDPING_PROGRAM_TEXT_ARCHIVE");
+    expect(installer).toContain("Get-AwardPingProgramTextRuntimeRelativePaths");
     expect(maintenanceRunner).toContain('"--run-trigger=maintenance"');
     expect(maintenanceRunner).toContain("--run-cohort-id=${maintenanceRun?.id");
     const nightlyWriterStart = captureWorker.indexOf("async function maybeWriteNightlyVisualReport");

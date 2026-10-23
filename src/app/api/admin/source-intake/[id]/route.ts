@@ -71,6 +71,13 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json({ ok: false, error: "Choose a valid source-intake action." }, { status: 400 });
   }
 
+  if (["retry", "rerun_capture", "rerun_ai_review"].includes(parsed.data.action)) {
+    return NextResponse.json(
+      { ok: false, error: "Historical intake capture and AI retries are on hold. Existing records are preserved; no new work was queued." },
+      { status: 410, headers: { "Cache-Control": "no-store, max-age=0" } },
+    );
+  }
+
   const admin = createSupabaseAdminClient();
   const now = new Date().toISOString();
 

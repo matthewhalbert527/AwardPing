@@ -331,6 +331,41 @@ describe("concise public change presentation", () => {
 });
 
 describe("change summary filtering", () => {
+  it("excludes collection-only notices even when they contain genuine program wording", () => {
+    const summary = "The eligibility section now says applicants must submit two recommendation letters.";
+    for (const marker of [{ event_kind: "new_official_document" }, { candidate_scope: "initial_official_document" },
+      { observation_kind: "first_observation" }, { first_observation: true }]) {
+      for (const details of [marker, JSON.stringify(marker)]) {
+        expect(isUsefulChangeSummary(summary, details)).toBe(false);
+        expect(isUsefulChangeForAward({ summary, changeDetails: details, awardName: "Marshall Scholarship",
+          sourceUrl: "https://example.edu/rules.pdf" })).toBe(false);
+      }
+    }
+    expect(isUsefulChangeSummary(FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY)).toBe(false);
+  });
+
+  it("does not present unavailable-summary placeholders as useful program changes", () => {
+    const summary = "The eligibility requirements changed for the upcoming award cycle.";
+    const details = { generation_status: "generated", is_alert_worthy: true, reader_summary: summary,
+      confidence: "high", quality_flags: [], change_type: "eligibility", changed_facts: [null] };
+    const original = structuredClone(details);
+    expect(changeSummaryPresentation(summary, undefined, undefined, details).text)
+      .toBe("A complete concise summary is unavailable. Review the official source.");
+    expect(isUsefulChangeSummary(summary, details)).toBe(false);
+    expect(isUsefulChangeForAward({ summary, changeDetails: details, awardName: "Beinecke Scholarship",
+      sourceUrl: "https://example.edu/eligibility" })).toBe(false);
+    expect(isUsefulChangeSummary("A complete concise summary is unavailable. Review the official source.")).toBe(false);
+    expect(details).toEqual(original);
+  });
+
+  it.each([
+    ["Marshall Scholarship", "Applications for the 2026 Marshall Scholarship are now closed."],
+    ["GEM Fellowship", "GEM Fellowship eligibility now includes students pursuing a doctoral degree."],
+  ])("keeps genuine readable legacy program updates for %s", (awardName, summary) => {
+    expect(isUsefulChangeSummary(summary)).toBe(true);
+    expect(isUsefulChangeForAward({ summary, awardName, sourceUrl: "https://example.edu/award" })).toBe(true);
+  });
+
   it("hides vague generated summaries", () => {
     expect(isUsefulChangeSummary("The page added or expanded application language.")).toBe(
       false,
@@ -685,7 +720,7 @@ describe("change summary filtering", () => {
     });
   });
 
-  it("renders first-observed documents without asserting a publisher-side change date", () => {
+  it("keeps an honest private first-observation description but excludes it from public changes", () => {
     const changeDetails = {
       event_kind: "new_official_document",
       reader_summary: "The publisher posted this new PDF today.",
@@ -713,7 +748,7 @@ describe("change summary filtering", () => {
     };
 
     expect(isUsefulChangeSummary("The publisher posted this new PDF today.", changeDetails)).toBe(
-      true,
+      false,
     );
     expect(
       displayChangeSummary(

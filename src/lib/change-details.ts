@@ -5,6 +5,8 @@ import {
   isPersistentMonitoringPolicyFlag,
 } from "@/lib/award-monitoring-policy";
 import { summarizeChange } from "@/lib/diff";
+import { hasProgramTextChangeMarker, parseProgramTextChangeDetails } from "../../scripts/lib/program-change-contract.mjs";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 
 export type ChangeDetailsConfidence = "low" | "medium" | "high";
 export type ChangeGenerationProvider = "heuristic" | "gemini" | "openai";
@@ -496,6 +498,7 @@ export function changeDetailsToSummary(
   changeDetails: unknown,
   fallbackSummary: string | null | undefined,
 ) {
+  if (hasProgramTextChangeMarker(changeDetails)) return parseProgramTextChangeDetails(changeDetails)?.summary || "";
   const details = parseChangeDetails(changeDetails);
   const firstObservationSummary = firstObservedOfficialDocumentSummary(details);
   if (firstObservationSummary) return firstObservationSummary;
@@ -522,6 +525,8 @@ export function firstObservedOfficialDocumentSummary(changeDetails: unknown) {
 }
 
 export function changeDetailsSearchText(changeDetails: unknown) {
+  const program = parseProgramTextChangeDetails(changeDetails);
+  if (program) return [program.summary, ...program.program_changes.flatMap(change => [change.field, change.summary, change.previous_quote?.text, change.current_quote?.text])].filter(Boolean).join(" ");
   const details = parseChangeDetails(changeDetails);
   if (!details) return "";
 
@@ -542,6 +547,7 @@ export function changeDetailsSearchText(changeDetails: unknown) {
 }
 
 export function isMeaningfulChangeDetails(changeDetails: unknown) {
+  if (hasProgramTextChangeMarker(changeDetails)) return Boolean(parseProgramTextChangeDetails(changeDetails));
   const details = parseChangeDetails(changeDetails);
   if (!details) return null;
   if (!details.is_alert_worthy) return false;
@@ -552,6 +558,8 @@ export function isMeaningfulChangeDetails(changeDetails: unknown) {
 }
 
 export function changeDetailsLabel(changeDetails: unknown, fallback = "Update") {
+  const program = programChangePresentation(changeDetails);
+  if (program) return program.label;
   const details = parseChangeDetails(changeDetails);
   if (!details) return fallback;
 

@@ -1,11 +1,14 @@
 import { isChangeEventSuppressed } from "@/lib/change-event-suppression";
 import { isUsefulChangeForAward } from "@/lib/change-summary";
-import { isMonitorableAwardSource, isPublicAwardSource } from "@/lib/source-quality";
+import { isMonitorableAwardSource, isPublicAwardSource, sourceBaselineFacts } from "@/lib/source-quality";
+import { isMonitorableOfficialSource, isTrackableOfficialSourceUrl } from "@/lib/source-url-policy";
+import { normalizeHttpUrl } from "@/lib/url-safety";
 import {
   isStage1SourceIdentityExcluded,
   type Stage1PublicationEntry,
 } from "@/lib/stage1-publication";
 import type { Database, Json } from "@/lib/database.types";
+import { hasPublishableProgramTextEvidence } from "@/lib/program-text-event-evidence";
 import { verifyVisualEventSemanticBindings, visualChangeSemanticManifest } from "../../scripts/lib/visual-event-localization.mjs";
 
 export type PublicChangeEventVisualEvidence =
@@ -71,7 +74,7 @@ export function isPublicChangeEvent({
   // insufficient because a stale or malformed event URL is rendered publicly.
   if (event.source_url !== source.url) return false;
   if (!publication.allowedSourceIdSet.has(source.id)) return false;
-  if (!hasPublishableEventVisualEvidence(event, evidence)) return false;
+  if (!hasPublishableEventEvidence(event, evidence)) return false;
   if (
     isStage1SourceIdentityExcluded(publication, source) ||
     isStage1SourceIdentityExcluded(publication, {
@@ -82,7 +85,15 @@ export function isPublicChangeEvent({
     return false;
   }
   if (isChangeEventSuppressed(event)) return false;
-  if (!isPublicAwardSource(source) || !isMonitorableAwardSource(source)) return false;
+  if (evidence && hasPublishableProgramTextEvidence(event, evidence)) {
+    // This accepted comparison belongs to the new text epoch. Current source
+    // approval and exact evidence are required above; an unrelated old visual
+    // or baseline-fact hold is not authority over this reviewed text event.
+    // This does not make old page_metadata usable as public award facts.
+    if (!isSafeProgramTextEventSource(source, evidence)) return false;
+  } else if (!isPublicAwardSource(source) || !isMonitorableAwardSource(source)) {
+    return false;
+  }
 
   return isUsefulChangeForAward({
     awardName: award.name,
@@ -90,6 +101,30 @@ export function isPublicChangeEvent({
     sourceUrl: event.source_url,
     summary: event.summary,
     change_details: event.change_details,
+  });
+}
+
+function isSafeProgramTextEventSource(
+  source: NonNullable<PublicChangeEventInput["source"]>,
+  evidence: PublicChangeEventVisualEvidence,
+) {
+  const finalUrl = jsonObject(evidence.current_capture).final_url;
+  if (typeof finalUrl !== "string") return false;
+  for (const url of [source.url, finalUrl]) {
+    // Reuse the existing public/private-host gate without performing a fetch.
+    // Exact requested URLs remain bound by the immutable publication proof.
+    if (!normalizeHttpUrl(url).ok || !isTrackableOfficialSourceUrl(url) ||
+        !isMonitorableOfficialSource({ url, page_type: source.page_type })) return false;
+  }
+  const metadata = jsonObject(source.page_metadata), facts = sourceBaselineFacts(source);
+  const title = [source.title, source.display_title, metadata.page_title, facts.display_title]
+    .map(value => String(value || "")).join(" ");
+  // Preserve the legacy source-quality spam-upload check without treating its
+  // old baseline/review decision as approval (or rejection) of this new epoch.
+  return ![source.url, finalUrl].some(value => {
+    const path = decodeURIComponent(new URL(value).pathname);
+    return /\/wp-content\/uploads\/\d{4}\/\d{2}\/[^/]+\.html?$/i.test(path) &&
+      /\b(viagra|levitra|cialis|pharma|casino|xanax|tramadol|pills|essay writing|payday)\b/i.test(`${title} ${path}`);
   });
 }
 
@@ -104,6 +139,12 @@ export function hasPublishableEventVisualEvidence(
     evidence.shared_award_source_id !== event.shared_award_source_id
   ) {
     return false;
+  }
+  const details = jsonObject(event.change_details);
+  if (evidence.evidence_schema_version === "program-text-event-evidence-v1" || evidence.evidence_status === "verified_text" ||
+      details.schema === "awardping.program-change.v1" || details.event_kind === "program_details_changed" ||
+      [evidence.previous_capture, evidence.current_capture].some(value => jsonObject(value).kind === "program_text")) {
+    return hasPublishableProgramTextEvidence(event, evidence);
   }
   if (evidence.evidence_schema_version === "source-html-event-evidence-v1" ||
       evidence.evidence_status === "not_applicable_source_html" ||
@@ -217,6 +258,9 @@ export function hasPublishableEventVisualEvidence(
 
   return false;
 }
+
+// Existing callers retain their historic name while all update types share one gate.
+export const hasPublishableEventEvidence = hasPublishableEventVisualEvidence;
 
 function captureHasImmutableFullAndMetadata(value: Json) {
   const capture = jsonObject(value);
@@ -360,6 +404,9 @@ export function eventVisualEvidencePresentation(
   event: PublicChangeEventInput["event"],
   evidence: PublicChangeEventVisualEvidence,
 ) {
+  if (evidence.evidence_schema_version === "program-text-event-evidence-v1" || evidence.evidence_status === "verified_text") {
+    return { evidenceStatus: "verified_text", exactCropAllowed: false, fallbackReason: null } as const;
+  }
   if (evidence.evidence_status === "not_applicable_source_html" ||
       evidence.evidence_schema_version === "source-html-event-evidence-v1") {
     return { evidenceStatus: "not_applicable_source_html", exactCropAllowed: false, fallbackReason: null } as const;

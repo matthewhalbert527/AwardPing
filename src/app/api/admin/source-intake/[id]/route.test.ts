@@ -136,9 +136,22 @@ const context = {
 
 describe("admin source-intake approval validation", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     state.mode = "domain";
     state.providerMode = "ok";
     state.effects.length = 0;
+  });
+
+  it.each(["retry", "rerun_capture", "rerun_ai_review"])("retires %s before loading or changing an intake record", async action => {
+    const { createSupabaseAdminClient } = await import("@/lib/supabase/admin");
+    const response = await PATCH(new Request("https://awardping.com/api/admin/source-intake/private-id", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }),
+    }), context);
+    expect(response.status).toBe(410);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, max-age=0");
+    expect(await response.json()).toEqual({ ok: false, error: "Historical intake capture and AI retries are on hold. Existing records are preserved; no new work was queued." });
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
+    expect(state.effects).toEqual([]);
   });
 
   it("returns a structured 409 for a normal sealed-evidence conflict", async () => {

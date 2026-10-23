@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import {
   eventVisualEvidencePresentation,
+  hasPublishableEventVisualEvidence,
   isPublicChangeEvent,
   type PublicChangeEventVisualEvidence,
 } from "@/lib/public-change-event";
@@ -212,7 +213,7 @@ describe("public change-event eligibility", () => {
     ).toBe(true);
   });
 
-  it("publishes a first-observed official document only with its immutable attestation and current PDF", () => {
+  it("keeps immutable first-document coverage private rather than publishing it as a program change", () => {
     const firstObservation = publicFixture({
       event: {
         source_page_type: "pdf",
@@ -228,7 +229,8 @@ describe("public change-event eligibility", () => {
       evidence: initialDocumentEvidence(),
     });
 
-    expect(isPublicChangeEvent(firstObservation)).toBe(true);
+    expect(hasPublishableEventVisualEvidence(firstObservation.event, firstObservation.evidence)).toBe(true);
+    expect(isPublicChangeEvent(firstObservation)).toBe(false);
     expect(
       isPublicChangeEvent(publicFixture({
         event: firstObservation.event,

@@ -6,17 +6,28 @@ import {
 } from "@/lib/change-details";
 import { hasRelativeAgeOnlyPolicyChange } from "@/lib/award-monitoring-policy";
 import { cleanDisplayText, readableSourceTitle } from "@/lib/display-text";
+import { hasProgramTextChangeMarker, parseProgramTextChangeDetails } from "../../scripts/lib/program-change-contract.mjs";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 
 export function isUsefulChangeSummary(
   summary: string | null | undefined,
   changeDetails?: unknown,
 ) {
+  if (hasProgramTextChangeMarker(changeDetails)) return Boolean(parseProgramTextChangeDetails(changeDetails));
+  const original = originalPresentationDetails(changeDetails);
+  // Initial coverage says only when AwardPing first collected a page. Even an
+  // immutable PDF does not prove a change to the award's program details.
+  if (original?.event_kind === "new_official_document" || original?.candidate_scope === "initial_official_document" ||
+    original?.observation_kind === "first_observation" || original?.first_observation === true) return false;
   const meaningfulDetails = isMeaningfulChangeDetails(changeDetails);
   if (meaningfulDetails === false) return false;
 
   const clean = cleanDisplayText(changeDetailsToSummary(changeDetails, summary));
   const normalized = clean.toLowerCase();
   if (!normalized) return false;
+  // A safe display fallback is useful for private diagnostics, not a public
+  // update. Keep the raw row; omit it consistently from feeds and their counts.
+  if (changeSummaryPresentation(summary, undefined, undefined, changeDetails).text === conciseSummaryUnavailable) return false;
 
   return (
     clean.length >= 28 &&
@@ -25,6 +36,7 @@ export function isUsefulChangeSummary(
     !normalized.includes("no award-relevant wording changed") &&
     !normalized.startsWith("new date or deadline language appeared:") &&
     !normalized.startsWith("initial award page snapshot captured") &&
+    !/^award\s*ping first (?:recorded|observed) (?:this |the )?official (?:document|page)\b/.test(normalized) &&
     !normalized.includes("no concise word-level summary") &&
     !normalized.includes("no meaningful change") &&
     !normalized.includes("added or expanded") &&
@@ -57,7 +69,6 @@ export function isUsefulChangeForAward(change: {
 }) {
   const details = change.changeDetails ?? change.change_details;
   if (!isUsefulChangeSummary(change.summary, details)) return false;
-
   const summary = displayChangeSummary(change.summary, change.sourceUrl, details);
   if (!isRelevantToAward(summary, change.awardName, change.sourceTitle, change.sourceUrl)) {
     return false;
@@ -71,6 +82,7 @@ export function displayChangeSummary(
   sourceUrl?: string | null,
   changeDetails?: unknown,
 ) {
+  if (hasProgramTextChangeMarker(changeDetails)) return parseProgramTextChangeDetails(changeDetails)?.summary || "";
   const clean = rewritePathSourceLabel(
     cleanChangeDisplayText(changeDetailsToSummary(changeDetails, summary)),
     sourceUrl,
@@ -112,6 +124,8 @@ export function changeSummaryDisplayParts(
   sourceTitle?: string | null,
   changeDetails?: unknown,
 ) {
+  const program = programChangePresentation(changeDetails);
+  if (program) return { label: program.label, text: program.text, paragraphs: program.paragraphs };
   const clean = displayChangeSummary(summary, sourceUrl, changeDetails);
   const normalized = clean.toLowerCase();
 
@@ -186,6 +200,8 @@ export function changeSummaryPresentation(
   sourceTitle?: string | null,
   changeDetails?: unknown,
 ): ChangeSummaryPresentation {
+  const program = programChangePresentation(changeDetails);
+  if (program) return { title: program.title, label: program.label, text: program.text, paragraphs: program.paragraphs, condensed: false };
   const parts = changeSummaryDisplayParts(summary, sourceUrl, sourceTitle, changeDetails);
   const details = parseChangeDetails(changeDetails);
   const titles: Record<string, string> = {
@@ -453,6 +469,8 @@ export function changeSummaryDedupeKey(change: {
   changeDetails?: unknown;
 }) {
   const details = change.change_details ?? change.changeDetails;
+  const program = parseProgramTextChangeDetails(details);
+  if (program) return `program:award:${change.shared_award_id || ""}|url:${change.source_url || ""}|changes:${JSON.stringify(program.program_changes.map(item => [item.field, item.operation, item.previous_quote?.text ?? null, item.current_quote?.text ?? null]))}`;
   const evidenceKey = changeEvidenceDedupeKey(details);
   if (evidenceKey && change.shared_award_id) {
     return `award:${change.shared_award_id}|${evidenceKey}`;

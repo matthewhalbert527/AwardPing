@@ -99,7 +99,7 @@ function AdminPageIssueControls({ sourceId, mode, sourceTitle, inFlightRef, busy
 
   async function remove() {
     const confirmed = window.confirm(
-      `Retire this source from AwardPing?\n\n${sourceTitle}\n\nThis removes it from active monitoring and linked watchlists. Published updates and immutable visual evidence are preserved.`,
+      `Retire this source from AwardPing?\n\n${sourceTitle}\n\nThis removes it from active monitoring and linked watchlists. Published updates and retained review history are preserved.`,
     );
     if (!confirmed) return;
     await runAction("delete", "DELETE");

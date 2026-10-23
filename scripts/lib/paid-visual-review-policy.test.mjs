@@ -12,6 +12,11 @@ import {
 const fingerprint = "a".repeat(64);
 
 describe("paid visual-review lane policy", () => {
+  it("refuses to partition or classify new text candidates into either legacy image-review lane", () => {
+    const candidate = { candidate_scope: "program_text_change", worker_metadata: {} };
+    expect(() => paidVisualReviewLaneForCandidate(candidate)).toThrow("text-only provider");
+    expect(() => partitionPaidVisualReviewCandidates([candidate])).toThrow("text-only provider");
+  });
   it("partitions mixed new-document and changed-page work into independent lanes", () => {
     const initialDocument = {
       id: "new-page",

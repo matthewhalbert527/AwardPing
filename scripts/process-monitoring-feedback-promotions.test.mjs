@@ -1362,7 +1362,7 @@ describe("verified monitoring-feedback promotion worker", () => {
     ).toEqual({ suppressed: true, reason: "source_shape_noise" });
   });
 
-  it("wires independent promotion, suppression, and audit lanes with immutable capture binding", () => {
+  it("retains historical capture bindings but holds promotion/suppression in the new scheduled lane", () => {
     const downstream = readFileSync(
       resolve(root, "scripts", "run-downstream-lane.mjs"),
       "utf8",
@@ -1383,9 +1383,10 @@ describe("verified monitoring-feedback promotion worker", () => {
       "localBaselineEvidenceCache.clear();\n  observedVisualReviewCandidateIds.clear();",
     );
     expect(downstream).toContain("feedback_promotion: {");
-    expect(downstream).toContain("scripts/process-monitoring-feedback-promotions.mjs");
+    expect(downstream).not.toContain("scripts/process-monitoring-feedback-promotions.mjs");
     expect(downstream).toContain("suppression: {");
-    expect(downstream).toContain("scripts/cleanup-change-event-noise.mjs");
+    expect(downstream).not.toContain("scripts/cleanup-change-event-noise.mjs");
+    expect(downstream).toContain('args: ["--mode=legacy_hold", "--apply=true"]');
     expect(downstream).toContain("page_audit: {");
     expect(downstream).toContain("scripts/evaluate-public-page-audit-canaries.mjs");
     expect(downstream).not.toContain("scripts/process-page-audit-batch.mjs");

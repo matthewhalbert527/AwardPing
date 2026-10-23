@@ -41,7 +41,7 @@ export async function POST(_request: Request, { params }: Params) {
     {
       ok: false,
       error:
-        "Manual text checks have been retired. This source will be checked by the daily screenshot worker.",
+        "Manual checks are unavailable here. This source is checked by the daily award monitor.",
     },
     { status: 410 },
   );

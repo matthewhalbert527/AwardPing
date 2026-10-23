@@ -410,18 +410,22 @@ describe("published Stage1 changed-page pending selection (actual worker / SELEC
 
   it.each([initialLane, null])("does not prioritize or add a query for lane %s", async (lane) => {
     const h = pendingHarness([pendingRow("a"), pendingRow("b", { candidate_scope: "initial_official_document" }),
-      pendingRow("z", { shared_award_source_id: prioritySource, candidate_scope: "initial_official_document" })], { lane });
+      pendingRow("z", { shared_award_source_id: prioritySource, candidate_scope: "initial_official_document" }),
+      pendingRow("text", { candidate_scope: "program_text_change" })], { lane });
     const result = await h.actual.loadPendingCandidatesForSubmission();
     expect(result.candidates.map((row) => row.id)).toEqual(lane === initialLane ? ["b", "z"] : ["a", "b", "z"]);
     expect(h.reads).toHaveLength(1); expect(h.reads[0].clauses.some(([method]) => method === "in")).toBe(false);
     expect(h.reads[0].clauses.filter(([method, key]) => ["eq", "neq"].includes(method) && key === "candidate_scope"))
-      .toEqual(lane === initialLane ? [["eq", "candidate_scope", "initial_official_document"]] : []);
+      .toEqual([["neq", "candidate_scope", "program_text_change"],
+        ...(lane === initialLane ? [["eq", "candidate_scope", "initial_official_document"]] : [])]);
   });
 
   it("excludes non-pending rows and the other paid lane without changing any status", async () => {
     const rows = ["failed", "rejected", "submitted", "processing", "succeeded"].map((status) =>
       pendingRow(status, { status, shared_award_source_id: prioritySource }));
     rows.push(pendingRow("initial", { candidate_scope: "initial_official_document", shared_award_source_id: prioritySource }),
+      pendingRow("text-priority", { candidate_scope: "program_text_change", shared_award_source_id: prioritySource }),
+      pendingRow("text-fleet", { candidate_scope: "program_text_change" }),
       pendingRow("valid-priority", { shared_award_source_id: prioritySource }), pendingRow("valid-fleet"));
     const h = pendingHarness(rows), before = structuredClone(h.tables);
     const result = await h.actual.loadPendingCandidatesForSubmission();
