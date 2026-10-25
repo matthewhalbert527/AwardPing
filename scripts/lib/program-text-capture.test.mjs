@@ -238,6 +238,34 @@ describe("explicit capture adapters", () => {
   });
   const pdf = Buffer.from("%PDF-1.4\noriginal-pdf-fixture"), pdfSource = { ...source, page_type: "pdf" };
   const pdfFetch = async () => fetched({ buffer: pdf, contentType: "application/pdf" });
+  it("uses browser PDF transport only when explicitly selected, retaining the same native text/page contract", async () => {
+    const fetch = vi.fn(), browserPdfFetch = vi.fn(pdfFetch);
+    const capture = await captureProgramTextSource({ source: pdfSource, pdf_transport: "browser", executablePath: "C:/Chrome/chrome.exe",
+      adapters: { fetch, browserPdfFetch, pdfExtraction: async () => ({ total: 1, pages: [{ num: 1, text: paragraph }] }) } });
+    expect(fetch).not.toHaveBeenCalled(); expect(browserPdfFetch).toHaveBeenCalledTimes(1);
+    expect(browserPdfFetch.mock.calls[0]).toEqual([source.url, { executablePath: "C:/Chrome/chrome.exe", timeoutMs: expect.any(Number),
+      maxBytes: 20 * 1024 * 1024, allowedFinalUrls: [] }]);
+    expect(capture.acquisition).toBe("pdf_text"); expect(capture.extractor.version).toBe("2.4.5/program-text-v1/browser-pdf-v1");
+    expect(capture.raw_source.bytes.equals(pdf)).toBe(true); expect(capture.completeness.status).toBe("complete");
+    expect(capture.blocks[0].page).toBe(1); expect(capture).not.toHaveProperty("screenshot");
+  });
+  it("does not automatically retry a blocked ordinary PDF through a browser", async () => {
+    const browserPdfFetch = vi.fn();
+    await expect(captureProgramTextSource({ source: pdfSource, adapters: { fetch: async () => fetched({ status: 403 }), browserPdfFetch } })).rejects.toThrow("source_unavailable");
+    expect(browserPdfFetch).not.toHaveBeenCalled();
+  });
+  it.each(["http_html", "rendered_html", "pdf_ocr"])("rejects browser PDF transport for the unrelated %s acquisition", async acquisition => {
+    const browserPdfFetch = vi.fn(), fetch = vi.fn();
+    await expect(captureProgramTextSource({ source: pdfSource, acquisition, pdf_transport: "browser", adapters: { fetch, browserPdfFetch } })).rejects.toThrow("invalid_pdf_transport");
+    expect(fetch).not.toHaveBeenCalled(); expect(browserPdfFetch).not.toHaveBeenCalled();
+  });
+  it("keeps final URL and complete page-coverage checks for browser-downloaded PDFs", async () => {
+    const pdfExtraction = async () => ({ total: 2, pages: [{ num: 1, text: paragraph }] });
+    await expect(captureProgramTextSource({ source: pdfSource, pdf_transport: "browser", adapters: { browserPdfFetch: pdfFetch,
+      pdfExtraction } })).rejects.toThrow("pdf_page_coverage_invalid");
+    await expect(captureProgramTextSource({ source: pdfSource, pdf_transport: "browser", adapters: {
+      browserPdfFetch: async () => fetched({ buffer: pdf, contentType: "application/pdf", finalUrl: "https://other.example.org/plan.pdf" }), pdfExtraction } })).rejects.toThrow("unapproved_redirect_origin");
+  });
   it("keeps exact native page text and page-based locators", async () => {
     const capture = await captureProgramTextSource({ source: pdfSource, adapters: { fetch: pdfFetch,
       pdfExtraction: async () => ({ total: 2, pages: [{ num: 1, text: paragraph }, { num: 2, text: "Funding is $20,000 each year." }] }) } });

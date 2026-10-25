@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 import type { Database, Json } from "@/lib/database.types";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { applyProgramFactPublication } from "@/lib/program-fact-publication";
 import {
   stage1CohortIdentityHash,
   stage1CohortIdentityMismatch,
@@ -54,6 +55,7 @@ export type Stage1PublicationEntry = {
   effectiveReason: string;
   evaluatedAt: string;
   effectivelyVerified: boolean;
+  textFactReview?: { id: string; reviewedAt: string; current: boolean; releaseRevision: string };
 };
 
 export type Stage1PublicationIndex = {
@@ -455,7 +457,7 @@ export async function loadStage1PublicationIndex(): Promise<Stage1PublicationInd
     effectiveReason: snapshot.release.effective_reason,
   };
 
-  return buildStage1PublicationIndex({
+  const index = buildStage1PublicationIndex({
     registryRows: snapshot.cohorts.map((cohort) => cohort.registry as Stage1RegistryRow),
     memberRows: snapshot.cohorts.flatMap((cohort) => cohort.members as Stage1MemberRow[]),
     identityRules: snapshot.cohorts.flatMap(
@@ -480,6 +482,11 @@ export async function loadStage1PublicationIndex(): Promise<Stage1PublicationInd
     reviewedHomepageByCohortKey,
     now: evaluatedAt,
   });
+  if (!index.available) return index;
+  const factsResult = await admin.rpc("get_program_text_fact_publication");
+  if (factsResult.error) return buildUnavailableIndex("Approved program-fact release could not be checked.");
+  try { return applyProgramFactPublication(index, factsResult.data); }
+  catch { return buildUnavailableIndex("Approved program-fact release failed its whole-batch identity check."); }
 }
 
 export async function getStage1PublicationEntryForAward(

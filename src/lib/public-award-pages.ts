@@ -68,6 +68,7 @@ export type PublicAwardPageData = {
   officialHomepage: string | null;
   /** Pinned published-facts review, not newest source check or AI generation. */
   factsReviewedAt?: string | null;
+  factsNeedReview?: boolean;
   /** One server clock value shared by SSR and hydration for date status. */
   presentationAsOf?: string;
   lastCheckedAt: string | null;
@@ -290,6 +291,7 @@ async function loadPublicAwardPageData(
     summary: award.summary,
     publicFacts: award.public_facts,
     sources: officialSources,
+    completeSnapshot: Boolean(publication.textFactReview),
   });
   const canonicalPath = canonicalAwardPath(award.slug, award.name, award.id);
   const publicSources = withUniqueAwardSourceSlugs(officialSources).map((source) => ({
@@ -323,7 +325,8 @@ async function loadPublicAwardPageData(
     facts,
     metaDescription: publicAwardMetaDescription(award.name, facts),
     officialHomepage: publication.registry.official_homepage,
-    factsReviewedAt: publication.registry.last_verified_at,
+    factsReviewedAt: publication.textFactReview?.reviewedAt || publication.registry.last_verified_at,
+    factsNeedReview: publication.textFactReview ? !publication.textFactReview.current : undefined,
     presentationAsOf: new Date().toISOString(),
     lastCheckedAt: latestCheckedAt(officialSources),
     sources: publicSources,
@@ -376,7 +379,7 @@ function canonicalAwardFromPublication(
     official_homepage: publication.registry.official_homepage,
     summary: null,
     public_facts: publication.publishedFacts,
-    public_facts_generated_at: publication.registry.last_verified_at,
+    public_facts_generated_at: publication.textFactReview?.reviewedAt || publication.registry.last_verified_at,
     updated_at:
       publication.registry.last_verified_at || publication.registry.updated_at,
   };

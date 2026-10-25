@@ -8,6 +8,7 @@ import { monitorProgramTextSource, finalizeProgramTextReview } from "./lib/progr
 import { retainProgramTextCapture, uploadProgramTextCapture, loadProgramTextCapture, validateProgramTextReference } from "./lib/program-text-storage.mjs";
 import { createProgramTextRepository, programTextCandidateWork } from "./lib/program-text-repository.mjs";
 import { submitProgramTextBatch, pollProgramTextBatch } from "./lib/program-text-provider.mjs";
+import { findProgramTextBrowserExecutable } from "./lib/program-text-browser.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
@@ -47,21 +48,24 @@ async function rows(query) {
 
 /** Uses approved required source identities; never discovers or approves pages. */
 export async function loadProgramTextSources(supabase) {
-  const manifest = await rows(supabase.from("stage1_award_source_manifest").select("cohort_key,source_role,source_ids,manifest_status,evidence").order("cohort_key").limit(1000));
+  const manifest = await rows(supabase.from("program_text_source_roster").select("cohort_key,source_role,source_ids,manifest_status,evidence,revision").order("cohort_key").limit(1000));
   if (!manifest.length || manifest.length === 1000) throw new Error("Required source roster is missing or incomplete");
   const requiredIds = [...new Set(manifest.flatMap(role => role.source_ids || []))];
-  if (!requiredIds.length || requiredIds.length > 500) throw new Error("Required source roster is out of bounds");
+  if (!requiredIds.length || requiredIds.length > 500 || !requiredIds.every(uuid)) throw new Error("Required source roster is out of bounds");
   const sources = await rows(supabase.from("shared_award_sources").select("id,shared_award_id,url,title,page_type,admin_review_status,text_monitoring_state")
     .in("id", requiredIds).order("id").limit(1000));
   const map = new Map(sources.map(source => [source.id, source]));
   if (sources.length !== requiredIds.length) throw new Error("Required source identities are incomplete");
   return { manifest, sources: sources.map(source => ({ ...source,
     cohorts: [...new Set(manifest.filter(role => role.source_ids?.includes(source.id)).map(role => role.cohort_key))],
-    manifest_bound: manifest.filter(role => role.source_ids?.includes(source.id)).every(role => role.manifest_status !== "missing" && role.evidence?.source_bindings?.[source.id]?.source_url === source.url),
+    manifest_bound: manifest.filter(role => role.source_ids?.includes(source.id)).every(role => role.manifest_status === "reviewed_text" &&
+      uuid(role.revision) && role.evidence?.schema === "awardping.program-text-source-role.v1" &&
+      role.evidence?.source_bindings?.[source.id]?.source_url === source.url &&
+      role.evidence?.source_bindings?.[source.id]?.shared_award_id === source.shared_award_id),
   })), map };
 }
 
-export function programTextCoverage({ manifest, sources }, epoch) {
+export function programTextCoverage({ manifest, sources }, epoch, factReviews = []) {
   const byId = new Map(sources.map(source => [source.id, source]));
   return [...new Set(manifest.map(role => role.cohort_key))].map(cohort => {
     const roles = manifest.filter(role => role.cohort_key === cohort), ids = [...new Set(roles.flatMap(role => role.source_ids || []))];
@@ -81,10 +85,16 @@ export function programTextCoverage({ manifest, sources }, epoch) {
           Date.parse(state.last_checked_at) >= Date.parse(state.latest_ref.captured_at);
       } catch { return false; }
     });
+    const collectionComplete = ids.length > 0 && roles.every(role => role.manifest_status === "reviewed_text" && role.source_ids?.length) && complete.length === ids.length;
+    const approved = factReviews.filter(row => row.cohort_key === cohort);
+    const receipt = approved.length === 1 ? approved[0] : null;
+    const reviewedIds = receipt?.sources?.map(source => source.id);
     return { cohort, required_sources: ids.length, repeated_text_sources: complete.length,
-      collection_complete: ids.length > 0 && roles.every(role => role.manifest_status !== "missing" && role.source_ids?.length) && complete.length === ids.length,
-      // Factual/source-set acceptance is a separate review; do not overstate it.
-      factual_review_complete: false };
+      collection_complete: collectionComplete,
+      factual_review_complete: collectionComplete && receipt?.review?.status === "approved" && receipt.review.current === true &&
+        uuid(receipt.review.id) && Array.isArray(reviewedIds) && reviewedIds.length === ids.length &&
+        new Set(reviewedIds).size === ids.length && ids.every(id => reviewedIds.includes(id)),
+    };
   });
 }
 
@@ -126,6 +136,8 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
   let client;
   try {
     const roster = await loadProgramTextSources(supabase);
+    const factBatch = await supabase.rpc("get_program_text_fact_review_batch");
+    if (factBatch.error || !Array.isArray(factBatch.data) || factBatch.data.length > 25) throw new Error("Current factual approvals are unavailable");
     const scopedSources = roster.sources.filter((source, index) => index % args.shardCount === args.shardIndex &&
       (!args["source-id"] || source.id === args["source-id"]) && (!args.cohort || source.cohorts.includes(args.cohort)));
     // Review --limit caps candidates below, not the source roster they may come
@@ -133,7 +145,7 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     const selected = args.mode === "review" ? scopedSources : scopedSources.slice(0, args.limit);
     if (args["source-id"] && selected.length !== 1) throw new Error("The requested source is not in this shard's required roster");
     const report = { schema: "awardping.program-text-run.v1", mode: args.mode, epoch: config.epoch, apply: args.apply,
-      selected_sources: selected.length, checked_at: new Date().toISOString(), coverage: programTextCoverage(roster, config.epoch), results: [] };
+      selected_sources: selected.length, checked_at: new Date().toISOString(), coverage: programTextCoverage(roster, config.epoch, factBatch.data), results: [] };
     if (!args.apply || ["plan", "report", "new_page_review", "legacy_hold"].includes(args.mode)) return report;
     const bucket = env.R2_BUCKET, endpoint = env.R2_ENDPOINT || (env.R2_ACCOUNT_ID ? `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null);
     if (!bucket || !endpoint || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY) throw new Error("Private raw/text retention is not configured");
@@ -168,8 +180,9 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
       if (wait > 0) await new Promise(done => setTimeout(done, wait));
       const outcome = await monitorProgramTextSource({ source, epoch: config.epoch, callbacks,
         packetLimits: { max_blocks_per_packet: 6 }, captureOptions: { pythonPath,
-          executablePath: env.BROWSER_EXECUTABLE_PATH || env.CHROME_PATH || env.EDGE_PATH,
+          executablePath: findProgramTextBrowserExecutable(env),
           acquisition: override.acquisition || (source.page_type === "pdf" || /\.pdf(?:\?|$)/i.test(source.url) ? "pdf_text" : "http_html"),
+          pdf_transport: override.pdf_transport || "http",
           allowedFinalUrls: override.allowed_final_urls || [], ocrOptions: { popplerDirectory: env.AWARDPING_POPPLER_DIRECTORY,
             tempRoot: env.AWARDPING_OCR_TEMP_ROOT } } });
       lastDomain.set(domain, Date.now());

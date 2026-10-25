@@ -124,7 +124,7 @@ export async function GET(_request: Request, { params }: Props) {
     return NextResponse.json({ error: "Shared award was not found." }, { status: 404 });
   }
   const changes = eligibleEvents.map((entry) => entry.event);
-  const facts = publicAwardFactsFromAward({ publicFacts: publication.publishedFacts });
+  const facts = publicAwardFactsFromAward({ publicFacts: publication.publishedFacts, completeSnapshot: Boolean(publication.textFactReview) });
   return NextResponse.json({
     award: {
       id: publication.canonicalAwardId,

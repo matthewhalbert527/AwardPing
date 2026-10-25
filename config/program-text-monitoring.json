@@ -3,6 +3,27 @@
   "epoch": "ec349339-ff62-4d2e-a610-8c361b4044ec",
   "enabled": true,
   "sources": {
+    "e179694a-c623-4534-91d6-ef90fa0b0e38": {
+      "source_url": "https://www.noaa.gov/office-education/hollings-scholarship",
+      "shared_award_id": "a9b42e3f-6d7e-4b0d-8132-77c2042b311d",
+      "acquisition": "rendered_html"
+    },
+    "3ff68da4-d8e5-4aa2-8ace-2280d8711fc1": {
+      "source_url": "https://www.noaa.gov/office-education/hollings-scholarship/prospective",
+      "shared_award_id": "a9b42e3f-6d7e-4b0d-8132-77c2042b311d",
+      "acquisition": "rendered_html"
+    },
+    "ec1cffa6-9049-4482-a328-ec989506b787": {
+      "source_url": "https://www.noaa.gov/office-education/hollings-scholarship/current/faq",
+      "shared_award_id": "d53e5643-1f05-4b97-ad7c-84fecb061189",
+      "acquisition": "rendered_html"
+    },
+    "8f1f2753-2271-4158-9272-26a66ed2a996": {
+      "source_url": "https://www.noaa.gov/media/file/pdf-hollings-project-plan-form-062316-office-of-education",
+      "shared_award_id": "a9b42e3f-6d7e-4b0d-8132-77c2042b311d",
+      "acquisition": "pdf_text",
+      "pdf_transport": "browser"
+    },
     "d4509d97-da9b-4e12-bbe9-45129e6ce1c1": {
       "source_url": "https://www.nsfgrfp.org/",
       "shared_award_id": "d955a846-cee1-4c01-932e-e3cb7215f3fb",

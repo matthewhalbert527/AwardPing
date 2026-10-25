@@ -299,6 +299,10 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           <p className="admin-page-timestamp">Refreshed {formatDate(renderedAt.toISOString())}.</p>
         </div>
         <div className="flex flex-wrap gap-3">
+          <Link className="button-secondary" href="/dashboard/admin/program-facts">
+            <ScrollText size={16} aria-hidden="true" />
+            Current award details
+          </Link>
           <Link className="button-secondary" href="/dashboard/admin/source-intake">
             <Plus size={16} aria-hidden="true" />
             Add a source

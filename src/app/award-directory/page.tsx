@@ -24,7 +24,7 @@ type OfficeAwardTrackingRow = Pick<AwardRow, "shared_award_id">;
 type SharedAwardDirectoryRow = Pick<
   SharedAwardRow,
   "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts" | "public_facts_generated_at"
->;
+> & { completeSnapshot?: boolean };
 type SharedChangeDirectoryRow = Pick<
   SharedChangeRow,
   | "id"
@@ -173,7 +173,8 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
       official_homepage: publication.registry.official_homepage,
       summary: null,
       public_facts: publication.publishedFacts,
-      public_facts_generated_at: publication.registry.last_verified_at,
+      public_facts_generated_at: publication.textFactReview?.reviewedAt || publication.registry.last_verified_at,
+      completeSnapshot: Boolean(publication.textFactReview),
     }),
   );
   const [eligibleEvents, firstPublishedCaptureDates] = await Promise.all([
@@ -207,6 +208,7 @@ function mapSharedAwards(
     const facts = publicAwardFactsFromAward({
       summary: award.summary,
       publicFacts: award.public_facts,
+      completeSnapshot: award.completeSnapshot,
     });
     const changes = dedupeChangeSummaries(
       sharedChangesByAwardId.get(award.id) || [],

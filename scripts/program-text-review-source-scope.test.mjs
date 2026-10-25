@@ -34,12 +34,12 @@ function fixtureSource(index) {
 }
 function readonlyDatabase() {
   const calls = [];
-  return { calls, from(table) {
-    if (!["stage1_award_source_manifest", "shared_award_sources"].includes(table)) throw new Error("Unexpected database table");
+  return { calls, rpc: async name => { if (name !== "get_program_text_fact_review_batch") throw new Error("Unexpected RPC"); return { data: [] }; }, from(table) {
+    if (!["program_text_source_roster", "shared_award_sources"].includes(table)) throw new Error("Unexpected database table");
     const call = { table, ids: null }; calls.push(call);
     const query = { select() { return query; }, order() { return query; }, limit() { return query; },
       in(key, values) { if (key !== "id") throw new Error("Unexpected database filter"); call.ids = values; return query; },
-      then(yes, no) { const rows = table === "stage1_award_source_manifest" ? shared.roles : shared.sources;
+      then(yes, no) { const rows = table === "program_text_source_roster" ? shared.roles : shared.sources;
         return Promise.resolve({ data: call.ids ? rows.filter(row => call.ids.includes(row.id)) : rows }).then(yes, no); } };
     return query;
   } };
@@ -47,7 +47,8 @@ function readonlyDatabase() {
 beforeEach(() => {
   shared.sources = Array.from({ length: 124 }, (_, index) => fixtureSource(index));
   shared.roles = shared.sources.map((source, index) => ({ cohort_key: index < 100 ? "core" : "tail", source_role: "application_materials",
-    source_ids: [source.id], manifest_status: "present", evidence: { source_bindings: { [source.id]: { source_url: source.url } } } }));
+    source_ids: [source.id], manifest_status: "reviewed_text", revision: epoch,
+    evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: { [source.id]: { source_url: source.url, shared_award_id: source.shared_award_id } } } }));
   shared.config = { schema: "awardping.program-text-monitoring.v1", epoch, enabled: true, sources: {} };
   shared.db = readonlyDatabase(); shared.repository = { listCandidates: vi.fn(async () => []) };
   shared.captures = []; shared.submissions = []; shared.polls = []; shared.destroyed = 0; shared.closed = 0;
@@ -67,7 +68,7 @@ describe("review candidate limit is not a required-source limit", () => {
     expect(shared.repository.listCandidates.mock.calls[0][2].source_ids).toContain(shared.sources[123].id);
     expect(shared.captures).toEqual([]); expect(shared.submissions).toEqual([]); expect(shared.polls).toEqual([]);
     expect(fetch).not.toHaveBeenCalled(); expect(shared.destroyed).toBe(1); expect(shared.closed).toBe(1);
-    expect(shared.db.calls.map(call => call.table)).toEqual(["stage1_award_source_manifest", "shared_award_sources"]);
+    expect(shared.db.calls.map(call => call.table)).toEqual(["program_text_source_roster", "shared_award_sources"]);
   });
   it("preserves cohort and global shard filters without capping their tail sources", async () => {
     const expected = shared.sources.filter((source, index) => index >= 100 && index % 3 === 0).map(source => source.id);

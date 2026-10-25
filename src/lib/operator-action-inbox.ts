@@ -1464,46 +1464,18 @@ function visualReviewFailureToAction(
 ): OperatorActionInboxItem {
   const metadata = objectValue(failure.workerMetadata);
   const retryCount = Math.max(0, integerValue(metadata.failure_retry_count));
-  const reason = cleanText(failure.rejectionReason) || "Visual review failed without a recorded reason.";
-  const missingResponse = reason === "missing_batch_response";
+  const textReview = metadata.monitoring_contract === "program-text-v1";
+  const reason = cleanText(failure.rejectionReason) || "Review failed without a recorded reason.";
   const ambiguousExternalBatch = reason.startsWith("manual_recovery_required_");
-  const automatic = missingResponse;
-  const state: OperatorActionState = ambiguousExternalBatch
-    ? "blocked"
-    : automatic
-      ? "auto_retrying"
-      : "needs_operator";
-  const severity: PageIssueSeverity = state === "auto_retrying" ? "medium" : "high";
-  const retry = ambiguousExternalBatch
-    ? {
-        automatic: false,
-        label: "No — external Batch uncertain",
-        detail: "Do not submit another Batch until the possible external creation is reconciled.",
-      }
-    : missingResponse
-      ? {
-          automatic: true,
-          label: "Yes — recover existing result",
-          detail: "AwardPing will look for the missing response from the existing Batch without resubmitting it.",
-        }
-      : {
-          automatic: false,
-          label: "No — approval required",
-          detail: "A site admin must approve this exact failed candidate before one new paid Batch submission.",
-        };
-  const charge: OperatorActionInboxItem["charge"] = ambiguousExternalBatch
-    ? {
-        level: "unknown",
-        label: "Unknown — do not retry",
-        detail: "The worker cannot prove whether the external Batch was created, so a second submission could duplicate a charge.",
-      }
-    : missingResponse
-      ? noPaidAiCharge("Recovery reuses the existing Gemini Batch and does not create a new submission.")
-      : {
-          level: "will_charge",
-          label: "Yes — Gemini Batch",
-          detail: "Every visual-review resubmission creates a new paid Gemini Batch request.",
-        };
+  const state: OperatorActionState = "blocked";
+  const severity: PageIssueSeverity = "high";
+  const retry = { automatic: false, label: textReview ? "No — saved comparison review required" : "No — historical workflow retired",
+    detail: textReview ? "Inspect the saved text comparison and existing response. A new paid request requires separate authorization."
+      : "Historical evidence is preserved. Visual recovery and visual retries are retired." };
+  const charge: OperatorActionInboxItem["charge"] = {
+    level: "unknown", label: "Prior charge recorded separately",
+    detail: "This held record does not submit or retry a paid request. Do not infer a refund or a new charge from its failure status.",
+  };
 
   return {
     schemaVersion: operatorActionInboxSchemaVersion,
@@ -1514,28 +1486,26 @@ function visualReviewFailureToAction(
     severityLabel: severityLabel(severity),
     state,
     stateLabel: stateLabel(state),
-    title: `${failure.sourceTitle}: visual review failed`,
-    context: "Candidate wording change",
+    title: `${failure.sourceTitle}: ${textReview ? "text comparison held" : "historical visual review"}`,
+    context: textReview ? "Saved program-detail comparison" : "Historical record — retired visual workflow",
     failureReason: humanizeCode(reason),
     occurredAt: failure.updatedAt,
     ageLabel: formatOperatorActionAge(failure.updatedAt, now),
-    owner: automatic
-      ? { label: "AwardPing", detail: "Automatic visual-review worker." }
-      : { label: "AI review", detail: "Functional owner; no individual assignee is stored." },
+    owner: { label: "Source review", detail: "Manual review of preserved records; no automatic failed-request retry." },
     publicImpact: {
       level: "delayed",
       label: "Update publication delayed",
-      detail: "The candidate cannot become a public update until visual review completes.",
+      detail: textReview ? "No program-detail change is published until its saved comparison is validated."
+        : "This historical record is not an active publication or recovery job.",
     },
     retry,
     charge,
     recommendedAction: {
-      label: automatic ? "Watch existing-result recovery" : "Inspect and approve one retry",
+      label: textReview ? "Review the saved text comparison" : "Keep historical evidence; use text-only monitoring",
       detail: ambiguousExternalBatch
         ? "Reconcile the possible external Batch name and result first. Never use a generic retry in this state."
-        : missingResponse
-          ? "Allow response recovery to reuse the existing Batch."
-          : "Inspect the captured evidence, prompt payload, and rejection reason. Approve one exact retry only when a new paid submission is justified.",
+        : textReview ? "Inspect the original previous/current text and any saved provider response. Never repeat a failed paid request automatically."
+          : "The visual workflow is retired. Do not use historical retry instructions or replace private historical evidence.",
       href: null,
     },
     evidence: compactEvidence([
@@ -1553,18 +1523,11 @@ function visualReviewFailureToAction(
       id: visualReviewBatchPolicyIdentity.id,
       version: visualReviewBatchPolicyIdentity.version,
       hash: visualReviewBatchPolicyIdentity.hash,
-      description: "Current operator-approved paid-retry and visual-review Batch policy.",
+      description: "Recorded Batch policy identity; historical records do not authorize a retry.",
     },
     award: null,
     source: { id: failure.sourceId, title: failure.sourceTitle, url: failure.sourceUrl },
-    action: ambiguousExternalBatch || missingResponse
-      ? { kind: "none" }
-      : {
-          kind: "paid_visual_retry",
-          candidateId: failure.id,
-          candidateUpdatedAt: failure.updatedAt,
-          sourceTitle: failure.sourceTitle,
-        },
+    action: { kind: "none" },
   };
 }
 

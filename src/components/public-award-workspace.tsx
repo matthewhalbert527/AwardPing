@@ -515,12 +515,12 @@ const FACT_SECTIONS = {
   dates: {
     title: "Dates & deadlines",
     description: "Published dates are shown as recorded. Check the official source for the current application cycle.",
-    labels: ["Deadline", "Opening date", "Important dates"],
+    labels: ["Application status", "Deadline", "Opening date", "Important dates"],
   },
   application: {
     title: "Eligibility & applying",
     description: "Full requirements, funding details, and application steps. Check the official source before applying.",
-    labels: ["Academic level", "Discipline", "Citizenship", "Eligibility", "Requirements", "How to apply", "Application materials", "Documents", "Award amount", "Deadline", "Opening date", "Important dates", "Contact"],
+    labels: ["Academic level", "Discipline", "Citizenship", "Eligibility", "Requirements", "How to apply", "Application materials", "Documents", "Application links", "Selection", "Award amount", "Duration", "Application status", "Deadline", "Opening date", "Important dates", "Contact"],
   },
 } as const;
 
@@ -560,9 +560,9 @@ export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSo
 
 const APPLICATION_GROUPS = [
   { id: "eligibility", title: "Who can apply", labels: ["Academic level", "Discipline", "Citizenship", "Eligibility", "Requirements"] },
-  { id: "application", title: "Application checklist", labels: ["How to apply", "Application materials", "Documents"] },
-  { id: "funding", title: "Funding", labels: ["Award amount"] },
-  { id: "schedule", title: "Dates & deadlines", labels: ["Deadline", "Opening date", "Important dates"] },
+  { id: "application", title: "Application checklist", labels: ["How to apply", "Application materials", "Documents", "Application links", "Selection"] },
+  { id: "funding", title: "Funding", labels: ["Award amount", "Duration"] },
+  { id: "schedule", title: "Dates & deadlines", labels: ["Application status", "Deadline", "Opening date", "Important dates"] },
   { id: "contact", title: "Contact", labels: ["Contact"] },
 ];
 
@@ -683,6 +683,7 @@ function OverviewPanel({
         <h2 id={headingId}>Overview</h2>
         {overview && <p className="public-award-section-description">{overview}</p>}
         {data.factsReviewedAt && <p className="public-award-review-date">Details reviewed {formatDate(data.factsReviewedAt)}. Recorded changes are shown separately below.</p>}
+        {data.factsNeedReview && <p role="status" className="public-award-date-notice">The last approved details are shown. An official-source change or collection issue needs review; check the official source before applying.</p>}
       </div>
       <dl className="public-award-deadlines">
         <div>
@@ -893,7 +894,7 @@ function FactLine({
       </dt>
       <dd>
         <FactConflictNotice conflict={fact.conflict} onReviewChange={onReviewChange} />
-        <FactValueDisplay className="public-award-fact-list" value={fact.value} isDate={DATE_FACT_LABELS.has(fact.label)} />
+        <FactValueDisplay className="public-award-fact-list" value={fact.value} isDate={DATE_FACT_LABELS.has(fact.label)} isLink={fact.label === "Application links"} />
       </dd>
     </div>
   );
@@ -941,10 +942,12 @@ function FactValueDisplay({
   className,
   value,
   isDate = false,
+  isLink = false,
 }: {
   className: string;
   value: FactValue;
   isDate?: boolean;
+  isLink?: boolean;
 }) {
   // An array already carries one criterion per item: reviewed facts arrive
   // whole and the legacy summary-derived fields are split before they leave
@@ -954,15 +957,26 @@ function FactValueDisplay({
   const items = Array.isArray(value)
     ? value.map((item) => item.trim()).filter(Boolean)
     : splitFactItems(value);
-  if (items.length <= 1) return isDate ? <AwardDateValue value={items[0] || ""} /> : <>{items[0] || ""}</>;
+  const display = (item: string) => isDate ? <AwardDateValue value={item} /> : isLink ? <ApplicationDestination value={item} /> : item;
+  if (items.length <= 1) return <>{display(items[0] || "")}</>;
 
   return (
     <ul className={className}>
       {items.map((item, index) => (
-        <li key={`${item}-${index}`}>{isDate ? <AwardDateValue value={item} /> : item}</li>
+        <li key={`${item}-${index}`}>{display(item)}</li>
       ))}
     </ul>
   );
+}
+
+function ApplicationDestination({ value }: { value: string }) {
+  const match = /^(?:(.{1,200}): )?(https:\/\/\S+)$/.exec(value);
+  if (!match) return <>{value}</>;
+  try {
+    const url = new URL(match[2]);
+    if (url.protocol !== "https:" || url.username || url.password) return <>{value}</>;
+    return <a href={url.href} target="_blank" rel="noopener noreferrer">{match[1] ? `${match[1]} — ` : ""}Official application <ExternalLink size={13} aria-hidden="true" /></a>;
+  } catch { return <>{value}</>; }
 }
 
 function EmptyState({ text }: { text: string }) {
@@ -982,7 +996,9 @@ function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, 
     // any wording this helper does not recognise, is left exactly as reviewed.
     { label: "Deadline", displayLabel: deadline.label, value: deadline.value, icon: "calendar" as const },
     { label: "Opening date", displayLabel: opening.label, value: opening.value },
+    { label: "Application status", value: facts.cycleStatus || null },
     { label: "Award amount", value: facts.awardAmount },
+    { label: "Duration", value: compactList(facts.tenure || []) },
     { label: "Academic level", value: compactList(facts.academicLevels) },
     { label: "Discipline", value: compactList(facts.disciplines) },
     { label: "Citizenship", value: compactList(facts.citizenship) },
@@ -992,6 +1008,8 @@ function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, 
     { label: "Requirements", value: compactList(facts.requirements) },
     { label: "Application materials", value: compactList(facts.applicationMaterials), icon: "checklist" as const },
     { label: "How to apply", value: compactList(facts.howToApply) },
+    { label: "Application links", value: compactList(facts.applicationUrls || []) },
+    { label: "Selection", value: compactList(facts.selection || []) },
     { label: "Important dates", value: compactList(facts.importantDates.flatMap(splitFactItems).map((value) => presentAwardTimelineDate(value, awardName))) },
     { label: "Documents", value: compactList(facts.documents) },
     { label: "Contact", value: compactList(facts.contacts) },

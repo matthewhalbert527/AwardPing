@@ -909,26 +909,23 @@ describe("operator action inbox", () => {
     expect(item.charge.label).toContain("do not retry blindly");
   });
 
-  describe("visual-review recovery", () => {
-    it("requires one-use operator approval before a new paid Gemini Batch", () => {
+  describe("held review records", () => {
+    it("labels the visual record as historical and removes retired retry actions", () => {
       const [item] = buildOperatorActionInbox({
         issues: [],
         visualReviewFailures: [visualFailure()],
         now,
       });
 
-      expect(item.state).toBe("needs_operator");
+      expect(item.state).toBe("blocked");
       expect(item.retry.automatic).toBe(false);
-      expect(item.retry.label).toContain("approval required");
-      expect(item.charge.level).toBe("will_charge");
-      expect(item.charge.label).toContain("Gemini Batch");
-      expect(item.action).toMatchObject({
-        kind: "paid_visual_retry",
-        candidateId: "candidate-1",
-      });
+      expect(item.retry.label).toContain("retired");
+      expect(item.charge.level).toBe("unknown");
+      expect(item.context).toContain("Historical");
+      expect(item.action).toEqual({ kind: "none" });
     });
 
-    it("recovers a missing response from the existing Batch without another charge", () => {
+    it("does not promise automatic recovery of a historical missing response", () => {
       const [item] = buildOperatorActionInbox({
         issues: [],
         visualReviewFailures: [
@@ -940,11 +937,11 @@ describe("operator action inbox", () => {
         now,
       });
 
-      expect(item.state).toBe("auto_retrying");
-      expect(item.retry.automatic).toBe(true);
-      expect(item.retry.label).toContain("recover existing result");
-      expect(item.charge.level).toBe("none");
-      expect(item.charge.detail).toContain("reuses the existing Gemini Batch");
+      expect(item.state).toBe("blocked");
+      expect(item.retry.automatic).toBe(false);
+      expect(item.retry.label).toContain("retired");
+      expect(item.charge.level).toBe("unknown");
+      expect(item.action.kind).toBe("none");
     });
 
     it("blocks an ambiguous external Batch and reports the charge as unknown", () => {
@@ -964,20 +961,22 @@ describe("operator action inbox", () => {
       expect(item.recommendedAction.detail).toContain("Never use a generic retry");
     });
 
-    it("requires a fresh approval even after multiple paid attempts", () => {
+    it("keeps text comparisons actionable without reviving visual retries", () => {
       const [item] = buildOperatorActionInbox({
         issues: [],
         visualReviewFailures: [
-          visualFailure({ workerMetadata: { failure_retry_count: 3 } }),
+          visualFailure({ workerMetadata: { failure_retry_count: 3, monitoring_contract: "program-text-v1" } }),
         ],
         now,
       });
 
-      expect(item.state).toBe("needs_operator");
+      expect(item.state).toBe("blocked");
       expect(item.retry.automatic).toBe(false);
-      expect(item.retry.label).toContain("approval required");
-      expect(item.charge.level).toBe("will_charge");
-      expect(item.action.kind).toBe("paid_visual_retry");
+      expect(item.context).toBe("Saved program-detail comparison");
+      expect(item.retry.detail).toContain("separate authorization");
+      expect(item.title).not.toContain("historical");
+      expect(item.charge.level).toBe("unknown");
+      expect(item.action.kind).toBe("none");
     });
   });
 

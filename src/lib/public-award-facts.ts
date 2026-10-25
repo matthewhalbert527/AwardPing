@@ -19,6 +19,11 @@ export type PublicAwardFacts = {
   disciplines: string[];
   citizenship: string[];
   confidence: string | null;
+  cycleStatus?: string | null;
+  tenure?: string[];
+  selection?: string[];
+  applicationUrls?: string[];
+  notPublishedFields?: string[];
 };
 
 export type PublicAwardFactSource = {
@@ -49,6 +54,8 @@ export function publicAwardFactsFromAward(input: {
   summary?: string | null;
   publicFacts?: Json | null;
   sources?: PublicAwardFactSource[];
+  /** Only the publication boundary may opt into the complete approved snapshot. */
+  completeSnapshot?: boolean;
 }): PublicAwardFacts {
   const structured = objectValue(input.publicFacts);
   // Shape only: whether `publicFacts` carries any key at all. This is not a
@@ -57,8 +64,9 @@ export function publicAwardFactsFromAward(input: {
   // item cap. String cleanup and exact-duplicate removal still apply; amounts
   // and important dates retain their field-specific splitting below. Missing
   // fields can still use the existing legacy-summary fallbacks.
-  const hasStructuredFacts = Object.keys(structured).length > 0;
-  const summaryParts = awardBaselineSummaryParts(input.summary);
+  const completeSnapshot = input.completeSnapshot === true;
+  const hasStructuredFacts = completeSnapshot || Object.keys(structured).length > 0;
+  const summaryParts = completeSnapshot ? null : awardBaselineSummaryParts(input.summary);
   const factMap = new Map(
     (summaryParts?.facts || []).map((fact) => [normalizeLabel(fact.label), fact.value]),
   );
@@ -118,7 +126,7 @@ export function publicAwardFactsFromAward(input: {
       cleanString(structured.overview) ||
       cleanString(structured.summary) ||
       summaryParts?.overview ||
-      displayAwardSummary(input.summary) ||
+      (!completeSnapshot ? displayAwardSummary(input.summary) : null) ||
       null,
     deadline,
     openingDate,
@@ -146,6 +154,9 @@ export function publicAwardFactsFromAward(input: {
     confidence:
       cleanString(structured.confidence) ||
       cleanString(factMap.get("baseline detail confidence")),
+    ...(completeSnapshot ? { cycleStatus: cleanString(structured.cycle_status), tenure: field(structured.tenure),
+      selection: field(structured.selection), applicationUrls: field(structured.application_urls),
+      notPublishedFields: field(structured.not_published_fields) } : {}),
   };
 }
 

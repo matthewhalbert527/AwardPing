@@ -35,8 +35,8 @@ function rowSet(index, candidateEpoch = epoch) {
   const comparison = buildProgramTextComparison(previous, current, { epoch: candidateEpoch, cycle_id: "2027" });
   const state = { schema: "awardping.program-text-state.v1", epoch: candidateEpoch, status: "awaiting_review", baseline_ref: before, latest_ref: after,
     last_checked_at: current.captured_at, first_captured_at: previous.captured_at, successful_checks: 2 };
-  return { source: { ...source, text_monitoring_state: state }, role: { cohort_key: `award_${index}`, source_role: "application", source_ids: [source.id], manifest_status: "reviewed",
-    evidence: { source_bindings: { [source.id]: { source_url: source.url } } } },
+  return { source: { ...source, text_monitoring_state: state }, role: { cohort_key: `award_${index}`, source_role: "application", source_ids: [source.id], manifest_status: "reviewed_text", revision: epoch,
+    evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: { [source.id]: { source_url: source.url, shared_award_id: source.shared_award_id } } } },
     candidate: { id: `${String(index + 4).repeat(8)}-${String(index + 4).repeat(4)}-4${String(index + 4).repeat(3)}-8${String(index + 4).repeat(3)}-${String(index + 4).repeat(12)}`,
       candidate_scope: "program_text_change", candidate_signature: comparison.comparison_id, shared_award_id: source.shared_award_id, shared_award_source_id: source.id,
       source_url: source.url, previous_snapshot_ref: before, new_snapshot_ref: after, previous_image_hash: null, new_image_hash: null, previous_file_hash: null, new_file_hash: null,
@@ -47,6 +47,7 @@ function database(sets, { approved = true } = {}) {
   const calls = [];
   return { calls, rpc(name, params) {
     calls.push({ rpc: name, params });
+    if (name === "get_program_text_fact_review_batch") return Promise.resolve({ data: [] });
     if (name !== "program_text_source_is_approved") throw new Error("Unexpected source-scope RPC");
     return Promise.resolve({ data: approved && sets.some(set => set.source.id === params.p_source_id) });
   }, from(table) {
@@ -54,7 +55,7 @@ function database(sets, { approved = true } = {}) {
     const query = { select(columns) { call.select = columns; return query; }, order() { return query; }, limit() { return query; }, single() { call.single = true; return query; },
       eq(key, value) { call.filters.push(["eq", key, value]); return query; }, in(key, value) { call.filters.push(["in", key, value]); return query; },
       then(yes, no) {
-        let values = table === "stage1_award_source_manifest" ? sets.map(set => set.role)
+        let values = table === "program_text_source_roster" ? sets.map(set => set.role)
           : table === "shared_award_sources" ? sets.map(set => set.source)
             : table === "shared_awards" ? sets.map(set => ({ id: set.source.shared_award_id, name: "Example Award", status: "active" })) : sets.map(set => set.candidate);
         for (const [method, key, value] of call.filters) values = values.filter(row => {
@@ -94,7 +95,7 @@ describe("CLI source scope before any provider submission", () => {
     const report = await runProgramTextWorker(["--mode=review", "--apply=true", "--pilot=true", `--source-id=${current.source.id}`]);
     expect(shared.provider).toEqual([]);
     expect(report.results).toEqual([{ candidate_id: current.candidate.id, status: "held", reason: "review_state_or_transport_failed" }]);
-    expect(shared.db.calls.filter(call => call.rpc)).toEqual([{ rpc: "program_text_source_is_approved", params: { p_source_id: current.source.id } }]);
+    expect(shared.db.calls.filter(call => call.rpc)).toEqual([{ rpc: "get_program_text_fact_review_batch", params: undefined }, { rpc: "program_text_source_is_approved", params: { p_source_id: current.source.id } }]);
   });
   it("an empty cohort never scans the global review queue", async () => {
     shared.config.enabled = true; shared.db = database([rowSet(1)]);

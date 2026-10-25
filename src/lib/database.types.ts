@@ -193,6 +193,14 @@ export type ManualQuarantineBacklogAgeBucket =
 export type Database = {
   public: {
     Tables: {
+      program_text_source_roster: {
+        Row: { cohort_key: string; source_role: string; source_ids: string[]; manifest_status: string; evidence: Json; revision: string; reviewed_by: string; reviewed_at: string };
+        Insert: never; Update: never; Relationships: [];
+      };
+      program_text_fact_reviews: {
+        Row: { id: string; cohort_key: string; validation: Json; content_hash: string; status: "draft" | "approved"; created_by: string; created_at: string; reviewed_by: string | null; reviewed_at: string | null };
+        Insert: never; Update: never; Relationships: [];
+      };
       organizations: {
         Row: {
           id: string;
@@ -3712,6 +3720,15 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      get_program_text_source_roster: { Args: Record<string, never>; Returns: Json };
+      replace_program_text_source_role: {
+        Args: { p_cohort: string; p_role: string; p_expected_revision: string; p_source_ids: string[]; p_evidence: Json; p_reviewer: string }; Returns: Json;
+      };
+      save_program_text_fact_review: { Args: { p_validation: Json; p_actor: string }; Returns: Json };
+      approve_program_text_fact_review: { Args: { p_id: string; p_expected_hash: string; p_actor: string }; Returns: Json };
+      publish_program_text_fact_batch: { Args: { p_expected_revision: string; p_review_ids: Json; p_actor: string }; Returns: Json };
+      get_program_text_fact_publication: { Args: Record<string, never>; Returns: Json };
+      get_program_text_fact_review_batch: { Args: Record<string, never>; Returns: Json };
       program_text_source_is_approved: {
         Args: { p_source_id: string };
         Returns: boolean;

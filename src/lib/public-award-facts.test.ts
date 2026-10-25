@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { publicAwardFactsFromAward, publicAwardMetaDescription } from "@/lib/public-award-facts";
 
+it("keeps a complete approved snapshot empty where the legacy summary has values", () => {
+  const facts = publicAwardFactsFromAward({ completeSnapshot: true, summary: "Old program overview. Deadline: January 1, 2020. Eligibility: Old applicants.",
+    publicFacts: { overview: "Current reviewed program.", deadline: null, eligibility: [], application_materials: [],
+      cycle_status: "2027 applications open", tenure: ["Two years"], selection: ["Interview"],
+      application_urls: ["https://example.org/apply"], not_published_fields: ["deadline"] } });
+  expect(facts.overview).toBe("Current reviewed program."); expect(facts.deadline).toBeNull(); expect(facts.eligibility).toEqual([]);
+  expect(facts.cycleStatus).toBe("2027 applications open"); expect(facts.tenure).toEqual(["Two years"]);
+  expect(facts.applicationUrls).toEqual(["https://example.org/apply"]); expect(facts.notPublishedFields).toEqual(["deadline"]);
+  expect(JSON.stringify(facts)).not.toContain("2020");
+});
+
 function factSource(source: Record<string, unknown>) {
   const pageMetadata = (source.page_metadata || {}) as Record<string, unknown>;
   const baselineFacts = pageMetadata.baseline_facts as Record<string, unknown> | undefined;
