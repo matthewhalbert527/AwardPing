@@ -972,11 +972,10 @@ function FactValueDisplay({
 function ApplicationDestination({ value }: { value: string }) {
   const match = /^(?:(.{1,200}): )?(https:\/\/\S+)$/.exec(value);
   if (!match) return <>{value}</>;
-  try {
-    const url = new URL(match[2]);
-    if (url.protocol !== "https:" || url.username || url.password) return <>{value}</>;
-    return <a href={url.href} target="_blank" rel="noopener noreferrer">{match[1] ? `${match[1]} — ` : ""}Official application <ExternalLink size={13} aria-hidden="true" /></a>;
-  } catch { return <>{value}</>; }
+  let url: URL | null = null;
+  try { url = new URL(match[2]); } catch { /* Invalid destinations remain text. */ }
+  if (!url || url.protocol !== "https:" || url.username || url.password) return <>{value}</>;
+  return <a href={url.href} target="_blank" rel="noopener noreferrer">{match[1] ? `${match[1]} — ` : ""}Official application <ExternalLink size={13} aria-hidden="true" /></a>;
 }
 
 function EmptyState({ text }: { text: string }) {
