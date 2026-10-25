@@ -71,10 +71,22 @@ states are preserved. A narrow known-content quality hold excludes them from
 collection/factual readiness, and new or restored complete HTML shells fail the
 capture contract. Explicitly incomplete evidence remains preservable; legitimate
 short announcements and PDFs are not rejected by a length threshold. The honest
-readiness count is17 awards, not the prior18 structural-only count. Ordinary
+readiness count first fell to17 awards, not the prior18 structural-only count. Ordinary
 rendered probes returned real SMART text but still reported unobserved live
 connections, so no configuration switch, completion claim or silent state reset
-is justified yet.
+is justified yet. A subsequent complete-source review found the twenty-page
+Knight-Hennessy sample application yielded only repeated page footers. Its exact
+retained text digest is held separately; original bytes and history remain intact.
+Fresh footer-only extraction is incomplete, not usable application evidence.
+The reviewed capture-readiness count is therefore16, separately from fact approval.
+
+Real draft saves exposed a long-page SQL timeout. The UTF16 helpers now use a
+native BMP fast path while preserving the exact existing astral-aware fallback,
+nulls and boundary rules. Actual PostgreSQL verification passed1350Unicode cases;
+all1970blocks and167support quotes across13real documents remained exact in a
+bounded read-only execution. Spending, timeouts, quotation and approval rules
+were not relaxed. The narrow three-page registration operation also passed an
+80-case rollback-only runtime rehearsal with deferred constraints exercised.
 
 Nine private proposals were prepared from complete saved source sets. Separate
 funding pages, controlling policies, current-cycle status and conflicting

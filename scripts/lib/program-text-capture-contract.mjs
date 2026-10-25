@@ -66,6 +66,14 @@ export function isKnownProgramTextHtmlShellReference(ref) {
     ref?.text_sha256 === knownHtmlShellSha256;
 }
 
+/** This verified twenty-page native extraction contains page footers only,
+ * not the sample application's fields. Keep the original privately; OCR or an
+ * equivalent official text source still needs independent completeness review. */
+export function isKnownProgramTextFooterOnlyPdfReference(ref) {
+  return ["pdf_text", "pdf_ocr"].includes(ref?.acquisition) && ref?.text_length === 648 &&
+    ref?.text_sha256 === "91fdc1dca7fa1478500430f80f57ecea04328cb891e2839fae24d3e4f503cd71";
+}
+
 /** Validate a complete observation, not source approval or a factual conclusion. */
 export function validateProgramTextCapture(capture, { source } = {}) {
   const allowed = new Set(["schema", "capture_profile", "capture_id", "source", "final_url", "captured_at", "acquisition",
@@ -109,6 +117,9 @@ export function validateProgramTextCapture(capture, { source } = {}) {
     ids.add(block.id); cursor = block.end_utf16;
   }
   if (capture.text.slice(cursor).trim()) fail("uncovered_text");
+  if (complete.status === "complete" && isKnownProgramTextFooterOnlyPdfReference({
+    acquisition: capture.acquisition, text_length: capture.text.length, text_sha256: capture.text_sha256,
+  })) fail("pdf_footer_only_text");
   if (capture.capture_id !== fingerprint(capture)) fail("capture_identity_mismatch");
   // Source-link attributes are useful evidence, but a URL cannot turn a page
   // containing only loading/skip controls into complete applicant information.
@@ -243,6 +254,7 @@ function pdfTextProjection(result, { ocr = false } = {}) {
     if (ocr && page.reading_order_verified !== true) reasons.push(`page_${page.num}_ocr_reading_order_unverified`);
     blocks.push(...pageBlocks(page.text, offset, page.num, ocr));
   }
+  if (isKnownProgramTextFooterOnlyPdfReference({ acquisition: ocr ? "pdf_ocr" : "pdf_text", text_length: text.length, text_sha256: hash(text) })) reasons.push("pdf_footer_only_text");
   return { text, blocks, completeness: { status: reasons.length ? "incomplete" : "complete", reasons: reasons.slice(0, 100) } };
 }
 

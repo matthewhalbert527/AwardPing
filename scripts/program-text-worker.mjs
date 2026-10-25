@@ -9,7 +9,7 @@ import { retainProgramTextCapture, uploadProgramTextCapture, loadProgramTextCapt
 import { createProgramTextRepository, programTextCandidateWork } from "./lib/program-text-repository.mjs";
 import { submitProgramTextBatch, pollProgramTextBatch } from "./lib/program-text-provider.mjs";
 import { findProgramTextBrowserExecutable } from "./lib/program-text-browser.mjs";
-import { isKnownProgramTextHtmlShellReference } from "./lib/program-text-capture-contract.mjs";
+import { isKnownProgramTextHtmlShellReference, isKnownProgramTextFooterOnlyPdfReference } from "./lib/program-text-capture-contract.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
@@ -79,7 +79,7 @@ export function programTextCoverage({ manifest, sources }, epoch, factReviews = 
             !Number.isFinite(Date.parse(state.last_checked_at)) || Date.parse(state.first_captured_at) >= Date.parse(state.last_checked_at)) return false;
         for (const ref of [state.baseline_ref, state.latest_ref]) {
           validateProgramTextReference(ref);
-          if (isKnownProgramTextHtmlShellReference(ref)) return false;
+          if (isKnownProgramTextHtmlShellReference(ref) || isKnownProgramTextFooterOnlyPdfReference(ref)) return false;
           if (ref.source.id !== source.id || ref.source.shared_award_id !== source.shared_award_id || ref.source.url !== source.url) return false;
         }
         return state.baseline_ref.capture_id === state.latest_ref.capture_id && state.baseline_ref.text_sha256 === state.latest_ref.text_sha256 &&

@@ -85,6 +85,20 @@ describe("required source inventory", () => {
 });
 
 describe("all-required-source collection coverage", () => {
+  it("does not count a preserved twenty-page footer-only PDF as usable program coverage", () => {
+    const value = completeSource();
+    for (const ref of [value.text_monitoring_state.baseline_ref, value.text_monitoring_state.latest_ref]) {
+      ref.acquisition = "pdf_text"; ref.text_length = 648;
+      ref.text_sha256 = "91fdc1dca7fa1478500430f80f57ecea04328cb891e2839fae24d3e4f503cd71";
+      ref.artifacts.text.sha256 = ref.text_sha256;
+      ref.artifacts.raw.object_key = ref.artifacts.raw.object_key.replace("original.html", "original.pdf");
+      ref.artifacts.raw.content_type = "application/pdf";
+    }
+    expect(programTextCoverage({ manifest: [role()], sources: [value] }, epoch)[0]).toMatchObject({
+      repeated_text_sources: 0, collection_complete: false, factual_review_complete: false,
+    });
+    expect(value.text_monitoring_state.successful_checks).toBe(2);
+  });
   it("does not count preserved loading-only originals as complete program coverage", () => {
     const value = completeSource();
     for (const ref of [value.text_monitoring_state.baseline_ref, value.text_monitoring_state.latest_ref]) {
