@@ -85,6 +85,20 @@ describe("required source inventory", () => {
 });
 
 describe("all-required-source collection coverage", () => {
+  it("does not count preserved loading-only originals as complete program coverage", () => {
+    const value = completeSource();
+    for (const ref of [value.text_monitoring_state.baseline_ref, value.text_monitoring_state.latest_ref]) {
+      ref.text_length = 76;
+      ref.text_sha256 = "0690da223815dc8171e2ec5e6699cf455373bb41644063cd276de152a1ac197c";
+      ref.artifacts.text.sha256 = ref.text_sha256;
+    }
+    expect(programTextCoverage({ manifest: [role()], sources: [value] }, epoch)[0]).toMatchObject({
+      repeated_text_sources: 0, collection_complete: false, factual_review_complete: false,
+    });
+    // Identity/history references remain intact; a quality hold is not a reset.
+    expect(value.text_monitoring_state.successful_checks).toBe(2);
+    expect(value.text_monitoring_state.status).toBe("baseline_ready");
+  });
   it("counts repeated collection separately from facts approval", () => {
     const result = programTextCoverage({ manifest: [role(), role({ source_role: "application" })], sources: [completeSource()] }, epoch);
     expect(result).toEqual([{ cohort: "example", required_sources: 1, repeated_text_sources: 1, collection_complete: true, factual_review_complete: false }]);

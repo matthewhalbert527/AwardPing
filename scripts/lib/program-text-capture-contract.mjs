@@ -9,6 +9,11 @@ export const programTextCaptureLimits = Object.freeze({ htmlBytes: 5 * 1024 * 10
   pdfBytes: 20 * 1024 * 1024, textCharacters: 1_000_000, textBytes: 8 * 1024 * 1024,
   blocks: 20_000, pages: 1000, processTimeoutMs: 90_000 });
 const hash = value => createHash("sha256").update(value).digest("hex");
+// Independently restored originals for six SMART identities contained exactly
+// this SPA shell. Keep their historical references readable, but never count
+// them as collected program content or reset their saved baseline implicitly.
+const knownHtmlShellText = "Loading... Skip to page contentSkip to chat Skip to page contentSkip to chat";
+const knownHtmlShellSha256 = hash(knownHtmlShellText);
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value) && !/^0{8}(?:-0{4}){3}-0{12}$/.test(value);
 const modes = new Set(["http_html", "rendered_html", "pdf_text", "pdf_ocr"]);
 const fail = (reason, details = {}) => { throw Object.assign(new Error(`Program text capture: ${reason}`), details, { code: `program_text_${reason}` }); };
@@ -41,6 +46,25 @@ function fingerprint(capture) {
 }
 function scalarText(value, max = 10_000) { return typeof value === "string" && value.length <= max; }
 function splitSurrogate(text, index) { return index > 0 && index < text.length && /[\uD800-\uDBFF]/.test(text[index - 1]) && /[\uDC00-\uDFFF]/.test(text[index]); }
+
+/** A narrow content-quality check, not a minimum length or a facts classifier.
+ * Every word must be a recognizable loading/skip-navigation placeholder. Any
+ * other prose remains available for review, even a very short announcement. */
+export function isProgramTextHtmlShell(text) {
+  if (typeof text !== "string" || !text.trim()) return false;
+  const normalized = text.normalize("NFKC").replace(/[\u200B-\u200D\u2060\uFEFF]/g, "").toLowerCase();
+  let markers = 0;
+  const remainder = normalized.replace(/loading(?:\s+(?:page|content|data))?|please\s+wait|skip\s+to\s+(?:(?:page|main)\s+content|content|chat|navigation)/g,
+    () => { markers++; return ""; });
+  return markers > 0 && /^[\s.!\u2026|\u00B7:;()[\]{}\-\u2013\u2014]*$/.test(remainder);
+}
+
+/** Quality hold for one historically verified shell digest only. This is not
+ * reference validation: old state/evidence must remain readable and preserved. */
+export function isKnownProgramTextHtmlShellReference(ref) {
+  return ["http_html", "rendered_html"].includes(ref?.acquisition) && ref?.text_length === knownHtmlShellText.length &&
+    ref?.text_sha256 === knownHtmlShellSha256;
+}
 
 /** Validate a complete observation, not source approval or a factual conclusion. */
 export function validateProgramTextCapture(capture, { source } = {}) {
@@ -86,6 +110,10 @@ export function validateProgramTextCapture(capture, { source } = {}) {
   }
   if (capture.text.slice(cursor).trim()) fail("uncovered_text");
   if (capture.capture_id !== fingerprint(capture)) fail("capture_identity_mismatch");
+  // Source-link attributes are useful evidence, but a URL cannot turn a page
+  // containing only loading/skip controls into complete applicant information.
+  if (!isPdf && complete.status === "complete" &&
+      isProgramTextHtmlShell(capture.blocks.filter(block => block.kind !== "source_link").map(block => block.text).join("\n"))) fail("html_application_shell_only");
   return capture;
 }
 
@@ -199,6 +227,7 @@ function checkFinalUrl(source, finalUrl, allowedFinalUrls) {
 function htmlCompleteness(document, record = null) {
   const reasons = [];
   if (document.text.trim().length < 40) reasons.push("insufficient_body_text");
+  if (isProgramTextHtmlShell(document.text)) reasons.push("html_application_shell_only");
   if (record?.telemetry?.blocked_websockets > 0) reasons.push("rendered_live_content_not_observed");
   return { status: reasons.length ? "incomplete" : "complete", reasons };
 }

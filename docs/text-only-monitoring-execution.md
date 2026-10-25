@@ -48,6 +48,41 @@ Legacy image-retry and discovered-PDF submission endpoints are retired with no-s
 
 Collection completeness and current-fact acceptance are separate. Fresh text captures do not automatically replace previously reviewed public award facts or create initial-coverage alerts. Preserved visual review history is not retried by the new daily lanes.
 
+## Current-detail review follow-up — October 25
+
+The separate text-only source roster is seeded from the exact previously reviewed
+source identities, without modifying legacy screenshot-dependent approvals. Role
+replacements use an audited, owner/URL-bound revision compare-and-swap. New pages
+must receive their own silent coverage and repeat observation; an old page's facts
+or baseline are never transferred to a replacement URL.
+
+The private `/dashboard/admin/program-facts` screen presents all25 awards with
+separate versioned drafts, source links, unresolved fields and individual approval
+results. Before saving or approving, every complete source original is restored
+and checked against immutable hashes and exact UTF16 supporting passages. Current
+cycle/track conflicts remain unresolved. Preparing or saving a draft does not
+approve it, publish facts, send notifications or call an AI provider. The initial
+public fact release requires an atomic exact25-award approval map. All public
+surfaces consume that shared approved snapshot, not a newer unapproved capture.
+
+Cold restoration exposed six SMART observations containing only an identical
+76-character loading/navigation shell. Their historical references and source
+states are preserved. A narrow known-content quality hold excludes them from
+collection/factual readiness, and new or restored complete HTML shells fail the
+capture contract. Explicitly incomplete evidence remains preservable; legitimate
+short announcements and PDFs are not rejected by a length threshold. The honest
+readiness count is17 awards, not the prior18 structural-only count. Ordinary
+rendered probes returned real SMART text but still reported unobserved live
+connections, so no configuration switch, completion claim or silent state reset
+is justified yet.
+
+Nine private proposals were prepared from complete saved source sets. Separate
+funding pages, controlling policies, current-cycle status and conflicting
+instructions remain explicit blockers where appropriate. No saved proposal is
+an approval or completion claim. Continue authenticated staging verification,
+the matching worker installation, exact-artifact promotion and a normal scheduled
+cycle before calling the release complete. Codex recurring follow-ups stay off.
+
 ## Contracts
 
 Capture schema: `awardping.program-text-capture.v1`; profile `program-text-capture-v1`; acquisition `http_html|rendered_html|pdf_text|pdf_ocr`. Exact text block offsets are UTF16 with an exclusive end. Raw artifact hashes are SHA256 over the actual bytes. No image/layout artifact slots.

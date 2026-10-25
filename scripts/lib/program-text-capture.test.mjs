@@ -231,7 +231,7 @@ describe("explicit capture adapters", () => {
     const capture = await captureProgramTextSource({ source, acquisition: "rendered_html", adapters: { renderedHtml: async () => ({
       capture_profile: "scrapling-visible-v1", final_url: source.url, captured_at: "2026-10-23T01:00:00.000Z", status_code: 200,
       html: html.toString(), content_type: "text/html", telemetry: { blocked_websockets: 1 } }), htmlExtraction: async () => document("Loading") } });
-    expect(capture.completeness).toEqual({ status: "incomplete", reasons: ["insufficient_body_text", "rendered_live_content_not_observed"] });
+    expect(capture.completeness).toEqual({ status: "incomplete", reasons: ["insufficient_body_text", "html_application_shell_only", "rendered_live_content_not_observed"] });
   });
   it("rejects a screenshot-bearing response even with text attached", async () => {
     await expect(captureProgramTextSource({ source, acquisition: "rendered_html", adapters: { renderedHtml: async () => ({ capture_profile: "scrapling-evidence-v2", screenshot: {} }) } })).rejects.toThrow("invalid_rendered_adapter");
