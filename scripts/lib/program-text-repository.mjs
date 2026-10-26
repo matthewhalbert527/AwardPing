@@ -1,5 +1,6 @@
 import { buildProgramTextComparison, buildProgramTextReviewPackets } from "./program-text-review.mjs";
 import { programTextReference } from "./program-text-storage.mjs";
+import { programTextDeterministicNoChange, validatedProgramTextDeterministicProvenance, PROGRAM_TEXT_UNPAID_NULL_FIELDS } from "./program-text-deterministic-no-change.mjs";
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value !== null && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -101,14 +102,27 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
       if (rows?.length !== 1) throw new Error("Text review claim lost");
       return true;
     },
-    async recordReviewResult({ candidate, validation, responses }) {
-      const rows = await result(supabase.from(table).update({ status: validation.status === "held" ? "failed" : "succeeded",
-        ai_result: { responses: responses || [], program_text_validation: validation }, completed_at: iso(), updated_at: iso(),
+    async recordReviewResult({ candidate, validation, responses, deterministicCandidate, deterministicProvenance }) {
+      const local = deterministicCandidate ? programTextDeterministicNoChange(deterministicCandidate) : null;
+      if (deterministicCandidate && (!local || !programTextEqual(programTextCandidateWork(deterministicCandidate), candidate) ||
+          !programTextEqual(local.validation, validation) || !programTextEqual(local.responses, responses))) throw new Error("Invalid deterministic no-change proof");
+      const provenance = local?.provenance || (deterministicProvenance && validatedProgramTextDeterministicProvenance(candidate, validation, responses, deterministicProvenance));
+      if (deterministicProvenance && !provenance) throw new Error("Invalid stored deterministic provenance");
+      let query = supabase.from(table).update({ status: validation.status === "held" ? "failed" : "succeeded",
+        ai_result: { responses: responses || [], program_text_validation: validation,
+          ...(provenance ? { program_text_review_provenance: provenance } : {}) }, completed_at: iso(), updated_at: iso(),
         rejection_reason: validation.status === "held" ? `manual_review_required:${validation.reasons?.[0] || "text_review"}` : null })
         .eq("id", candidate.id).eq("candidate_scope", "program_text_change")
         .eq("candidate_signature", candidate.comparison.comparison_id).eq("shared_award_source_id", candidate.source.id)
-        .eq("shared_award_id", candidate.source.shared_award_id).eq("worker_metadata->>epoch", candidate.epoch)
-        .in("status", ["pending", "submitted", "succeeded"]).select("id"), "persist validation");
+        .eq("shared_award_id", candidate.source.shared_award_id).eq("worker_metadata->>epoch", candidate.epoch);
+      if (local) {
+        // Full metadata/time CAS prevents overwriting a concurrent paid claim,
+        // reservation or deferral between cold verification and persistence.
+        query = query.eq("status", "pending").eq("updated_at", deterministicCandidate.updated_at)
+          .eq("worker_metadata", JSON.stringify(deterministicCandidate.worker_metadata)).eq("actual_usage", "{}");
+        for (const field of PROGRAM_TEXT_UNPAID_NULL_FIELDS) query = query.is(field, null);
+      } else query = query.in("status", ["pending", "submitted", "succeeded"]);
+      const rows = await result(query.select("id"), "persist validation");
       return { persisted: rows?.length === 1 };
     },
     async finishNoChange(candidateId) {

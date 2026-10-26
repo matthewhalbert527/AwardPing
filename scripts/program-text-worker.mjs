@@ -10,6 +10,7 @@ import { createProgramTextRepository, programTextCandidateWork } from "./lib/pro
 import { submitProgramTextBatch, pollProgramTextBatch } from "./lib/program-text-provider.mjs";
 import { findProgramTextBrowserExecutable } from "./lib/program-text-browser.mjs";
 import { isKnownProgramTextHtmlShellReference, isKnownProgramTextFooterOnlyPdfReference } from "./lib/program-text-capture-contract.mjs";
+import { programTextDeterministicNoChange } from "./lib/program-text-deterministic-no-change.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
@@ -100,26 +101,30 @@ export function programTextCoverage({ manifest, sources }, epoch, factReviews = 
   });
 }
 
-async function review(repository, options, callbacks, limit, scope) {
+export async function review(repository, options, callbacks, limit, scope) {
   const queued = await repository.listCandidates(["pending", "submitted", "succeeded"], limit, scope);
   const report = [];
   for (const row of queued) {
     try {
       await repository.verifyCandidate(row);
+      const local = programTextDeterministicNoChange(row);
       let outcome;
-      if (row.status === "pending" && row.prompt_payload.packet_plan.packets.length) {
+      if (!local && row.status === "pending" && row.prompt_payload.packet_plan.packets.length) {
         outcome = await submitProgramTextBatch(row, { ...options, claim: repository.claim, save: repository.save, verify: repository.verifyCandidate });
       } else {
-        const completed = row.status === "submitted" ? await pollProgramTextBatch(row, options)
+        const completed = local || (row.status === "submitted" ? await pollProgramTextBatch(row, options)
           : row.status === "succeeded" ? { status: "ready", responses: row.ai_result?.responses || [] }
-            : { status: "ready", responses: [] };
+            : { status: "ready", responses: [] });
         if (completed.status === "held") {
           await repository.save(row, row.worker_metadata.program_text_claim_token, { status: "failed", rejection_reason: `manual_review_required:${completed.reason}` });
           outcome = completed;
         } else if (completed.status === "ready") {
           outcome = await finalizeProgramTextReview({ source: row.new_snapshot_ref.source, epoch: row.worker_metadata.epoch,
             candidate: programTextCandidateWork(row), responses: completed.responses, callbacks: { ...callbacks,
-              recordReviewResult: args => repository.recordReviewResult({ ...args, responses: completed.responses }) } });
+              recordReviewResult: args => repository.recordReviewResult({ ...args, responses: completed.responses,
+                ...(local ? { deterministicCandidate: row } : row.status === "succeeded" &&
+                  row.ai_result?.program_text_review_provenance?.schema === "awardping.deterministic-program-text-no-change.v1"
+                  ? { deterministicProvenance: row.ai_result.program_text_review_provenance } : {}) }) } });
           if (outcome.status === "no_program_change") await repository.finishNoChange(row.id);
         } else outcome = completed;
       }

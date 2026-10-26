@@ -74,16 +74,24 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
         } finally { [IO.File]::WriteAllBytes($target, $original) }
         $cases += [pscustomobject]@{ relative=$relative; target=$target; changed=$changed }
       }
-      [pscustomobject]@{ files=$files; positive=$positive; cases=$cases } | ConvertTo-Json -Depth 5
+      $decisionTarget = ${quote(join(app, "scripts/lib/program-text-deterministic-no-change.mjs"))}
+      $decisionBytes = [IO.File]::ReadAllBytes($decisionTarget)
+      try {
+        [IO.File]::Delete($decisionTarget)
+        $missingDecision = @(Get-AwardPingInstalledRuntimeProblems -InstallRoot ${quote(join(path, "worker"))} -AppDir ${quote(app)} -AppSourceRoot ${quote(source)} -TaskSnapshots @() -RequireManagedRuntime $true)
+      } finally { [IO.File]::WriteAllBytes($decisionTarget, $decisionBytes) }
+      [pscustomobject]@{ files=$files; positive=$positive; cases=$cases; decisionTarget=$decisionTarget; missingDecision=$missingDecision } | ConvertTo-Json -Depth 5
     `);
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(result.stdout);
-    expect(value.files).toHaveLength(14);
+    expect(value.files).toHaveLength(15);
     expect(value.files).toContain("config\\program-text-monitoring.json");
     expect(value.files).toContain("scripts\\program-text-worker.mjs");
     expect(value.files).toContain("scripts\\program-text-ocr-windows.ps1");
+    expect(value.files).toContain("scripts\\lib\\program-text-deterministic-no-change.mjs");
     expect(value.files).toContain("scripts\\lib\\gemini-worker-policy.mjs");
     expect(value.files).toContain("scripts\\lib\\lane-failure-receipt.mjs");
+    expect(value.missingDecision).toContain(`missing action/runtime path: ${value.decisionTarget}`);
     for (const row of value.cases) {
       expect(value.positive.some(problem => problem.includes(row.target))).toBe(false);
       expect(row.changed).toContain(`installed runtime hash mismatch: ${row.target}`);

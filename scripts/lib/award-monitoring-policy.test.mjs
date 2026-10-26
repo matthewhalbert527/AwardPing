@@ -65,6 +65,9 @@ describe("worker award monitoring policy", () => {
     expect(workerMonitoringPolicy.promotion_matcher.sources).toEqual(
       monitoringPromotionMatcherBundleSources,
     );
+    expect(monitoringPromotionMatcherBundleSources).toEqual(expect.arrayContaining([
+      "scripts/lib/program-text-deterministic-no-change.mjs", "scripts/lib/program-text-repository.mjs", "scripts/program-text-worker.mjs",
+    ]));
     expect(workerRuleDefinition("donation_prompt")).toEqual(
       appRuleDefinition("donation_prompt"),
     );

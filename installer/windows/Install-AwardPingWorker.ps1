@@ -1270,6 +1270,7 @@ function Get-AwardPingProgramTextRuntimeRelativePaths {
     "scripts\lib\program-text-pdf-worker.mjs",
     "scripts\lib\program-text-storage.mjs",
     "scripts\lib\program-text-review.mjs",
+    "scripts\lib\program-text-deterministic-no-change.mjs",
     "scripts\lib\program-text-monitor.mjs",
     "scripts\lib\program-text-repository.mjs",
     "scripts\lib\program-text-provider.mjs",

@@ -17,13 +17,16 @@
       "scripts/lib/visual-nightly-run-contract.mjs",
       "scripts/lib/visual-source-inventory-proof.mjs",
       "scripts/process-monitoring-feedback-promotions.mjs",
+      "scripts/lib/program-text-deterministic-no-change.mjs",
+      "scripts/lib/program-text-repository.mjs",
+      "scripts/program-text-worker.mjs",
       "src/lib/change-event-suppression.ts",
       "src/lib/award-monitoring-policy.ts",
       "src/lib/source-quality.ts",
       "src/lib/source-ai-review-status.ts",
       "src/lib/source-url-policy.ts"
     ],
-    "hash": "70745343efab108399ffa9aeb29750e78a10a7ea245104eaf58958a656069448"
+    "hash": "02495e7dc7fac354365c6aa0092ef9ef93c1f7bbc8a8ee0f7d7ec6d922be78b0"
   },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",
