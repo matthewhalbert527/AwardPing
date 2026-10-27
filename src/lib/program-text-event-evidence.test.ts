@@ -63,6 +63,17 @@ describe("explicit text-backed publication evidence", () => {
     expect(isPublicChangeEvent(f)).toBe(true);
   });
 
+  it("admits an independently approved text source without opening its legacy intake status", () => {
+    const f = fixture(); f.source.admin_review_status = "review_later";
+    expect(isPublicChangeEvent(f)).toBe(false);
+    f.publication.textFactReview = { id: "approved", reviewedAt: "2026-10-11T12:05:00Z", current: true, releaseRevision: "release",
+      variationInventoryId: "approved-inventory", variationInventoryRevision: "inventory-revision" };
+    f.publication.approvedTextSourceBindings = { [sourceId]: { url: source.url, shared_award_id: awardId } };
+    expect(isPublicChangeEvent(f)).toBe(true);
+    expect(f.source.admin_review_status).toBe("review_later");
+    f.publication.allowedSourceIdSet.clear(); expect(isPublicChangeEvent(f)).toBe(false);
+  });
+
   it("accepts newly reviewed text without promoting missing legacy metadata to fact authority", () => {
     const f = fixture(), unreviewed = { ...f.source, page_metadata: null, page_metadata_generated_at: null, page_metadata_model: null };
     expect(isPublicAwardSource(unreviewed)).toBe(false);

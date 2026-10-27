@@ -3,6 +3,16 @@
   "epoch": "ec349339-ff62-4d2e-a610-8c361b4044ec",
   "enabled": true,
   "sources": {
+    "e5acfcc4-3469-4fc8-99f1-ee14e8dbbda1": {
+      "source_url": "https://www.noaa.gov/office-education/hollings-scholarship/prospective/faq",
+      "shared_award_id": "a9b42e3f-6d7e-4b0d-8132-77c2042b311d",
+      "acquisition": "rendered_html"
+    },
+    "1cfc6e13-6e13-4917-81c2-a8dc4c0292fb": {
+      "source_url": "https://www.noaa.gov/office-education/undergraduate-scholarships",
+      "shared_award_id": "a9b42e3f-6d7e-4b0d-8132-77c2042b311d",
+      "acquisition": "rendered_html"
+    },
     "e179694a-c623-4534-91d6-ef90fa0b0e38": {
       "source_url": "https://www.noaa.gov/office-education/hollings-scholarship",
       "shared_award_id": "a9b42e3f-6d7e-4b0d-8132-77c2042b311d",

@@ -6,6 +6,7 @@ import type { ProgramFactBatchItem, ProgramFactPublication } from "@/lib/program
 import { emptyProgramFactReview, validateProgramFactReview } from "../../scripts/lib/program-text-facts.mjs";
 import { loadProgramTextCapture } from "../../scripts/lib/program-text-artifacts.mjs";
 import monitoring from "../../config/program-text-monitoring.json";
+import { attachProgramTextSourceApprovals } from "../../scripts/lib/program-text-source-access.mjs";
 
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -34,7 +35,7 @@ async function contextFor(cohort: string) {
   const sources = await db.from("shared_award_sources").select("id,shared_award_id,url,title,page_type,admin_review_status,text_monitoring_state").in("id", ids).limit(501);
   if (sources.error || sources.data?.length !== ids.length) throw new Error("Required source identities are unavailable.");
   const client = createR2Client(), bucket = getR2Bucket();
-  return { registry: registry.data, roles: roles.data, sources: sources.data, memberIds: members.data.map(row => row.shared_award_id), epoch: monitoring.epoch,
+  return { registry: registry.data, roles: roles.data, sources: await attachProgramTextSourceApprovals(db, sources.data, { epoch: monitoring.epoch }), memberIds: members.data.map(row => row.shared_award_id), epoch: monitoring.epoch,
     loadCapture: (ref: Parameters<typeof loadProgramTextCapture>[0]) => loadProgramTextCapture(ref, { client, bucket }) };
 }
 

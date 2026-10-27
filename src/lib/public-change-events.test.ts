@@ -72,6 +72,19 @@ describe("loadEligiblePublicChangeEvents", () => {
     expect(mocks.isPublicChangeEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps exact source admission while avoiding an oversized variation-inventory GET filter", async () => {
+    const index = publicationIndex(), entry = index.entryByMemberAwardId.get(memberAwardId)!;
+    entry.allowedSourceIds = [allowedSourceId, ...Array.from({ length: 120 }, (_, offset) => `40000000-0000-4000-8000-${String(offset).padStart(12, "0")}`)];
+    entry.allowedSourceIdSet = new Set(entry.allowedSourceIds);
+    entry.textFactReview = { id: "approved", reviewedAt: "2026-10-26T12:00:00Z", current: true, releaseRevision: "release", variationInventoryId: "inventory" };
+    const wrong = eventRow("2026-07-16T18:00:00.000Z", 4, invalidSourceId), valid = eventRow("2026-07-16T17:00:00.000Z", 3, allowedSourceId);
+    const admin = fakeAdmin([[wrong, valid]], [sourceRow()]);
+    const result = await loadEligiblePublicChangeEvents({ admin: admin.client, publicationIndex: index, limit: 1, pageSize: 2 });
+    expect(result.map(item => item.event.id)).toEqual([valid.id]);
+    expect(admin.changeInFilters.some(filter => filter.column === "shared_award_source_id")).toBe(false);
+    expect(mocks.isPublicChangeEvent).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed when the scan cap is crossed before enough eligible rows exist", async () => {
     const firstPage = [
       eventRow("2026-07-16T18:00:00.000Z", 4, invalidSourceId),

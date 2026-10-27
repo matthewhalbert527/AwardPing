@@ -11,6 +11,7 @@ import { submitProgramTextBatch, pollProgramTextBatch } from "./lib/program-text
 import { findProgramTextBrowserExecutable } from "./lib/program-text-browser.mjs";
 import { isKnownProgramTextHtmlShellReference, isKnownProgramTextFooterOnlyPdfReference } from "./lib/program-text-capture-contract.mjs";
 import { programTextDeterministicNoChange } from "./lib/program-text-deterministic-no-change.mjs";
+import { hasProgramTextSourceAccess } from "./lib/program-text-source-access.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
@@ -42,39 +43,88 @@ function loadEnvironment(path) {
   if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) throw new Error("Worker service credentials are not configured");
   return env;
 }
-async function rows(query) {
-  const { data, error } = await query;
-  if (error) throw new Error(`Text worker database request failed (${error.code || "database"})`);
-  return data || [];
-}
+const rosterSchema = "awardping.program-text-worker-roster-page.v1", rosterPageSize = 100;
+const rosterKey = (kind, row) => kind === "roles" ? [row.cohort_key, row.scope_key, row.source_role] : row.id;
+const compareKeys = (a, b) => {
+  const left = Array.isArray(a) ? a : [a], right = Array.isArray(b) ? b : [b];
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return left[i] < right[i] ? -1 : 1;
+  return 0;
+};
+const validRosterKey = (kind, key) => kind === "roles" ? Array.isArray(key) && key.length === 3 &&
+  key.every((part, index) => typeof part === "string" && /^[a-z0-9_-]+$/.test(part) && part.length <= (index === 1 ? 200 : 80)) : uuid(key);
 
-/** Uses approved required source identities; never discovers or approves pages. */
-export async function loadProgramTextSources(supabase) {
-  const manifest = await rows(supabase.from("program_text_source_roster").select("cohort_key,source_role,source_ids,manifest_status,evidence,revision").order("cohort_key").limit(1000));
-  if (!manifest.length || manifest.length === 1000) throw new Error("Required source roster is missing or incomplete");
-  const requiredIds = [...new Set(manifest.flatMap(role => role.source_ids || []))];
-  if (!requiredIds.length || requiredIds.length > 500 || !requiredIds.every(uuid)) throw new Error("Required source roster is out of bounds");
-  const sources = await rows(supabase.from("shared_award_sources").select("id,shared_award_id,url,title,page_type,admin_review_status,text_monitoring_state")
-    .in("id", requiredIds).order("id").limit(1000));
+/** Bound every page to one identity seal; mutable capture state is independently CAS-checked by monitoring. */
+export async function loadProgramTextSources(supabase, { epoch } = {}) {
+  let identity;
+  async function page(kind, after = null) {
+    const { data, error } = await supabase.rpc("get_program_text_worker_roster_page", {
+      p_kind: kind, p_after: after, p_expected_roster_seal: identity?.roster_seal || null, p_limit: rosterPageSize,
+    });
+    if (error) throw new Error(`Text worker database request failed (${error.code || "database"})`);
+    if (!data || data.schema !== rosterSchema || !/^[a-f0-9]{64}$/.test(data.roster_seal || "") ||
+        ![data.role_count, data.source_count, data.cohort_count].every(value => Number.isSafeInteger(value) && value > 0) ||
+        !Array.isArray(data.entries) || data.entries.length > rosterPageSize || !Object.hasOwn(data, "next_cursor")) {
+      throw new Error("Required source roster is missing or incomplete");
+    }
+    const current = { roster_seal: data.roster_seal, role_count: data.role_count, source_count: data.source_count, cohort_count: data.cohort_count };
+    if (identity && Object.keys(identity).some(key => current[key] !== identity[key])) throw new Error("Required source roster changed during enumeration");
+    identity ||= current;
+    return data;
+  }
+  async function all(kind) {
+    const entries = []; let after = null;
+    while (true) {
+      const result = await page(kind, after), count = kind === "roles" ? identity.role_count : identity.source_count;
+      for (const row of result.entries) {
+        const key = rosterKey(kind, row);
+        if (!validRosterKey(kind, key) || after !== null && compareKeys(key, after) <= 0) throw new Error("Required source roster has duplicate or unordered identities");
+        entries.push(row); after = key;
+      }
+      if (entries.length > count || result.next_cursor !== null &&
+          (result.entries.length !== rosterPageSize || !validRosterKey(kind, result.next_cursor) || compareKeys(result.next_cursor, after) !== 0)) {
+        throw new Error("Required source roster page is incomplete");
+      }
+      if (result.next_cursor === null) {
+        if (entries.length !== count) throw new Error("Required source identities are incomplete");
+        return entries;
+      }
+      if (entries.length === count) throw new Error("Required source roster cursor exceeds its count");
+    }
+  }
+  const manifest = await all("roles"), sources = await all("sources");
+  const checked = await page("check");
+  if (checked.entries.length || checked.next_cursor !== null) throw new Error("Required source roster final check is invalid");
+  const rolesById = new Map();
+  for (const role of manifest) {
+    if (!Array.isArray(role.source_ids) || role.source_ids.length < 1 || role.source_ids.length > 50 ||
+        !role.source_ids.every(uuid) || new Set(role.source_ids).size !== role.source_ids.length) throw new Error("Required source roster role is invalid");
+    for (const id of role.source_ids) {
+      if (!rolesById.has(id)) rolesById.set(id, []);
+      rolesById.get(id).push(role);
+    }
+  }
+  if (rolesById.size !== identity.source_count || new Set(manifest.map(role => role.cohort_key)).size !== identity.cohort_count ||
+      sources.some(source => !rolesById.has(source.id) || !uuid(source.shared_award_id) || typeof source.url !== "string")) {
+    throw new Error("Required source identities are incomplete");
+  }
   const map = new Map(sources.map(source => [source.id, source]));
-  if (sources.length !== requiredIds.length) throw new Error("Required source identities are incomplete");
-  return { manifest, sources: sources.map(source => ({ ...source,
-    cohorts: [...new Set(manifest.filter(role => role.source_ids?.includes(source.id)).map(role => role.cohort_key))],
-    manifest_bound: manifest.filter(role => role.source_ids?.includes(source.id)).every(role => role.manifest_status === "reviewed_text" &&
+  return { manifest, roster_seal: identity.roster_seal, sources: sources.map(source => ({ ...source,
+    cohorts: [...new Set(rolesById.get(source.id).map(role => role.cohort_key))],
+    manifest_bound: rolesById.get(source.id).every(role => hasProgramTextSourceAccess(source, { cohort: role.cohort_key, epoch }) && role.manifest_status === "reviewed_text" &&
       uuid(role.revision) && role.evidence?.schema === "awardping.program-text-source-role.v1" &&
       role.evidence?.source_bindings?.[source.id]?.source_url === source.url &&
       role.evidence?.source_bindings?.[source.id]?.shared_award_id === source.shared_award_id),
   })), map };
 }
 
-export function programTextCoverage({ manifest, sources }, epoch, factReviews = []) {
+export function programTextCoverage({ manifest, sources }, epoch, factReviews = [], variationReviews = []) {
   const byId = new Map(sources.map(source => [source.id, source]));
   return [...new Set(manifest.map(role => role.cohort_key))].map(cohort => {
     const roles = manifest.filter(role => role.cohort_key === cohort), ids = [...new Set(roles.flatMap(role => role.source_ids || []))];
     const complete = ids.filter(id => {
       const source = byId.get(id), state = source?.text_monitoring_state;
       try {
-        if (source?.admin_review_status !== "open" || !source.manifest_bound || state?.schema !== "awardping.program-text-state.v1" ||
+        if (!hasProgramTextSourceAccess(source, { cohort, epoch }) || !source.manifest_bound || state?.schema !== "awardping.program-text-state.v1" ||
             state.epoch !== epoch || state.status !== "baseline_ready" || !Number.isInteger(state.successful_checks) || state.successful_checks < 2 ||
             state.successful_checks > 2147483647 || !Number.isFinite(Date.parse(state.first_captured_at)) ||
             !Number.isFinite(Date.parse(state.last_checked_at)) || Date.parse(state.first_captured_at) >= Date.parse(state.last_checked_at)) return false;
@@ -92,11 +142,23 @@ export function programTextCoverage({ manifest, sources }, epoch, factReviews = 
     const approved = factReviews.filter(row => row.cohort_key === cohort);
     const receipt = approved.length === 1 ? approved[0] : null;
     const reviewedIds = receipt?.sources?.map(source => source.id);
+    const variationRows = variationReviews.filter(row => row.cohort_key === cohort), variation = variationRows.length === 1 ? variationRows[0] : null;
+    const variationMode = variationRows.length > 1 || variation?.inventory_sealed === true || variation?.draft_inventory_id != null;
+    const variationIds = variation?.approved_source_ids;
+    const variantCount = variation?.expected_variants;
+    const variationComplete = variation?.inventory_sealed === true && uuid(variation.approval_id) && variation.current === true &&
+      variation.draft_inventory_id === null && Array.isArray(variation.blockers) && !variation.blockers.length &&
+      Number.isSafeInteger(variantCount) && variantCount >= 0 && Number.isSafeInteger(variation.scope_total) && variation.scope_total > 0 &&
+      [variation.total_variants, variation.reviewed_variants, variation.ready_variants, variation.approved_variants, variation.current_approved_variants].every(value => value === variantCount) &&
+      Array.isArray(variationIds) && variationIds.every(uuid) && variationIds.length === ids.length && variation.source_count === ids.length &&
+      new Set(variationIds).size === ids.length && ids.every(id => variationIds.includes(id));
     return { cohort, required_sources: ids.length, repeated_text_sources: complete.length,
       collection_complete: collectionComplete,
-      factual_review_complete: collectionComplete && receipt?.review?.status === "approved" && receipt.review.current === true &&
+      inventory_sealed: variation?.inventory_sealed === true, variation_scope_total: variation?.scope_total || 0,
+      total_variants: variantCount || 0, reviewed_variants: variation?.reviewed_variants || 0,
+      factual_review_complete: collectionComplete && (variationMode ? variationComplete : receipt?.review?.status === "approved" && receipt.review.current === true &&
         uuid(receipt.review.id) && Array.isArray(reviewedIds) && reviewedIds.length === ids.length &&
-        new Set(reviewedIds).size === ids.length && ids.every(id => reviewedIds.includes(id)),
+        new Set(reviewedIds).size === ids.length && ids.every(id => reviewedIds.includes(id))),
     };
   });
 }
@@ -142,9 +204,14 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
   const supabase = createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
   let client;
   try {
-    const roster = await loadProgramTextSources(supabase);
+    const roster = await loadProgramTextSources(supabase, { epoch: config.epoch });
     const factBatch = await supabase.rpc("get_program_text_fact_review_batch");
     if (factBatch.error || !Array.isArray(factBatch.data) || factBatch.data.length > 25) throw new Error("Current factual approvals are unavailable");
+    const variationBatch = await supabase.rpc("get_program_variation_admin_batch");
+    if (variationBatch.error || variationBatch.data?.schema !== "awardping.program-variation-admin-batch.v1" ||
+        !Array.isArray(variationBatch.data.awards) || variationBatch.data.awards.length !== 25 ||
+        variationBatch.data.awards.some(row => !/^[a-z0-9_-]{1,80}$/.test(row?.cohort_key || "")) ||
+        new Set(variationBatch.data.awards.map(row => row.cohort_key)).size !== 25) throw new Error("Current variation approval coverage is unavailable");
     const scopedSources = roster.sources.filter((source, index) => index % args.shardCount === args.shardIndex &&
       (!args["source-id"] || source.id === args["source-id"]) && (!args.cohort || source.cohorts.includes(args.cohort)));
     // Review --limit caps candidates below, not the source roster they may come
@@ -152,7 +219,7 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     const selected = args.mode === "review" ? scopedSources : scopedSources.slice(0, args.limit);
     if (args["source-id"] && selected.length !== 1) throw new Error("The requested source is not in this shard's required roster");
     const report = { schema: "awardping.program-text-run.v1", mode: args.mode, epoch: config.epoch, apply: args.apply,
-      selected_sources: selected.length, checked_at: new Date().toISOString(), coverage: programTextCoverage(roster, config.epoch, factBatch.data), results: [] };
+      selected_sources: selected.length, roster_seal: roster.roster_seal, checked_at: new Date().toISOString(), coverage: programTextCoverage(roster, config.epoch, factBatch.data, variationBatch.data.awards), results: [] };
     if (!args.apply || ["plan", "report", "new_page_review", "legacy_hold"].includes(args.mode)) return report;
     const bucket = env.R2_BUCKET, endpoint = env.R2_ENDPOINT || (env.R2_ACCOUNT_ID ? `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null);
     if (!bucket || !endpoint || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY) throw new Error("Private raw/text retention is not configured");
@@ -170,7 +237,7 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     if (args.mode === "review") {
       if (!env.GEMINI_API_KEY) throw new Error("Gemini review is not configured");
       report.results = await review(repository, { supabase, apiKey: env.GEMINI_API_KEY }, callbacks, Math.min(args.limit, 100),
-        { source_ids: selected.filter(source => source.admin_review_status === "open" && source.manifest_bound).map(source => source.id), epoch: config.epoch });
+        { source_ids: selected.filter(source => hasProgramTextSourceAccess(source, { epoch: config.epoch }) && source.manifest_bound).map(source => source.id), epoch: config.epoch });
       return report;
     }
     const runtimeFile = resolve(root, ".awardping-scrapling-runtime.json");
@@ -178,7 +245,7 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     const pythonPath = env.AWARDPING_SCRAPLING_PYTHON || runtime.python_executable;
     const lastDomain = new Map();
     for (const source of selected) {
-      if (source.admin_review_status !== "open" || !source.manifest_bound) { report.results.push({ source_id: source.id, status: "held", reason: "source_not_approved" }); continue; }
+      if (!hasProgramTextSourceAccess(source, { epoch: config.epoch }) || !source.manifest_bound) { report.results.push({ source_id: source.id, status: "held", reason: "source_not_approved" }); continue; }
       const override = config.sources?.[source.id] || {};
       if (override.source_url && override.source_url !== source.url || override.shared_award_id && override.shared_award_id !== source.shared_award_id) {
         report.results.push({ source_id: source.id, status: "held", reason: "source_configuration_changed" }); continue;

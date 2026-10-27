@@ -20,6 +20,7 @@ import { runProgramTextWorker } from "./program-text-worker.mjs";
 import { buildProgramTextCapture } from "./lib/program-text-capture.mjs";
 import { programTextReference } from "./lib/program-text-storage.mjs";
 import { buildProgramTextComparison, buildProgramTextReviewPackets } from "./lib/program-text-review.mjs";
+import { rosterPageFixture, emptyVariationBatchFixture } from "./fixtures/program-text-roster-pages.mjs";
 
 const epoch = "33333333-3333-4333-8333-333333333333", oldEpoch = "99999999-9999-4999-8999-999999999999";
 function rowSet(index, candidateEpoch = epoch) {
@@ -47,6 +48,8 @@ function database(sets, { approved = true } = {}) {
   const calls = [];
   return { calls, rpc(name, params) {
     calls.push({ rpc: name, params });
+    if (name === "get_program_text_worker_roster_page") return Promise.resolve(rosterPageFixture(sets.map(set => set.role), sets.map(set => set.source))(params));
+    if (name === "get_program_variation_admin_batch") return Promise.resolve({ data: emptyVariationBatchFixture() });
     if (name === "get_program_text_fact_review_batch") return Promise.resolve({ data: [] });
     if (name !== "program_text_source_is_approved") throw new Error("Unexpected source-scope RPC");
     return Promise.resolve({ data: approved && sets.some(set => set.source.id === params.p_source_id) });
@@ -95,7 +98,7 @@ describe("CLI source scope before any provider submission", () => {
     const report = await runProgramTextWorker(["--mode=review", "--apply=true", "--pilot=true", `--source-id=${current.source.id}`]);
     expect(shared.provider).toEqual([]);
     expect(report.results).toEqual([{ candidate_id: current.candidate.id, status: "held", reason: "review_state_or_transport_failed" }]);
-    expect(shared.db.calls.filter(call => call.rpc)).toEqual([{ rpc: "get_program_text_fact_review_batch", params: undefined }, { rpc: "program_text_source_is_approved", params: { p_source_id: current.source.id } }]);
+    expect(shared.db.calls.filter(call => call.rpc && !["get_program_text_worker_roster_page", "get_program_variation_admin_batch"].includes(call.rpc))).toEqual([{ rpc: "get_program_text_fact_review_batch", params: undefined }, { rpc: "program_text_source_is_approved", params: { p_source_id: current.source.id } }]);
   });
   it("an empty cohort never scans the global review queue", async () => {
     shared.config.enabled = true; shared.db = database([rowSet(1)]);

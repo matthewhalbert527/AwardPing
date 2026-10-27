@@ -84,7 +84,11 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
     `);
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(result.stdout);
-    expect(value.files).toHaveLength(15);
+    expect(value.files).toHaveLength(19);
+    expect(value.files).toContain("scripts\\lib\\program-text-public-drive-pdf.mjs");
+    expect(value.files).toContain("scripts\\lib\\program-text-public-drive-transport.mjs");
+    expect(value.files).toContain("scripts\\prepare-program-text-source-proof.mjs");
+    expect(value.files).toContain("scripts\\lib\\program-text-source-access.mjs");
     expect(value.files).toContain("config\\program-text-monitoring.json");
     expect(value.files).toContain("scripts\\program-text-worker.mjs");
     expect(value.files).toContain("scripts\\program-text-ocr-windows.ps1");

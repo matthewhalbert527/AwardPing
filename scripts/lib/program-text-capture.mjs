@@ -4,6 +4,10 @@ import { fetchPublicHttpBuffer } from "./public-network-safety.mjs";
 import { captureScraplingSource, scraplingCaptureProfile } from "./scrapling-capture.mjs";
 import { extractProgramTextPdfOcr } from "./program-text-ocr.mjs";
 import { fetchProgramTextBrowserPdf } from "./program-text-browser.mjs";
+import { fetchProgramTextPublicDrivePdf } from "./program-text-public-drive-transport.mjs";
+import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, programTextPublicDrivePdfIdentity,
+  isProgramTextPublicDrivePdfTransition, isProgramTextPublicDrivePdfContentType,
+  hasProgramTextPublicDrivePdfEnvelope } from "./program-text-public-drive-pdf.mjs";
 
 import { buildProgramTextCapture, programTextCaptureLimits, programTextCaptureInternals } from "./program-text-capture-contract.mjs";
 export { PROGRAM_TEXT_CAPTURE_SCHEMA, PROGRAM_TEXT_CAPTURE_PROFILE, programTextCaptureLimits,
@@ -56,6 +60,8 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
       !Array.isArray(allowedFinalUrls) || allowedFinalUrls.length > 20) fail("invalid_capture_options");
   if (!["http", "browser"].includes(pdf_transport) || pdf_transport === "browser" && acquisition !== "pdf_text") fail("invalid_pdf_transport");
   allowedFinalUrls.forEach(publicUrl);
+  const publicDrive = !!programTextPublicDrivePdfIdentity(source.url);
+  if (publicDrive && (source.page_type !== "pdf" || acquisition !== "pdf_text" || pdf_transport !== "http" || allowedFinalUrls.length)) fail("invalid_public_drive_pdf_mode");
   const started = Date.now();
   const remaining = () => { const value = timeoutMs - (Date.now() - started); if (value < 1) fail("capture_timeout"); return value; };
   if (acquisition === "rendered_html") {
@@ -73,11 +79,14 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
   }
   const isPdf = acquisition.startsWith("pdf_");
   const fetched = pdf_transport === "browser" ? await (adapters.browserPdfFetch || fetchProgramTextBrowserPdf)(source.url,
-    { executablePath, timeoutMs: remaining(), maxBytes: programTextCaptureLimits.pdfBytes, allowedFinalUrls }) : await (adapters.fetch || fetchPublicHttpBuffer)(source.url, {
+    { executablePath, timeoutMs: remaining(), maxBytes: programTextCaptureLimits.pdfBytes, allowedFinalUrls }) : publicDrive ?
+    await (adapters.publicDrivePdfFetch || fetchProgramTextPublicDrivePdf)(source.url,
+      { timeoutMs: remaining(), maxBytes: programTextCaptureLimits.pdfBytes }) : await (adapters.fetch || fetchPublicHttpBuffer)(source.url, {
     timeoutMs: remaining(), maxBytes: isPdf ? programTextCaptureLimits.pdfBytes : programTextCaptureLimits.htmlBytes, maxRedirects: 5,
     init: { headers: { "user-agent": "AwardPing/1.0 (+https://awardping.com)", accept: isPdf ? "application/pdf" : "text/html, application/xhtml+xml" } } });
   if (fetched.status !== 200 || !Buffer.isBuffer(fetched.buffer)) fail("source_unavailable", { http_status: fetched.status });
   checkFinalUrl(source, fetched.finalUrl, allowedFinalUrls);
+  if (publicDrive && !isProgramTextPublicDrivePdfTransition(source.url, fetched.finalUrl)) fail("invalid_public_drive_pdf_redirect");
   const raw = fetched.buffer, captured_at = new Date().toISOString();
   if (raw.length < 1 || raw.length > (isPdf ? programTextCaptureLimits.pdfBytes : programTextCaptureLimits.htmlBytes)) fail("source_size_limit");
   if (!isPdf) {
@@ -92,13 +101,14 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
       content_type: fetched.contentType, ...htmlProjection(document), completeness: htmlCompleteness(document) });
     remaining(); return capture;
   }
-  if (!/^application\/pdf(?:;|$)/i.test(fetched.contentType || "") || !raw.subarray(0, 1024).includes(Buffer.from("%PDF-"))) fail("invalid_pdf");
+  if (publicDrive ? !isProgramTextPublicDrivePdfContentType(fetched.contentType) || !hasProgramTextPublicDrivePdfEnvelope(raw) :
+      !/^application\/pdf(?:;|$)/i.test(fetched.contentType || "") || !raw.subarray(0, 1024).includes(Buffer.from("%PDF-"))) fail("invalid_pdf");
   const result = acquisition === "pdf_ocr" ? await (adapters.ocrExtraction || extractProgramTextPdfOcr)(raw, { ...ocrOptions, timeoutMs: remaining(), pdf_sha256: hash(raw) })
     : await (adapters.pdfExtraction || extractPdf)(raw, remaining());
   if (acquisition === "pdf_ocr" && result?.pdf_sha256 !== hash(raw)) fail("ocr_original_binding_mismatch");
   const capture = buildProgramTextCapture({ source, final_url: fetched.finalUrl, captured_at, acquisition,
     extractor: { name: acquisition === "pdf_ocr" ? "page-indexed-pdf-ocr" : "pdf-parse", version: acquisition === "pdf_ocr" ? String(result.engine_version || "unverified") :
-      pdf_transport === "browser" ? "2.4.5/program-text-v1/browser-pdf-v1" : "2.4.5/program-text-v1" },
+      publicDrive ? PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION : pdf_transport === "browser" ? "2.4.5/program-text-v1/browser-pdf-v1" : "2.4.5/program-text-v1" },
     raw_bytes: raw, content_type: fetched.contentType, ...pdfTextProjection(result, { ocr: acquisition === "pdf_ocr" }) });
   remaining(); return capture;
 }

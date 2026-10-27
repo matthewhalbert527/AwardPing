@@ -149,11 +149,15 @@ export async function loadEligiblePublicChangeEvents({
       .from("shared_award_change_events")
       .select(changeSelect)
       .in("shared_award_id", selectedMemberIds)
-      .in("shared_award_source_id", selectedAllowedSourceIds)
       .is("suppressed_at", null)
       .order("detected_at", { ascending: false })
       .order("id", { ascending: false })
       .limit(requestedPageSize);
+    // Large provider inventories are filtered by the same exact allowlist
+    // below. Keeping thousands of UUIDs in a GET URL can truncate the request.
+    if (selectedAllowedSourceIds.length <= 100 || !selectedPublications.some(entry => entry.textFactReview?.variationInventoryId)) {
+      query = query.in("shared_award_source_id", selectedAllowedSourceIds);
+    }
     if (selectedEventIds) query = query.in("id", selectedEventIds);
     if (sinceValue) query = query.gte("detected_at", sinceValue);
     if (cursor) query = query.or(publicChangeEventCursorFilter(cursor));
@@ -356,11 +360,11 @@ async function loadSourceRows(
   sourceIds: string[],
   target: Map<string, PublicChangeEventSourceRow>,
 ) {
-  for (let index = 0; index < sourceIds.length; index += 200) {
+  for (let index = 0; index < sourceIds.length; index += 100) {
     const { data, error } = await admin
       .from("shared_award_sources")
       .select(sourceSelect)
-      .in("id", sourceIds.slice(index, index + 200));
+      .in("id", sourceIds.slice(index, index + 100));
     if (error) {
       throw new Error(`Public change-event source query failed: ${error.message}`);
     }

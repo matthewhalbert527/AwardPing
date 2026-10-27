@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseProgramTextArgs, loadProgramTextSources, programTextCoverage } from "./program-text-worker.mjs";
 import { buildProgramTextCapture } from "./lib/program-text-capture.mjs";
 import { programTextReference } from "./lib/program-text-storage.mjs";
+import { rosterPageFixture } from "./fixtures/program-text-roster-pages.mjs";
 
 const sourceId = "11111111-1111-4111-8111-111111111111", ownerId = "22222222-2222-4222-8222-222222222222", epoch = "33333333-3333-4333-8333-333333333333";
 const source = { id: sourceId, shared_award_id: ownerId, url: "https://example.org/award", admin_review_status: "open" };
@@ -9,12 +10,10 @@ const role = (extra = {}) => ({ cohort_key: "example", source_role: "eligibility
   evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: { [sourceId]: { source_url: source.url, shared_award_id: ownerId } } }, ...extra });
 function client(outcomes) {
   const calls = [];
-  return { calls, from(table) {
-    const call = { table, filters: [] }; calls.push(call);
-    const query = { select(value) { call.select = value; return query; }, order(value) { call.order = value; return query; },
-      in(...args) { call.filters.push(["in", ...args]); return query; }, limit(value) { call.limit = value; return query; },
-      then(yes, no) { return Promise.resolve(outcomes.shift()).then(yes, no); } };
-    return query;
+  const respond = rosterPageFixture(outcomes[0]?.data || [], outcomes[1]?.data || []);
+  return { calls, async rpc(name, params) {
+    calls.push({ name, params });
+    return outcomes[0]?.error ? outcomes[0] : respond(params);
   } };
 }
 function completeSource() {
@@ -50,16 +49,30 @@ describe("required source inventory", () => {
     expect(programTextCoverage(roster, epoch, [{ ...receipt, sources: [{ id: ownerId }] }])[0].factual_review_complete).toBe(false);
     expect(programTextCoverage(roster, epoch, [receipt, receipt])[0].factual_review_complete).toBe(false);
   });
+  it("requires a complete current variation award approval, all units, and its exact source set", () => {
+    const roster = { manifest: [role()], sources: [completeSource()] };
+    const status = { cohort_key: "example", inventory_sealed: true, approval_id: ownerId, current: true, draft_inventory_id: null,
+      expected_variants: 2, total_variants: 2, reviewed_variants: 2, ready_variants: 2, approved_variants: 2, current_approved_variants: 2,
+      scope_total: 3, approved_source_ids: [sourceId], source_count: 1, blockers: [] };
+    expect(programTextCoverage(roster, epoch, [], [status])[0].factual_review_complete).toBe(true);
+    for (const changed of [{ inventory_sealed: false }, { approval_id: null }, { current: false }, { reviewed_variants: 1 },
+      { ready_variants: 1 }, { approved_variants: 1 }, { current_approved_variants: 1 }, { scope_total: 0 },
+      { approved_source_ids: [ownerId] }, { source_count: 2 }, { blockers: ["missing_country"] }, { draft_inventory_id: epoch }]) {
+      expect(programTextCoverage(roster, epoch, [], [{ ...status, ...changed }])[0].factual_review_complete).toBe(false);
+    }
+    const legacy = { cohort_key: "example", sources: [{ id: sourceId }], review: { id: ownerId, status: "approved", current: true } };
+    expect(programTextCoverage(roster, epoch, [legacy], [{ ...status, current: false }])[0].factual_review_complete).toBe(false);
+    expect(programTextCoverage(roster, epoch, [legacy], [status, status])[0].factual_review_complete).toBe(false);
+  });
   it("loads the complete manifest then exact required IDs and preserves shared roles", async () => {
     const db = client([{ data: [role(), role({ source_role: "application" })] }, { data: [source] }]);
     const result = await loadProgramTextSources(db);
     expect(result.sources).toHaveLength(1); expect(result.sources[0]).toMatchObject({ id: sourceId, cohorts: ["example"], manifest_bound: true });
-    expect(db.calls[1].filters).toEqual([["in", "id", [sourceId]]]);
-    expect(db.calls[0].table).toBe("program_text_source_roster");
-    expect(db.calls.every(call => call.limit === 1000)).toBe(true);
+    expect(db.calls.map(call => call.params.p_kind)).toEqual(["roles", "sources", "check"]);
+    expect(db.calls.every(call => call.name === "get_program_text_worker_roster_page" && call.params.p_limit === 100)).toBe(true);
   });
-  it.each([[], Array.from({ length: 1000 }, () => role())])("refuses missing or truncated source manifests", async roles => {
-    await expect(loadProgramTextSources(client([{ data: roles }]))).rejects.toThrow("missing or incomplete");
+  it.each([[], Array.from({ length: 1000 }, () => role())].map(roles => ({ roles })))("refuses missing or duplicate source manifests", async ({ roles }) => {
+    await expect(loadProgramTextSources(client([{ data: roles }]))).rejects.toThrow(/missing or incomplete|duplicate/);
   });
   it("refuses missing source rows rather than reporting partial completion", async () => {
     await expect(loadProgramTextSources(client([{ data: [role()] }, { data: [] }]))).rejects.toThrow("identities are incomplete");
@@ -115,7 +128,8 @@ describe("all-required-source collection coverage", () => {
   });
   it("counts repeated collection separately from facts approval", () => {
     const result = programTextCoverage({ manifest: [role(), role({ source_role: "application" })], sources: [completeSource()] }, epoch);
-    expect(result).toEqual([{ cohort: "example", required_sources: 1, repeated_text_sources: 1, collection_complete: true, factual_review_complete: false }]);
+    expect(result).toEqual([{ cohort: "example", required_sources: 1, repeated_text_sources: 1, collection_complete: true, factual_review_complete: false,
+      inventory_sealed: false, variation_scope_total: 0, total_variants: 0, reviewed_variants: 0 }]);
   });
   it.each([
     value => { value.text_monitoring_state.successful_checks = 1; },

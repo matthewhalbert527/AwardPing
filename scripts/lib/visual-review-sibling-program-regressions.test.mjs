@@ -142,9 +142,14 @@ describe("generic enrollment clauses are not named sibling programs", () => {
   });
 
   it("does not pretend this candidate gate belongs to the promotion bundle's documented source closure", () => {
-    expect(monitoringPromotionMatcherBundleSources).toHaveLength(18);
+    expect(monitoringPromotionMatcherBundleSources).toHaveLength(27);
     expect(monitoringPromotionMatcherBundleSources).toEqual(expect.arrayContaining([
       "scripts/lib/program-text-deterministic-no-change.mjs", "scripts/lib/program-text-repository.mjs", "scripts/program-text-worker.mjs",
+      "scripts/lib/program-text-review.mjs",
+      "scripts/lib/program-text-source-access.mjs", "scripts/lib/program-text-public-drive-pdf.mjs",
+      "scripts/lib/program-text-public-drive-transport.mjs", "scripts/lib/program-text-capture-contract.mjs",
+      "scripts/lib/program-text-capture.mjs", "scripts/lib/program-text-artifacts.mjs",
+      "scripts/lib/scrapling-capture.mjs", "scripts/scrapling/collector.py",
     ]));
     expect(monitoringPromotionMatcherBundleSources).not.toContain("scripts/lib/visual-review-queue.mjs");
     const first = buildMonitoringPromotionMatcherBundleManifest(), second = buildMonitoringPromotionMatcherBundleManifest();

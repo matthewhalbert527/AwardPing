@@ -1,0 +1,21 @@
+import type { Json } from '@/lib/database.types';
+import type { ProgramFactFieldView } from '@/lib/program-fact-review-types';
+
+export type VariationAttributes = { country: string | null; course: string | null; track: string | null; applicant_group: string | null };
+export type VariationOption = { scope_key: string; label: string; attributes: VariationAttributes };
+export type VariationCoverageGap = { key: string; label: string; source_url: string | null };
+export type VariationInventory = { id: string; cohort_key: string; cycle: string; revision: string; content_hash: string | null;
+  status: 'draft' | 'sealed'; expected_variants: number; previous_revision: string | null; scope_count: number; draft_hash: string;
+  coverage_gaps: VariationCoverageGap[]; inventory_hash_version: 1 | 2 };
+export type VariationScope = VariationOption & { source_roles: Json[]; provider_support: Json[]; retired: boolean };
+export type VariationDecision = { field: string; mode: 'replace'; decision: Json } | { field: string; mode: 'inherit'; support: Json[] };
+export type VariationUnit = { schema: 'awardping.program-variation-unit.v1'; inventory_id: string; scope_key: string;
+  shared_review_id: string | null; shared_hash: string | null; reviewed_all_sources: boolean; capture_refs: Json[]; decisions: VariationDecision[] };
+export type VariationUnitSummary = { id: string; scope_key: string; content_hash: string; shared_review_id: string | null;
+  shared_hash: string | null; blockers: string[]; fields: ProgramFactFieldView[]; created_at: string; current: boolean };
+export type VariationAdminPage = { inventory: VariationInventory | null; scopes: Array<VariationScope & { review: VariationUnitSummary | null }>;
+  total: number; next_cursor: string | null; approval: { id: string; content_hash: string; current: boolean; reviewed_at: string } | null };
+export type PublishedVariationContext = { inventory_id: string; revision: string; cycle: string; total: number; next_cursor: string | null;
+  options: VariationOption[]; selected_scope_key: string; selected_option: VariationOption; public_facts: Json; current: boolean; reviewed_at: string; source_ids: string[];
+  source_bindings: Record<string, { url: string; shared_award_id: string; title: string | null; page_type: string | null }> };
+export type VariationQuery = { scopeKey?: string; cursor?: string; country?: string; course?: string; track?: string };

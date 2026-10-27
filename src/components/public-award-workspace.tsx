@@ -38,6 +38,7 @@ import { describeTimestamp, formatCentralDate } from "@/lib/time-zone";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { AwardDateValue } from "@/components/award-date-value";
+import { PublicAwardVariationPicker } from "@/components/public-award-variation-picker";
 
 type PublicAwardWorkspaceProps = {
   data: PublicAwardPageData;
@@ -316,6 +317,10 @@ export function PublicAwardWorkspace({
         ref={panelRef}
         tabIndex={-1}
       >
+        {data.variations && data.variations.total > 0 && (selected.kind === "overview" || selected.kind === "application") ? <PublicAwardVariationPicker
+          key={`${data.variations.inventory_id}:${data.variations.selected_scope_key}`}
+          cohort={data.variations.cohort_key} path={data.canonicalPath} initial={data.variations}
+          navigation={{ section: selected.kind === "application" ? "applying" : "overview" }} /> : null}
         {currentness && (selected.kind === "overview" || selected.kind === "application") && (
           <div className="public-award-currentness" role="note">
             <strong>{currentness.title}</strong>
@@ -391,7 +396,7 @@ export function awardPanelNavigation(data: PublicAwardPageData, panel: SelectedP
   return {
     highlightedChangeId,
     anchor,
-    href: awardPanelHref(data.canonicalPath, panel, highlightedChangeId) + (anchor ? `#${anchor}` : ""),
+    href: awardPanelHref(data.canonicalPath, panel, highlightedChangeId, data.variations?.selected_scope_key) + (anchor ? `#${anchor}` : ""),
   };
 }
 
@@ -431,11 +436,11 @@ export function initialPanelForQuery(
   return { panel: { kind: "changes" }, highlightedChangeId: change.id };
 }
 
-export function awardPanelHref(path: string, panel: SelectedPanel, changeId?: string | null) {
+export function awardPanelHref(path: string, panel: SelectedPanel, changeId?: string | null, variantId?: string | null) {
   const section = panel.kind === "overview" ? "overview" : panel.kind === "changes" ? "updates"
     : panel.kind === "source" || panel.kind === "sources" ? "sources" : "applying";
   return publicAwardHref(path, { section, sourceId: panel.kind === "source" ? panel.sourceId : null,
-    changeId: panel.kind === "changes" ? changeId : null });
+    changeId: panel.kind === "changes" ? changeId : null, variantId });
 }
 
 // A panel the outline can show: the overview, recent changes, or a listed

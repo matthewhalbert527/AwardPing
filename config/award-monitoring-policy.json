@@ -18,15 +18,24 @@
       "scripts/lib/visual-source-inventory-proof.mjs",
       "scripts/process-monitoring-feedback-promotions.mjs",
       "scripts/lib/program-text-deterministic-no-change.mjs",
+      "scripts/lib/program-text-review.mjs",
       "scripts/lib/program-text-repository.mjs",
       "scripts/program-text-worker.mjs",
+      "scripts/lib/program-text-source-access.mjs",
+      "scripts/lib/program-text-public-drive-pdf.mjs",
+      "scripts/lib/program-text-public-drive-transport.mjs",
+      "scripts/lib/program-text-capture-contract.mjs",
+      "scripts/lib/program-text-capture.mjs",
+      "scripts/lib/program-text-artifacts.mjs",
+      "scripts/lib/scrapling-capture.mjs",
+      "scripts/scrapling/collector.py",
       "src/lib/change-event-suppression.ts",
       "src/lib/award-monitoring-policy.ts",
       "src/lib/source-quality.ts",
       "src/lib/source-ai-review-status.ts",
       "src/lib/source-url-policy.ts"
     ],
-    "hash": "02495e7dc7fac354365c6aa0092ef9ef93c1f7bbc8a8ee0f7d7ec6d922be78b0"
+    "hash": "d7593a4d1d8e6ca697c3cf6084fa31ac5c1fb48e8096d0780e63ffc4121a447d"
   },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",

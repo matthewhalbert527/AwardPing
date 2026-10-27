@@ -63,7 +63,10 @@ export function isPublicChangeEvent({
   if (!publication.effectivelyVerified || !award || award.status !== "active") {
     return false;
   }
-  if (!source || source.admin_review_status !== "open") return false;
+  if (!source) return false;
+  const approvedTextInventorySource = source.admin_review_status === "review_later" &&
+    Boolean(publication.textFactReview?.variationInventoryId) && Boolean(evidence && hasPublishableProgramTextEvidence(event, evidence));
+  if (source.admin_review_status !== "open" && !approvedTextInventorySource) return false;
   if (award.id !== publication.canonicalAwardId) return false;
   if (!publication.memberAwardIds.includes(event.shared_award_id)) return false;
   if (source.shared_award_id !== event.shared_award_id) return false;
@@ -74,6 +77,8 @@ export function isPublicChangeEvent({
   // insufficient because a stale or malformed event URL is rendered publicly.
   if (event.source_url !== source.url) return false;
   if (!publication.allowedSourceIdSet.has(source.id)) return false;
+  if (publication.textFactReview?.variationInventoryId && (publication.approvedTextSourceBindings?.[source.id]?.url !== source.url ||
+      publication.approvedTextSourceBindings?.[source.id]?.shared_award_id !== source.shared_award_id)) return false;
   if (!hasPublishableEventEvidence(event, evidence)) return false;
   if (
     isStage1SourceIdentityExcluded(publication, source) ||

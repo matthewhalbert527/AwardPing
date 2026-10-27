@@ -11,7 +11,12 @@ const mocks = vi.hoisted(() => ({
   isPublicAwardSource: vi.fn(),
   isStage1SourceIdentityExcluded: vi.fn(),
   order: vi.fn(),
+  loadPublishedVariationContext: vi.fn(),
+  factInput: vi.fn(),
 }));
+
+vi.mock("server-only", () => ({}));
+vi.mock("@/lib/program-variation-review.server", () => ({ loadPublishedVariationContext: mocks.loadPublishedVariationContext }));
 
 // The real trackability predicate runs by default. Only the synthetic
 // invalid-URL policy cases below override it, and they say so explicitly.
@@ -42,7 +47,7 @@ vi.mock("@/lib/source-url-policy", async (importOriginal) => {
   };
 });
 vi.mock("@/lib/source-quality", () => ({ isPublicAwardSource: mocks.isPublicAwardSource }));
-vi.mock("@/lib/public-award-facts", () => ({ publicAwardFactsFromAward: () => ({ overview: "Reviewed overview" }) }));
+vi.mock("@/lib/public-award-facts", () => ({ publicAwardFactsFromAward: (input: unknown) => { mocks.factInput(input); return { overview: "Reviewed overview" }; } }));
 vi.mock("@/lib/change-summary", () => ({ displayChangeSummary: (summary: string) => summary }));
 
 import { GET } from "./route";
@@ -209,6 +214,91 @@ async function latestChangeIdsBySource() {
     ]),
   );
 }
+
+describe("shared award approved variation consistency", () => {
+  const inventoryId = "90000000-0000-4000-8000-000000000001";
+  const revision = "90000000-0000-4000-8000-000000000002";
+  const approvedFacts = { overview: "Approved shared program rules." };
+  let queriedIds: string[][];
+  let queries: Array<Record<string, ReturnType<typeof vi.fn>>>;
+  let rows: Array<{ id: string; shared_award_id: string; url: string; title: string; page_type: string; admin_review_status: string }>;
+  function variationFixture(count = 1, withHomeSupport = true) {
+    rows = [{ id: sourceId, shared_award_id: awardId, url: homepage, title: "Mutable unapproved homepage title", page_type: "homepage", admin_review_status: "review_later" },
+      ...Array.from({ length: count }, (_, index) => ({ id: `81000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`, shared_award_id: awardId,
+        url: `https://example.test/rules/${index}`, title: "Unapproved latest AI title", page_type: "other", admin_review_status: "review_later" }))];
+    const bindings = Object.fromEntries(rows.map(row => [row.id, { url: row.url, shared_award_id: row.shared_award_id,
+      title: row.id === sourceId ? "Approved homepage" : "Approved application rules", page_type: row.id === sourceId ? "homepage" : "application" }]));
+    const publication = { ...verifiedPublication(), registry: { ...verifiedPublication().registry, cohort_key: "example" },
+      textFactReview: { variationInventoryId: inventoryId, variationInventoryRevision: revision, variationCount: 1500 },
+      publishedFacts: { overview: "A different batch overview must not replace the selected common facts." },
+      approvedTextSourceBindings: bindings, allowedSourceIdSet: new Set([...rows.map(row => row.id), ...Array.from({ length: 1500 }, (_, n) => `82000000-0000-4000-8000-${String(n + 1).padStart(12, "0")}`)]) };
+    mocks.loadStage1PublicationIndex.mockResolvedValue({ available: true, entryByMemberAwardId: new Map([[awardId, publication]]) });
+    const context = { inventory_id: inventoryId, revision, selected_scope_key: "common", public_facts: approvedFacts,
+      source_ids: rows.filter(row => withHomeSupport || row.id !== sourceId).map(row => row.id), source_bindings: { ...bindings } };
+    if (!withHomeSupport) delete context.source_bindings[sourceId];
+    mocks.loadPublishedVariationContext.mockResolvedValue(context);
+    return { publication, context };
+  }
+  beforeEach(() => {
+    vi.resetAllMocks(); queriedIds = []; queries = []; policy.isTrackable = policy.real;
+    mocks.hasSupabaseConfig.mockReturnValue(true); mocks.hasSupabaseAdminConfig.mockReturnValue(true);
+    mocks.getCurrentUser.mockResolvedValue(null); mocks.isStage1SourceIdentityExcluded.mockReturnValue(false);
+    // Independent text approval does not require a fabricated legacy verdict.
+    mocks.isPublicAwardSource.mockReturnValue(false); mocks.loadEligiblePublicChangeEvents.mockResolvedValue([]);
+    mocks.createSupabaseAdminClient.mockReturnValue({ from: vi.fn((table: string) => {
+      if (table !== "shared_award_sources") throw new Error("Unexpected lookup");
+      let ids: string[] = [];
+      const query: Record<string, ReturnType<typeof vi.fn>> = {};
+      for (const method of ["select", "eq", "order"]) query[method] = vi.fn(() => query);
+      query.in = vi.fn((column: string, values: string[]) => { expect(column).toBe("id"); ids = values; queriedIds.push(values); return query; });
+      query.limit = vi.fn(async () => ({ data: rows.filter(row => ids.includes(row.id)), error: null }));
+      queries.push(query); return query;
+    }) });
+    variationFixture();
+  });
+  it("uses approved common facts and pinned metadata without legacy AI approval or unbounded source queries", async () => {
+    const body = await awardBody();
+    expect(body.award).toMatchObject({ sourceCount: 2, hasApplicationRoutes: true, detailsLoaded: true });
+    expect(body.award.sources.map((row: { title: string; pageType: string }) => [row.title, row.pageType])).toEqual([
+      ["Approved homepage", "homepage"], ["Approved application rules", "application"],
+    ]);
+    expect(mocks.factInput).toHaveBeenCalledExactlyOnceWith({ publicFacts: approvedFacts, completeSnapshot: true });
+    expect(mocks.loadPublishedVariationContext).toHaveBeenCalledExactlyOnceWith("example");
+    expect(mocks.isPublicAwardSource).not.toHaveBeenCalled();
+    expect(queriedIds).toHaveLength(1); expect(queries[0].limit).toHaveBeenCalledWith(101); expect(queries[0].eq).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain("Unapproved latest AI title");
+  });
+  it("keeps a large award inventory bounded to the common unit in chunks of100", async () => {
+    variationFixture(250); const body = await awardBody();
+    expect(body.award.sourceCount).toBe(251); expect(queriedIds.map(ids => ids.length)).toEqual([100, 100, 51]);
+    expect(new Set(queriedIds.flat()).size).toBe(251); expect(queries.every(query => !query.eq.mock.calls.length)).toBe(true);
+  });
+  it("pins a separate identity homepage without displaying its mutable AI title", async () => {
+    variationFixture(1, false); const body = await awardBody();
+    expect(body.award.sources.find((row: { id: string }) => row.id === sourceId)).toMatchObject({ title: "Example award", pageType: "homepage" });
+  });
+  it.each(["inventory", "revision", "scope", "binding", "owner", "source_allowlist"])("fails closed before detail lookups for an inconsistent %s publication", async kind => {
+    const { publication, context } = variationFixture();
+    if (kind === "inventory") context.inventory_id = "different";
+    if (kind === "revision") context.revision = "different";
+    if (kind === "scope") context.selected_scope_key = "unselected-child";
+    if (kind === "binding") context.source_bindings = { ...context.source_bindings, [sourceId]: { ...context.source_bindings[sourceId], url: homepage + "/unapproved" } };
+    if (kind === "owner") context.source_bindings = { ...context.source_bindings, [sourceId]: { ...context.source_bindings[sourceId], shared_award_id: aliasAwardId } };
+    if (kind === "source_allowlist") publication.allowedSourceIdSet.delete(sourceId);
+    const response = await requestAward(); expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "Shared award details are unavailable right now." }); expectNoDetailLookups();
+  });
+  it.each(["url", "shared_award_id"] as const)("rejects a current source whose %s changed after approval", async field => {
+    rows[1][field] = field === "url" ? "https://example.test/unapproved-address" : aliasAwardId;
+    const response = await requestAward(); expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Shared award details are unavailable right now." });
+  });
+  it("returns a stable unavailable error if the pinned context lookup fails", async () => {
+    mocks.loadPublishedVariationContext.mockRejectedValue(new Error("Private DB schema diagnostics"));
+    const response = await requestAward(); expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "Shared award details are unavailable right now." }); expectNoDetailLookups();
+  });
+});
 
 describe("shared award change source identity", () => {
   beforeEach(() => {

@@ -1,6 +1,7 @@
 import { PROGRAM_DETAIL_FIELDS } from "./program-change-contract.mjs";
 import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
 import { validateProgramTextReference, programTextReference } from "./program-text-artifacts.mjs";
+import { hasProgramTextSourceAccess } from "./program-text-source-access.mjs";
 
 export const PROGRAM_FACT_REVIEW_SCHEMA = "awardping.program-fact-review.v1";
 export const PROGRAM_FACT_FIELDS = Object.freeze(["overview", ...PROGRAM_DETAIL_FIELDS]);
@@ -24,10 +25,10 @@ export function emptyProgramFactReview({ registry, roles, sources, epoch, cycle 
   };
 }
 
-function checkSource(source, ref, epoch) {
+function checkSource(source, ref, epoch, cohort) {
   validateProgramTextReference(ref);
   const state = source?.text_monitoring_state;
-  if (!source || source.admin_review_status !== "open" || !state || state.schema !== "awardping.program-text-state.v1" ||
+  if (!hasProgramTextSourceAccess(source, { epoch, cohort }) || !state || state.schema !== "awardping.program-text-state.v1" ||
       state.epoch !== epoch || state.status !== "baseline_ready" || !Number.isInteger(state.successful_checks) || state.successful_checks < 2 ||
       !equal(state.baseline_ref, state.latest_ref) || state.latest_ref.text_sha256 !== ref.text_sha256 ||
       state.latest_ref.final_url !== ref.final_url || state.latest_ref.acquisition !== ref.acquisition ||
@@ -58,7 +59,7 @@ export async function validateProgramFactReview(review, { registry, roles, sourc
       role.evidence?.schema !== "awardping.program-text-source-role.v1" || role.manifest_status !== "reviewed_text" ||
       role.evidence.source_bindings?.[source.id]?.source_url !== source.url ||
       role.evidence.source_bindings?.[source.id]?.shared_award_id !== source.shared_award_id)) fail("source_not_approved_for_program");
-    checkSource(source, ref, epoch);
+    checkSource(source, ref, epoch, registry.cohort_key);
     const capture = await loadCapture(ref);
     validateProgramTextCapture(capture, { source });
     if (!equal(programTextReference(capture), ref)) fail("original_reference_changed");

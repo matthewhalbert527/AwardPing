@@ -24,6 +24,7 @@ vi.mock("./lib/program-text-monitor.mjs", () => ({
   finalizeProgramTextReview: async () => { throw new Error("Unexpected review finalization in empty-queue fixture"); } }));
 
 import { runProgramTextWorker } from "./program-text-worker.mjs";
+import { rosterPageFixture, emptyVariationBatchFixture } from "./fixtures/program-text-roster-pages.mjs";
 
 const epoch = "33333333-3333-4333-8333-333333333333";
 const owner = "22222222-2222-4222-8222-222222222222";
@@ -34,7 +35,12 @@ function fixtureSource(index) {
 }
 function readonlyDatabase() {
   const calls = [];
-  return { calls, rpc: async name => { if (name !== "get_program_text_fact_review_batch") throw new Error("Unexpected RPC"); return { data: [] }; }, from(table) {
+  return { calls, rpc: async (name, params) => {
+    calls.push({ rpc: name, params });
+    if (name === "get_program_text_worker_roster_page") return rosterPageFixture(shared.roles, shared.sources)(params);
+    if (name === "get_program_variation_admin_batch") return { data: emptyVariationBatchFixture() };
+    if (name !== "get_program_text_fact_review_batch") throw new Error("Unexpected RPC"); return { data: [] };
+  }, from(table) {
     if (!["program_text_source_roster", "shared_award_sources"].includes(table)) throw new Error("Unexpected database table");
     const call = { table, ids: null }; calls.push(call);
     const query = { select() { return query; }, order() { return query; }, limit() { return query; },
@@ -46,7 +52,7 @@ function readonlyDatabase() {
 }
 beforeEach(() => {
   shared.sources = Array.from({ length: 124 }, (_, index) => fixtureSource(index));
-  shared.roles = shared.sources.map((source, index) => ({ cohort_key: index < 100 ? "core" : "tail", source_role: "application_materials",
+  shared.roles = shared.sources.map((source, index) => ({ cohort_key: index < 100 ? "core" : "tail", source_role: `application_materials_${index}`,
     source_ids: [source.id], manifest_status: "reviewed_text", revision: epoch,
     evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: { [source.id]: { source_url: source.url, shared_award_id: source.shared_award_id } } } }));
   shared.config = { schema: "awardping.program-text-monitoring.v1", epoch, enabled: true, sources: {} };
@@ -68,7 +74,7 @@ describe("review candidate limit is not a required-source limit", () => {
     expect(shared.repository.listCandidates.mock.calls[0][2].source_ids).toContain(shared.sources[123].id);
     expect(shared.captures).toEqual([]); expect(shared.submissions).toEqual([]); expect(shared.polls).toEqual([]);
     expect(fetch).not.toHaveBeenCalled(); expect(shared.destroyed).toBe(1); expect(shared.closed).toBe(1);
-    expect(shared.db.calls.map(call => call.table)).toEqual(["program_text_source_roster", "shared_award_sources"]);
+    expect(shared.db.calls.filter(call => call.rpc === "get_program_text_worker_roster_page").map(call => call.params.p_kind)).toEqual(["roles", "roles", "sources", "sources", "check"]);
   });
   it("preserves cohort and global shard filters without capping their tail sources", async () => {
     const expected = shared.sources.filter((source, index) => index >= 100 && index % 3 === 0).map(source => source.id);
@@ -97,5 +103,35 @@ describe("review candidate limit is not a required-source limit", () => {
     expect(report.selected_sources).toBe(100); expect(report.results).toHaveLength(100);
     expect(shared.repository.listCandidates).not.toHaveBeenCalled(); expect(shared.submissions).toEqual([]); expect(shared.polls).toEqual([]);
     expect(fetch).not.toHaveBeenCalled(); expect(shared.destroyed).toBe(1); expect(shared.closed).toBe(1);
+  });
+  it("covers the complete large roster exactly once across the original three shards", async () => {
+    const template = shared.roles[0];
+    shared.sources = Array.from({ length: 1207 }, (_, index) => fixtureSource(index));
+    shared.roles = shared.sources.map((source, index) => ({ ...structuredClone(template), cohort_key: `award_${index % 25}`,
+      source_role: `application_${index}`, source_ids: [source.id],
+      evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: { [source.id]: { source_url: source.url, shared_award_id: source.shared_award_id } } } }));
+    shared.roles.push({ ...structuredClone(shared.roles.at(-1)), scope_key: "overseas" });
+    const sizes = [];
+    for (let index = 0; index < 3; index++) {
+      const report = await runProgramTextWorker(["--mode=collect", "--apply=true", "--run-trigger=scheduled", "--shard-count=3", `--shard-index=${index}`, "--domain-delay-ms=0"]);
+      sizes.push(report.selected_sources);
+      expect(report.results.every(row => row.initial_coverage)).toBe(true);
+    }
+    expect(sizes).toEqual([403, 402, 402]);
+    expect(shared.captures).toHaveLength(1207); expect(new Set(shared.captures).size).toBe(1207);
+    expect([...shared.captures].sort()).toEqual(shared.sources.map(source => source.id));
+    expect(shared.repository.listCandidates).not.toHaveBeenCalled(); expect(shared.submissions).toEqual([]); expect(shared.polls).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("retains the100-candidate paid-review limit over a roster larger than500 sources", async () => {
+    const template = shared.roles[0];
+    shared.sources = Array.from({ length: 701 }, (_, index) => fixtureSource(index));
+    shared.roles = shared.sources.map((source, index) => ({ ...structuredClone(template), source_role: `application_${index}`, source_ids: [source.id],
+      evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: { [source.id]: { source_url: source.url, shared_award_id: source.shared_award_id } } } }));
+    const report = await runProgramTextWorker(["--mode=review", "--apply=true", "--limit=50000"]);
+    expect(report.selected_sources).toBe(701);
+    expect(shared.repository.listCandidates).toHaveBeenCalledExactlyOnceWith(["pending", "submitted", "succeeded"], 100,
+      { source_ids: shared.sources.map(source => source.id), epoch });
+    expect(shared.submissions).toEqual([]); expect(shared.polls).toEqual([]); expect(fetch).not.toHaveBeenCalled();
   });
 });

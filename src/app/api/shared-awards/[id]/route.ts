@@ -5,6 +5,9 @@ import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import { getOfficeContext } from "@/lib/offices";
 import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
+import { loadVariationPublicSources } from "@/lib/public-award-pages";
+import { loadPublishedVariationContext } from "@/lib/program-variation-review.server";
+import type { PublishedVariationContext } from "@/lib/program-variation-review-types";
 import { isPublicAwardSource } from "@/lib/source-quality";
 import {
   isTrackableOfficialSourceUrl,
@@ -45,6 +48,21 @@ export async function GET(_request: Request, { params }: Props) {
   if (!publication?.effectivelyVerified) {
     return NextResponse.json({ error: "Shared award was not found." }, { status: 404 });
   }
+  let variations: PublishedVariationContext | null = null;
+  if (publication.textFactReview?.variationInventoryId) {
+    try {
+      variations = await loadPublishedVariationContext(publication.registry.cohort_key);
+      if (!variations || variations.inventory_id !== publication.textFactReview.variationInventoryId ||
+          variations.revision !== publication.textFactReview.variationInventoryRevision || variations.selected_scope_key !== "common" ||
+          variations.source_ids.some(sourceId => !publication.allowedSourceIdSet.has(sourceId) ||
+            variations?.source_bindings[sourceId]?.url !== publication.approvedTextSourceBindings?.[sourceId]?.url ||
+            variations?.source_bindings[sourceId]?.shared_award_id !== publication.approvedTextSourceBindings?.[sourceId]?.shared_award_id)) {
+        return NextResponse.json({ error: "Shared award details are unavailable right now." }, { status: 503 });
+      }
+    } catch {
+      return NextResponse.json({ error: "Shared award details are unavailable right now." }, { status: 503 });
+    }
+  }
   const memberAwardIds = publication.memberAwardIds;
   const user = await getCurrentUser();
   const officeContext = user ? await getOfficeContext(user) : null;
@@ -56,7 +74,9 @@ export async function GET(_request: Request, { params }: Props) {
     { data: officeAwards, error: officeAwardsError },
     { data: officeSources, error: officeSourcesError },
   ] = await Promise.all([
-    admin
+    variations ? loadVariationPublicSources(admin, publication, variations).then(result => ({
+      data: result.data.map(source => ({ ...source, last_error: null })), error: null,
+    })).catch(() => ({ data: null, error: { message: "Approved source identities are unavailable." } })) : admin
       .from("shared_award_sources")
       .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, last_checked_at, last_error, created_at")
       .in("shared_award_id", memberAwardIds)
@@ -109,12 +129,13 @@ export async function GET(_request: Request, { params }: Props) {
   // Kept by source ID, never collapsed by a loose canonical URL: two allowed
   // rows can share one URL or differ only by a trailing slash, and discarding
   // one of them hid its own updates, which attach by source ID below. The
-  // query above already restricts these rows to admin_review_status 'open'.
+  // Legacy rows require their original public review. Variation rows have
+  // already passed the published unit's exact immutable URL/owner bindings.
   const sources = (sharedSources || [])
     .filter((source) => isTrackableOfficialSourceUrl(source.url))
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
-    .filter(isPublicAwardSource);
+    .filter(source => Boolean(variations) || isPublicAwardSource(source));
   const reviewedHomepageSource = sources.find((source) =>
     source.id === publication.officialHomepageSourceId &&
     source.url === publication.registry.official_homepage &&
@@ -124,7 +145,7 @@ export async function GET(_request: Request, { params }: Props) {
     return NextResponse.json({ error: "Shared award was not found." }, { status: 404 });
   }
   const changes = eligibleEvents.map((entry) => entry.event);
-  const facts = publicAwardFactsFromAward({ publicFacts: publication.publishedFacts, completeSnapshot: Boolean(publication.textFactReview) });
+  const facts = publicAwardFactsFromAward({ publicFacts: variations?.public_facts || publication.publishedFacts, completeSnapshot: Boolean(publication.textFactReview) });
   return NextResponse.json({
     award: {
       id: publication.canonicalAwardId,
@@ -135,11 +156,12 @@ export async function GET(_request: Request, { params }: Props) {
       changeCount: changes.length,
       tracked: Boolean(officeAwards?.length),
       detailsLoaded: true,
+      hasApplicationRoutes: Boolean(publication.textFactReview?.variationCount),
       sources: sources.map((source) => ({
         id: source.id,
         url: source.url,
-        title: source.title,
-        pageType: source.page_type,
+        title: variations && !variations.source_bindings[source.id] ? publication.registry.canonical_name : source.title,
+        pageType: variations && !variations.source_bindings[source.id] ? "homepage" : source.page_type,
         tracked: trackedSourceIds.has(source.id),
         lastCheckedAt: source.last_checked_at,
         lastError: source.last_error,

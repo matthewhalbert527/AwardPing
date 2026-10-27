@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/admin", () => ({ createSupabaseAdminClient: vi.fn() }));
 
-import { applyProgramFactPublication } from "@/lib/program-fact-publication";
+import { applyProgramFactPublication, applyProgramVariationPublication } from "@/lib/program-fact-publication";
 import { buildStage1PublicationIndex, stage1PublicationPolicyVersion, type Stage1RegistryRow } from "@/lib/stage1-publication";
 import { stage1CohortIdentity, stage1CohortIdentityHash, stage1CohortIdentityVersion } from "@/lib/stage1-cohort-identity";
 import { programFactPublicValues, PROGRAM_FACT_FIELDS } from "../../scripts/lib/program-text-facts.mjs";
@@ -46,6 +46,23 @@ function fixture() {
 }
 
 describe("one approved current-details release on the existing identity gate", () => {
+  it("admits a large approved inventory union without changing the bounded legacy review limit", () => {
+    const { index, snapshot } = fixture();
+    snapshot.cohorts[0].source_ids = Array.from({ length: 501 }, (_, offset) => id(1000 + offset));
+    expect(() => applyProgramFactPublication(index, snapshot)).toThrow();
+    const extended = { ...snapshot, schema: "awardping.program-variation-publication.v1", cohorts: snapshot.cohorts.map((row, offset) => ({ ...row,
+      source_count: row.source_ids.length, inventory_id: id(600 + offset), inventory_revision: revision, variant_count: 2,
+      source_bindings: Object.fromEntries(row.source_ids.map(sourceId => [sourceId, { url: `https://example.org/${sourceId}`, shared_award_id: row.award_id }])) })) };
+    const result = applyProgramVariationPublication(index, extended);
+    expect(result.entries[0].allowedSourceIdSet.has(id(1500))).toBe(true);
+    expect(result.entries[0].textFactReview?.variationInventoryId).toBe(id(600));
+    extended.cohorts[0].source_count--;
+    expect(() => applyProgramVariationPublication(index, extended)).toThrow();
+    extended.cohorts[0].source_count++;
+    extended.cohorts[0].source_bindings[id(1000)].shared_award_id = id(9999);
+    expect(() => applyProgramVariationPublication(index, extended)).toThrow();
+    expect(() => applyProgramVariationPublication(index, snapshot)).toThrow();
+  });
   it("does not expose drafts or rewrite the existing release while the fact batch is inactive", () => {
     const { index } = fixture();
     expect(index.available).toBe(true); expect(index.verifiedEntries).toHaveLength(25);

@@ -3,8 +3,11 @@
 import { useRef, useState } from "react";
 import type { ProgramFactBatchItem, ProgramFactPublication } from "@/lib/program-fact-review-types";
 import { formatCentralDateTime } from "@/lib/time-zone";
+import { ProgramVariationReleasePanel, ProgramVariationReviewPanel } from "@/components/program-variation-review-panel";
+import { ProgramTextSourceReviewPanel } from "@/components/program-text-source-review-panel";
+import { ProgramTextRecoveryPanel } from "@/components/program-text-recovery-panel";
 
-type Props = { initialAwards: ProgramFactBatchItem[]; initialPublication: ProgramFactPublication };
+type Props = { initialAwards: ProgramFactBatchItem[]; initialPublication: ProgramFactPublication; variationCoverageRequired?: boolean };
 type SavedSource = { id: string; url: string; title: string | null; text: string; blocks?: unknown[] };
 type Evidence = { id: string; hash: string; review: unknown; sources: SavedSource[] };
 type Batch = { awards: ProgramFactBatchItem[]; publication: ProgramFactPublication };
@@ -32,7 +35,7 @@ async function request(url: string, body?: unknown): Promise<unknown> {
   return value;
 }
 
-export function ProgramFactReviewBoard({ initialAwards, initialPublication }: Props) {
+export function ProgramFactReviewBoard({ initialAwards, initialPublication, variationCoverageRequired = false }: Props) {
   const [batch, setBatch] = useState<Batch>({ awards: initialAwards, publication: initialPublication });
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -48,9 +51,9 @@ export function ProgramFactReviewBoard({ initialAwards, initialPublication }: Pr
   const attestations = useRef<Record<string, string>>({});
   const evidenceVersion = useRef("");
   const editorDirty = Boolean(evidence && editor !== JSON.stringify(evidence.review, null, 2));
-  const selected = batch.awards.filter(award => award.review?.status === "draft" && ready(award) && checked[award.review.id] === award.review.content_hash);
+  const selected = variationCoverageRequired ? [] : batch.awards.filter(award => award.review?.status === "draft" && ready(award) && checked[award.review.id] === award.review.content_hash);
   const published = new Map(batch.publication.cohorts.map(item => [item.cohort_key, item]));
-  const publishable = batch.awards.length === 25 && batch.awards.every(award => award.review?.status === "approved" &&
+  const publishable = !variationCoverageRequired && batch.awards.length === 25 && batch.awards.every(award => award.review?.status === "approved" &&
     (ready(award) && award.review.current || (batch.publication.active && published.get(award.cohort_key)?.review_id === award.review.id)));
   const hasUnpublishedApproval = batch.awards.some(award => award.review?.status === "approved" && published.get(award.cohort_key)?.review_id !== award.review.id);
 
@@ -132,20 +135,24 @@ export function ProgramFactReviewBoard({ initialAwards, initialPublication }: Pr
       <p className="text-sm font-semibold">{batch.awards.filter(award => award.review).length} prepared · {batch.awards.filter(award => award.review?.status === "approved").length} approved · {batch.publication.active ? batch.publication.cohorts.length : 0} in public release</p>
       <div className="flex flex-wrap gap-2"><button type="button" className="button-secondary" disabled={busy !== null} onClick={() => exclusive("Refreshing", reload)}>Refresh status</button><button type="button" className="button-primary" disabled={busy !== null || selected.length === 0} onClick={approveChecked}>Approve checked ({selected.length})</button></div>
       <p className="text-xs text-[var(--muted)]">No AI requests, paid retries, notifications, or initial-coverage updates are created by this screen.</p>
+      {variationCoverageRequired ? <p className="text-sm font-semibold">Earlier proposals are retained as review material. Complete provider coverage and its separate award approvals are required for publication.</p> : null}
     </header>
     <p role="status" aria-live="polite" className="text-sm">{busy || notice}</p>
+    {variationCoverageRequired ? <ProgramTextSourceReviewPanel /> : null}
+    {variationCoverageRequired ? <ProgramTextRecoveryPanel /> : null}
     <div className="space-y-3">{batch.awards.map(award => {
       const review = award.review, publication = published.get(award.cohort_key);
       const pinned = Boolean(batch.publication.active && publication?.review_id === review?.id);
       const activeEvidence = evidence?.id === review?.id && evidence?.hash === review?.content_hash ? evidence : null;
-      const canAttest = Boolean(review?.status === "draft" && ready(award) && activeEvidence && !editorDirty);
+      const canAttest = Boolean(!variationCoverageRequired && review?.status === "draft" && ready(award) && activeEvidence && !editorDirty);
       const unavailable = award.sources.filter(source => source.ready !== true);
       return <article key={award.cohort_key} className="card overflow-hidden" aria-labelledby={`award-fact-${award.cohort_key}`}>
         <div className="flex flex-wrap items-start justify-between gap-3 p-4 sm:p-5">
-          <div className="min-w-0"><h2 id={`award-fact-${award.cohort_key}`} className="font-bold">{award.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{review ? `Cycle: ${review.cycle}` : "No current-details proposal prepared"}</p><p className="mt-1 text-xs">{award.sources.length - unavailable.length}/{award.sources.length} source pages ready{review?.reviewed_at ? ` · Approved ${formatCentralDateTime(review.reviewed_at)}` : ""}</p></div>
+          <div className="min-w-0"><h2 id={`award-fact-${award.cohort_key}`} className="font-bold">{award.name}</h2><p className="mt-1 text-sm text-[var(--muted)]">{review ? `Cycle: ${review.cycle}` : "No current-details proposal prepared"}</p><p className="mt-1 text-xs">{award.sources.length - unavailable.length}/{award.sources.length} {variationCoverageRequired ? "current roster pages collected; provider coverage is reviewed separately" : "source pages ready"}{review?.reviewed_at ? ` · Approved ${formatCentralDateTime(review.reviewed_at)}` : ""}</p></div>
           <div className="flex flex-wrap gap-2 text-xs font-semibold" aria-label={`${award.name} review status`}><span className="rounded-md border px-2 py-1">{review?.status === "approved" ? "Approved" : review ? "Draft" : "Not prepared"}</span><span className="rounded-md border px-2 py-1">{pinned ? publication?.current ? "Published · current" : "Published · needs reconciliation" : batch.publication.active && publication ? "Earlier approved version is live" : "Not in public release"}</span></div>
         </div>
         {results[award.cohort_key] ? <p role="status" className="border-t px-5 py-3 text-sm">{results[award.cohort_key]}</p> : null}
+        {variationCoverageRequired ? <ProgramVariationReviewPanel cohort={award.cohort_key} awardName={award.name} /> : null}
         <details className="border-t p-4 sm:p-5"><summary className="cursor-pointer font-semibold">Review details and sources</summary>
           {unavailable.length ? <div className="mt-4 rounded-md border p-3 text-sm"><p className="font-bold">Source collection or comparison is incomplete.</p><p>Approval is unavailable until the complete official source set has verified repeat captures and no blocking comparison.</p></div> : null}
           {review?.blockers.length ? <section className="mt-4 text-sm" aria-label="Unresolved issues"><h3 className="font-bold">Unresolved issues</h3><ul className="mt-2 list-disc space-y-1 pl-5">{review.blockers.map((issue, index) => <li key={`${index}:${issue}`}>{issue}</li>)}</ul></section> : null}
@@ -168,11 +175,11 @@ export function ProgramFactReviewBoard({ initialAwards, initialPublication }: Pr
         </details>
       </article>;
     })}</div>
-    <section className="card space-y-3 p-5 sm:p-6" aria-label="Publish approved award details">
+    {variationCoverageRequired ? <ProgramVariationReleasePanel /> : <section className="card space-y-3 p-5 sm:p-6" aria-label="Publish approved award details">
       <h2 className="font-bold">Publish approved details</h2><p className="text-sm text-[var(--muted)]">The first public release requires all 25 awards to have current, source-supported approvals. Later releases retain each unchanged award’s previously approved details. Collection holds do not become invented facts.</p>
       <label className="flex items-start gap-3 text-sm"><input type="checkbox" className="mt-1" checked={publishChecked} disabled={busy !== null || !publishable || !hasUnpublishedApproval} onChange={event => setPublishChecked(event.target.checked)} /><span>I reviewed the separate approval results and want to publish this exact 25-award batch together.</span></label>
       <button type="button" className="button-primary" disabled={busy !== null || !publishChecked || !publishable || !hasUnpublishedApproval} onClick={publishBatch}>Publish approved 25-award batch</button>
       {!publishable ? <p className="text-sm font-semibold">Publication is unavailable until all required approvals are ready.</p> : !hasUnpublishedApproval ? <p className="text-sm">The approved versions are already in the public release.</p> : null}
-    </section>
+    </section>}
   </section>;
 }

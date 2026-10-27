@@ -13,12 +13,89 @@ from unittest.mock import patch
 
 from playwright.sync_api import Page, WebSocketRoute, sync_playwright
 
-from collector import CaptureFailure, EVIDENCE_PROFILE, capture, checked_screenshot_dimensions, collect_stable, discover_html_links, jpeg_dimensions, main, observe, parse_projection, require_document_response_url, screenshot_bounds, validate_url
+from collector import BrowserDiagnostics, CaptureFailure, DIAGNOSTIC_MODE, EVIDENCE_PROFILE, capture, checked_screenshot_dimensions, collect_stable, diagnostic_url, discover_html_links, jpeg_dimensions, main, observe, parse_projection, require_document_response_url, screenshot_bounds, validate_url
 from html_document import extract_html_document
 
 
 BROWSER = "C:/Program Files/Google/Chrome/Application/chrome.exe"
 REQUEST = {"url": "https://example.com/award", "source_id": "fixture", "proxy_url": "http://127.0.0.1:1", "executable_path": BROWSER}
+
+
+class BrowserDiagnosticsTests(unittest.TestCase):
+    def test_url_identity_omits_paths_queries_credentials_and_fragments(self):
+        identity = diagnostic_url("wss://example.com:443/private/SECRET?token=SECRET#SECRET")
+        self.assertEqual(identity, {"origin": "wss://example.com",
+            "path_sha256": hashlib.sha256(b"/private/SECRET").hexdigest()})
+        self.assertNotIn("SECRET", str(identity))
+        for value in ("wss://user:SECRET@example.com/private", "data:SECRET", "file:///SECRET",
+                      "wss://example.com:invalid/", None, "x" * 16385):
+            self.assertIsNone(diagnostic_url(value))
+
+    def test_observations_are_bounded_and_keep_unverified_dependency_status(self):
+        diagnostic = BrowserDiagnostics()
+        for _ in range(20):
+            diagnostic.event("websocket_blocked", "wss://example.com/live?token=SECRET")
+        self.assertEqual(len(diagnostic.events), 16)
+        self.assertEqual(diagnostic.dropped, 4)
+        for _ in range(80):
+            diagnostic.error("request_failed", "ERR_CONNECTION_RESET https://SECRET")
+        result = diagnostic.snapshot()
+        self.assertLessEqual(len(result["events"]), 64)
+        self.assertEqual(result["dependency_status"], "unverified")
+        self.assertEqual(result["upstream_websocket_connections"], 0)
+        self.assertNotIn("SECRET", str(result))
+        self.assertEqual(result["events"][-1]["code"], "ERR_CONNECTION_RESET")
+
+    def test_cdp_initiator_is_passive_and_does_not_retain_stack_or_request_ids(self):
+        diagnostic = BrowserDiagnostics()
+        diagnostic.websocket({"url": "wss://example.com/live?token=SECRET", "requestId": "SECRET",
+            "initiator": {"type": "script", "stack": {"description": "SECRET", "callFrames": [
+                {"url": "https://example.com/app/SECRET.js?token=SECRET", "functionName": "SECRET",
+                 "lineNumber": 42, "columnNumber": 18}]}}})
+        event = diagnostic.snapshot()["events"][0]
+        self.assertEqual(event["initiator_type"], "script")
+        self.assertEqual(event["initiator_urls"][0]["origin"], "https://example.com")
+        self.assertNotIn("SECRET", str(event))
+        self.assertEqual(set(event), {"kind", "url", "initiator_type", "initiator_urls"})
+
+    def test_byte_budget_fits_the_bridge_even_for_maximal_origin_identities(self):
+        diagnostic = BrowserDiagnostics()
+        frames = [{"url": "https://" + (str(index) + "a" * 60 + ".") * 3 + "a" * 61 + ".com/private"}
+                  for index in range(4)]
+        # Use valid bounded origins with different path hashes to fill the budget.
+        for index in range(16):
+            diagnostic.websocket({"url": "wss://example.com/live", "initiator": {"type": "script",
+                "stack": {"callFrames": [{"url": frame["url"] + str(index)} for frame in frames]}}})
+            diagnostic.event("websocket_blocked", frames[0]["url"])
+            diagnostic.error("request_failed", "ERR_FAILED", frames[1]["url"])
+            diagnostic.error("console_error", "ERR_FAILED", frames[2]["url"])
+        self.assertLess(len(json.dumps(diagnostic.snapshot()).encode("utf-8")), 40000)
+        self.assertGreater(diagnostic.dropped, 0)
+
+    def test_failure_diagnostics_are_opt_in_and_do_not_expose_exception_messages(self):
+        request = {**REQUEST, "diagnostic_mode": DIAGNOSTIC_MODE}
+        with patch("collector.DynamicFetcher.fetch", side_effect=RuntimeError("ERR_TIMED_OUT https://example.com/?token=SECRET")):
+            with self.assertRaises(CaptureFailure) as caught:
+                capture(request)
+            error = caught.exception
+            self.assertEqual(str(error), "browser_fetch_failed")
+            self.assertEqual(error.browser_diagnostics["last_stage"], "setup")
+            self.assertEqual(error.browser_diagnostics["events"][0]["code"], "ERR_TIMED_OUT")
+            self.assertNotIn("SECRET", str(error.browser_diagnostics))
+            with self.assertRaises(CaptureFailure) as ordinary:
+                capture(REQUEST)
+            self.assertIsNone(ordinary.exception.browser_diagnostics)
+        output = io.StringIO()
+        with patch("collector.sys.stdin", io.TextIOWrapper(io.BytesIO(json.dumps(request).encode()))), \
+                patch("collector.sys.stdout", output), patch("collector.capture", side_effect=error):
+            self.assertEqual(main(), 2)
+        self.assertEqual(json.loads(output.getvalue())["browser_diagnostics"], error.browser_diagnostics)
+        self.assertNotIn("SECRET", output.getvalue())
+
+    def test_diagnostic_mode_does_not_enable_other_capture_profiles(self):
+        for mode, profile in ((True, None), ("arbitrary", None), (DIAGNOSTIC_MODE, EVIDENCE_PROFILE)):
+            with self.assertRaisesRegex(CaptureFailure, "^invalid_diagnostic_mode$"):
+                capture({**REQUEST, "diagnostic_mode": mode, **({"capture_profile": profile} if profile else {})})
 
 
 class ScreenshotDiagnosticsTests(unittest.TestCase):
@@ -316,12 +393,13 @@ class ProjectionTests(unittest.TestCase):
 
 
 class FetchTests(unittest.TestCase):
-    def fetch_fixture(self, body, status=200, content_type="text/html", profile=None, headers=None):
+    def fetch_fixture(self, body, status=200, content_type="text/html", profile=None, headers=None, diagnostics=False):
         seen = []
         def fixture(route):
             seen.append({"url": route.request.url, "method": route.request.method})
             route.fulfill(status=status, content_type=content_type, body=body, headers=headers)
-        request = {**REQUEST, **({"capture_profile": profile} if profile else {})}
+        request = {**REQUEST, **({"capture_profile": profile} if profile else {}),
+                   **({"diagnostic_mode": DIAGNOSTIC_MODE} if diagnostics else {})}
         result = capture(request, fixture=fixture)
         return result, seen
 
@@ -932,6 +1010,23 @@ class FetchTests(unittest.TestCase):
             result, _ = self.fetch_fixture(body)
             connect.assert_not_called()
         self.assertEqual(result["telemetry"]["blocked_websockets"], 1)
+        self.assertNotIn("Unexpected server message", result["text"])
+        self.assertIn("websocket_live_updates_not_observed_client_connection_mocked", result["document"]["limitations"])
+
+    def test_opt_in_diagnostics_keep_the_nonconnecting_websocket_guard(self):
+        body = '<h1>Award deadline</h1><p>Apply January 1, 2027. Only U.S. citizens are eligible.</p>' \
+               '<script>console.error("SECRET");const ws=new WebSocket("wss://example.com/private?token=SECRET");' \
+               'ws.onopen=()=>ws.send("SECRET");ws.onmessage=()=>document.body.append("Unexpected server message");</script>'
+        with patch.object(WebSocketRoute, "connect_to_server", side_effect=AssertionError("outbound websocket forbidden")) as connect:
+            result, _ = self.fetch_fixture(body, diagnostics=True)
+            connect.assert_not_called()
+        self.assertEqual(result["telemetry"]["blocked_websockets"], 1)
+        diagnostic = result["browser_diagnostics"]
+        self.assertEqual(diagnostic["last_stage"], "document_observed")
+        self.assertEqual(diagnostic["dependency_status"], "unverified")
+        blocked = next(event for event in diagnostic["events"] if event["kind"] == "websocket_blocked")
+        self.assertEqual(blocked["url"]["origin"], "wss://example.com")
+        self.assertNotIn("SECRET", json.dumps(diagnostic))
         self.assertNotIn("Unexpected server message", result["text"])
         self.assertIn("websocket_live_updates_not_observed_client_connection_mocked", result["document"]["limitations"])
 

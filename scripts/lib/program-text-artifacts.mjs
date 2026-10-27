@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
+import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetadata,
+  isProgramTextPublicDrivePdfContentType } from "./program-text-public-drive-pdf.mjs";
 
 export const PROGRAM_TEXT_REFERENCE_SCHEMA = "awardping.program-text-reference.v1";
 const sha = value => createHash("sha256").update(value).digest("hex");
@@ -61,11 +63,14 @@ export function validateProgramTextReference(ref) {
       !Array.isArray(ref.completeness.reasons) || ref.completeness.reasons.length ||
       !keys(ref.artifacts, ["metadata", "raw", "text"])) fail("invalid_reference");
   const prefix = `program-text/sources/${ref.source.id}/${ref.capture_id}/`;
+  const publicDrive = ref.extractor.version === PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION;
+  if (publicDrive && !isProgramTextPublicDrivePdfMetadata(ref)) fail("invalid_public_drive_pdf_provenance");
   for (const [role, a] of Object.entries(ref.artifacts)) {
     const name = role === "metadata" ? "metadata.json" : role === "text" ? "text.txt" : ref.acquisition.startsWith("pdf_") ? "original.pdf" : "original.html";
     const typeValid = role === "metadata" ? a?.content_type === "application/json" : role === "text" ? a?.content_type === "text/plain; charset=utf-8"
       : typeof a?.content_type === "string" && a.content_type.length <= 200 &&
-        (ref.acquisition.startsWith("pdf_") ? /^application\/pdf(?:;|$)/i : /^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i).test(a.content_type);
+        (publicDrive ? isProgramTextPublicDrivePdfContentType(a.content_type) :
+          (ref.acquisition.startsWith("pdf_") ? /^application\/pdf(?:;|$)/i : /^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i).test(a.content_type));
     const limit = role === "raw" ? (ref.acquisition.startsWith("pdf_") ? 20 : 5) * 1024 * 1024 : role === "text" ? 8 * 1024 * 1024 : maxArtifactBytes;
     if (!keys(a, ["byte_length", "content_type", "object_key", "sha256"]) ||
         a.object_key !== prefix + name || !hex(a.sha256) || !Number.isSafeInteger(a.byte_length) ||

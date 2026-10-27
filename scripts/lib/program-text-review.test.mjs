@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildProgramTextCapture } from "./program-text-capture.mjs";
 import { PROGRAM_DETAIL_FIELDS, parseProgramTextChangeDetails } from "./program-change-contract.mjs";
 import { buildProgramTextComparison, buildProgramTextReviewPackets, validateProgramTextReviewResult,
-  buildProgramTextChangeDetails, programTextReviewResponseSchema } from "./program-text-review.mjs";
+  buildProgramTextChangeDetails, programTextReviewResponseSchema, PROGRAM_TEXT_REVIEW_INSTRUCTIONS } from "./program-text-review.mjs";
 
 const source = { id: "10000000-0000-0000-0000-000000000001", shared_award_id: "20000000-0000-0000-0000-000000000001",
   url: "https://example.edu/award", title: "Example Scholarship", page_type: "application" };
@@ -174,6 +174,36 @@ describe("complete bounded review packets", () => {
 });
 
 describe("strict program-only result validation", () => {
+  it("instructs quotations to use the corresponding source-side ID and never a comparison-row ID", () => {
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("previous_quote.block_id use the corresponding changed row.previous.id SOURCE block ID");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("current_quote.block_id use the corresponding changed row.current.id SOURCE block ID");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("NEVER use the outer changed row.id (for example, change-00001)");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("Surrounding context blocks are interpretive only and cannot supply quotations");
+  });
+
+  it("holds the observed outer-ID error and accepts only each side's exact source block ID", () => {
+    // Made-up program wording reproduces the actual ID confusion without
+    // changing/retrying a failed saved review or normalizing its quotations.
+    const f = fixture([{ id: "block-before-012", text: "Example Award biology applications close June 1, 2027." }],
+      [{ id: "block-after-019", text: "Example Award biology applications are closed." }]);
+    const responses = responsesFor(f.plan), result = responses[0].blocks[0], change = result.changes[0];
+    change.field = "cycle_status"; change.summary = "Biology applications are now closed.";
+    expect(result.id).toBe("change-00001");
+    expect(change.previous_quote.block_id).toBe("block-before-012");
+    expect(change.current_quote.block_id).toBe("block-after-019");
+    for (const side of ["previous", "current"]) {
+      const wrong = structuredClone(responses);
+      wrong[0].blocks[0].changes[0][`${side}_quote`].block_id = result.id;
+      expect(validate(f, wrong)).toMatchObject({ status: "held", reasons: ["quote_not_bound_to_changed_block"] });
+    }
+    const switched = structuredClone(responses);
+    switched[0].blocks[0].changes[0].current_quote.block_id = change.previous_quote.block_id;
+    expect(validate(f, switched)).toMatchObject({ status: "held", reasons: ["quote_not_bound_to_changed_block"] });
+    expect(validate(f, responses)).toMatchObject({ status: "accepted", details: { program_changes: [{
+      previous_quote: { block_id: "block-before-012" }, current_quote: { block_id: "block-after-019" },
+    }] } });
+  });
+
   it("publishes an exact deadline replacement with traceable original offsets", () => {
     const f = fixture(), result = validate(f);
     expect(result.status).toBe("accepted");

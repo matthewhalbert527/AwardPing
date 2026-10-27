@@ -9,7 +9,7 @@ export const scraplingEvidenceProfile = "scrapling-evidence-v1";
 export const scraplingEvidenceProfileV2 = "scrapling-evidence-v2";
 export const scraplingSourceHtmlProfile = "scrapling-source-html-v1";
 const digest = (value) => createHash("sha256").update(value).digest("hex");
-const fail = (reason) => { throw Object.assign(new Error(reason), { pilotReason: reason }); };
+const fail = (reason, details = {}) => { throw Object.assign(new Error(reason), details, { pilotReason: reason }); };
 const isText = (value, max = 250000) => typeof value === "string" && value.length <= max;
 const publicUrl = (value) => {
   const url = normalizePublicHttpUrl(value);
@@ -19,6 +19,50 @@ const publicUrl = (value) => {
 const headingPath = (value) => Array.isArray(value) && value.length <= 100 && value.every((h) =>
   Number.isInteger(h?.level) && h.level >= 1 && h.level <= 6 && isText(h.text));
 const textList = (value) => Array.isArray(value) && value.length <= 1000 && value.every((v) => isText(v));
+
+/** Private opt-in observations only. Never authorize content/completeness from telemetry. */
+export function validateScraplingBrowserDiagnostics(value) {
+  const exact = (object, keys) => object && typeof object === "object" && !Array.isArray(object) &&
+    Object.keys(object).length === keys.length && keys.every(key => Object.hasOwn(object, key));
+  const urlIdentity = item => {
+    if (!exact(item, ["origin", "path_sha256"]) || !/^[0-9a-f]{64}$/.test(item.path_sha256 || "") ||
+        typeof item.origin !== "string" || item.origin.length > 280) return false;
+    try {
+      const url = new URL(item.origin);
+      return ["http:", "https:", "ws:", "wss:"].includes(url.protocol) && !url.username && !url.password &&
+        !url.search && !url.hash && url.pathname === "/" && url.origin === item.origin;
+    } catch { return false; }
+  };
+  const stages = ["setup", "navigation_request", "navigation_response", "dom_content_loaded", "load", "document_observation", "document_observed"];
+  const errors = new Set(["other", "ERR_ABORTED", "ERR_TIMED_OUT", "ERR_CONNECTION_TIMED_OUT", "ERR_CONNECTION_RESET",
+    "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_REFUSED", "ERR_NAME_NOT_RESOLVED", "ERR_PROXY_CONNECTION_FAILED",
+    "ERR_TUNNEL_CONNECTION_FAILED", "ERR_HTTP2_PROTOCOL_ERROR", "ERR_FAILED", "ERR_BLOCKED_BY_CLIENT",
+    "ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID", "ERR_CERT_DATE_INVALID", "ERR_SSL_PROTOCOL_ERROR"]);
+  if (!exact(value, ["schema", "last_stage", "cdp_observation", "events", "dropped_events", "dependency_status", "upstream_websocket_connections"]) ||
+      value.schema !== "awardping.browser-transport-diagnostics.v1" || !stages.includes(value.last_stage) ||
+      !["enabled", "unavailable"].includes(value.cdp_observation) || value.dependency_status !== "unverified" ||
+      value.upstream_websocket_connections !== 0 || !Number.isInteger(value.dropped_events) || value.dropped_events < 0 || value.dropped_events > 1000000 ||
+      !Array.isArray(value.events) || value.events.length > 64 || Buffer.byteLength(JSON.stringify(value)) > 40000) fail("invalid_browser_diagnostics");
+  const counts = new Map();
+  for (const item of value.events) {
+    let fields = ["kind"];
+    if (Object.hasOwn(item || {}, "url")) { fields.push("url"); if (!urlIdentity(item.url)) fail("invalid_browser_diagnostics"); }
+    if (["websocket_blocked", "navigation_request"].includes(item?.kind)) { /* origin/hash only */ }
+    else if (item?.kind === "navigation_response") {
+      fields.push("status"); if (!Number.isInteger(item.status) || item.status < 100 || item.status > 599) fail("invalid_browser_diagnostics");
+    } else if (item?.kind === "websocket_created") {
+      fields.push("initiator_type", "initiator_urls");
+      if (!["parser", "script", "preload", "preflight", "other"].includes(item.initiator_type) ||
+          !Array.isArray(item.initiator_urls) || item.initiator_urls.length > 4 || !item.initiator_urls.every(urlIdentity)) fail("invalid_browser_diagnostics");
+    } else if (["console_error", "page_error", "request_failed", "fetch_error"].includes(item?.kind)) {
+      fields.push("code", "message_sha256");
+      if (!errors.has(item.code) || !/^[0-9a-f]{64}$/.test(item.message_sha256 || "")) fail("invalid_browser_diagnostics");
+    } else fail("invalid_browser_diagnostics");
+    counts.set(item.kind, (counts.get(item.kind) || 0) + 1);
+    if (!exact(item, fields) || counts.get(item.kind) > 16) fail("invalid_browser_diagnostics");
+  }
+  return structuredClone(value);
+}
 
 function jpegDimensions(bytes) {
   if (bytes.length < 4 || bytes.readUInt16BE(0) !== 0xffd8 || bytes.readUInt16BE(bytes.length - 2) !== 0xffd9) fail("invalid_screenshot");
@@ -156,6 +200,7 @@ function validateSourceHtmlCapture(record) {
 
 /** Validate a collector record before retaining it. Does not authorize publishing. */
 export function validateScraplingCapture(record, { source }) {
+  if (Object.hasOwn(record || {}, "browser_diagnostics")) validateScraplingBrowserDiagnostics(record.browser_diagnostics);
   if (!record || record.schema !== "awardping.scrapling-capture.v1" || ![scraplingCaptureProfile, scraplingEvidenceProfile, scraplingEvidenceProfileV2, scraplingSourceHtmlProfile].includes(record.capture_profile) ||
       !/^[A-Za-z0-9._-]{1,160}$/.test(record.source_id || "") ||
       record.source_id !== source?.id || record.url !== source?.url || publicUrl(record.url) !== source.url ||
@@ -227,11 +272,13 @@ export function compareScraplingCaptures(previous, current) {
 }
 
 /** Scrapling owns fetching/extraction; this small bridge retains the existing egress boundary. */
-export async function captureScraplingSource(source, { pythonPath, executablePath, timeoutMs = 90000, captureProfile = scraplingCaptureProfile } = {}) {
+export async function captureScraplingSource(source, { pythonPath, executablePath, timeoutMs = 90000, captureProfile = scraplingCaptureProfile,
+  browserDiagnostics = false } = {}) {
   publicUrl(source.url);
   const sourceOnly = captureProfile === scraplingSourceHtmlProfile;
   if (!pythonPath || (!sourceOnly && !executablePath) || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000 ||
-      ![scraplingCaptureProfile, scraplingEvidenceProfile, scraplingEvidenceProfileV2, scraplingSourceHtmlProfile].includes(captureProfile)) fail("invalid_runtime_options");
+      ![scraplingCaptureProfile, scraplingEvidenceProfile, scraplingEvidenceProfileV2, scraplingSourceHtmlProfile].includes(captureProfile) ||
+      typeof browserDiagnostics !== "boolean" || browserDiagnostics && captureProfile !== scraplingCaptureProfile) fail("invalid_runtime_options");
   if (sourceOnly && !source.url.startsWith("https://")) fail("source_html_https_identity_required");
   const maxBytes = (sourceOnly ? 6 : 60) * 1024 * 1024;
   const proxy = await startPublicNetworkProxy({ timeoutMs: 15000, maxResponseBytes: maxBytes });
@@ -239,7 +286,7 @@ export async function captureScraplingSource(source, { pythonPath, executablePat
   let result;
   let failure;
   try {
-    result = await runCollectorProcess({ pythonPath, executablePath, source, proxyUrl: proxy.url, timeoutMs, captureProfile });
+    result = await runCollectorProcess({ pythonPath, executablePath, source, proxyUrl: proxy.url, timeoutMs, captureProfile, browserDiagnostics });
     result = validateScraplingCapture(result, { source });
     if (result.capture_profile !== captureProfile) fail("capture_profile_mismatch");
   } catch (error) { failure = error; }
@@ -251,7 +298,7 @@ export async function captureScraplingSource(source, { pythonPath, executablePat
   return result;
 }
 
-function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, timeoutMs, captureProfile }) {
+function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, timeoutMs, captureProfile, browserDiagnostics }) {
   return new Promise((resolve, reject) => {
     const env = Object.fromEntries(["SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PATH", "COMSPEC", "PATHEXT"]
       .filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
@@ -290,12 +337,14 @@ function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, tim
       try {
         if (reason) fail(reason);
         const value = JSON.parse(Buffer.concat(output).toString("utf8"));
-        if (value.error) fail(/^[a-z][a-z0-9_]{0,100}$/.test(value.error) ? value.error : "collector_failed");
+        if (value.error) fail(/^[a-z][a-z0-9_]{0,100}$/.test(value.error) ? value.error : "collector_failed",
+          browserDiagnostics && value.browser_diagnostics ? { browserDiagnostics: validateScraplingBrowserDiagnostics(value.browser_diagnostics) } : {});
         if (code !== 0) fail("collector_exit_failed");
         resolve(value);
       } catch (error) { reject(error?.pilotReason ? error : Object.assign(new Error("invalid_collector_output"), { pilotReason: "invalid_collector_output" })); }
     });
     child.stdin.end(JSON.stringify({ url: source.url, source_id: source.id, proxy_url: proxyUrl, executable_path: executablePath || "",
-      ...(captureProfile !== scraplingCaptureProfile ? { capture_profile: captureProfile } : {}) }));
+      ...(captureProfile !== scraplingCaptureProfile ? { capture_profile: captureProfile } : {}),
+      ...(browserDiagnostics ? { diagnostic_mode: "browser-transport-v1" } : {}) }));
   });
 }

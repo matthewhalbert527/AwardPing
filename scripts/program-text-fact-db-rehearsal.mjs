@@ -10,6 +10,7 @@ import { buildProgramTextCapture } from "./lib/program-text-capture.mjs";
 import { programTextReference } from "./lib/program-text-storage.mjs";
 import { emptyProgramFactReview, validateProgramFactReview } from "./lib/program-text-facts.mjs";
 import { prepareSupabaseServiceHeaders } from "./supabase-service-client.mjs";
+import { hasProgramTextSourceAccess } from "./lib/program-text-source-access.mjs";
 
 const object = x => x !== null && typeof x === "object" && !Array.isArray(x);
 const uuid = x => typeof x === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(x);
@@ -53,7 +54,8 @@ export async function generateProgramFactDbRehearsal({ registries, roles, member
     !Array.isArray(sources) || sources.length !== expectedSources || !uuid(epoch) || !Number.isFinite(now.getTime())) throw new Error("Incomplete rehearsal scope.");
   const ids = [...new Set(roles.flatMap(role => role.source_ids))].sort();
   if (ids.length !== sources.length || !ids.every(uuid) || new Set(registries.map(row => row.cohort_key)).size !== expectedAwards ||
-    new Set(sources.map(row => row.id)).size !== sources.length || sources.some(source => !ids.includes(source.id) || source.admin_review_status !== "open")) throw new Error("Rehearsal source identity mismatch.");
+    new Set(sources.map(row => row.id)).size !== sources.length || sources.some(source => !ids.includes(source.id) ||
+      roles.filter(role => role.source_ids.includes(source.id)).some(role => !hasProgramTextSourceAccess(source, { cohort: role.cohort_key, epoch })))) throw new Error("Rehearsal source identity mismatch.");
   const firstAt = new Date(now.getTime() - 180_000).toISOString(), currentAt = new Date(now.getTime() - 120_000).toISOString(), advanceAt = new Date(now.getTime() - 60_000).toISOString();
   const captures = new Map(sources.map(source => [source.id, fixtureCapture(source, currentAt)]));
   const fixtureSources = sources.map(source => {

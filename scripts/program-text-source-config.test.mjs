@@ -8,19 +8,15 @@ vi.mock("node:fs", async original => {
 });
 vi.mock("@aws-sdk/client-s3", () => ({ S3Client: class { destroy() { shared.destroyed++; } } }));
 vi.mock("./supabase-service-client.mjs", () => ({ closeSupabaseServiceTransport: async () => {},
-  createSupabaseServiceClient: () => ({ rpc: async name => {
-    if (name !== "get_program_text_fact_review_batch") throw new Error("Unexpected mutating RPC");
-    return { data: [] };
-  }, from(table) {
-    const rows = table === "program_text_source_roster" ? [{ cohort_key: "noaa_hollings", source_role: "current_documents",
+  createSupabaseServiceClient: () => ({ rpc: async (name, params) => {
+    if (name === "get_program_text_fact_review_batch") return { data: [] };
+    if (name === "get_program_variation_admin_batch") return { data: emptyVariationBatchFixture() };
+    if (name !== "get_program_text_worker_roster_page") throw new Error("Unexpected mutating RPC");
+    const roles = [{ cohort_key: "noaa_hollings", source_role: "current_documents",
       source_ids: shared.sources.map(source => source.id), manifest_status: "reviewed_text", revision: "33333333-3333-4333-8333-333333333333",
       evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: Object.fromEntries(shared.sources.map(source =>
-        [source.id, { source_url: source.url, shared_award_id: source.shared_award_id }])) } }] :
-      table === "shared_award_sources" ? shared.sources : null;
-    if (!rows) throw new Error("Unexpected table in source configuration test");
-    const query = { select() { return query; }, in() { return query; }, order() { return query; }, limit() { return query; },
-      then(yes, no) { return Promise.resolve({ data: rows }).then(yes, no); } };
-    return query;
+        [source.id, { source_url: source.url, shared_award_id: source.shared_award_id }])) } }];
+    return rosterPageFixture(roles, shared.sources)(params);
   } }) }));
 vi.mock("./lib/program-text-monitor.mjs", () => ({ monitorProgramTextSource: async input => {
   shared.calls.push(input); return { status: "baseline_ready", initial_coverage: true };
@@ -29,12 +25,15 @@ vi.mock("./lib/program-text-browser.mjs", async original => ({ ...await original
   findProgramTextBrowserExecutable: () => "C:/Existing/Chrome/chrome.exe" }));
 
 import { runProgramTextWorker } from "./program-text-worker.mjs";
+import { rosterPageFixture, emptyVariationBatchFixture } from "./fixtures/program-text-roster-pages.mjs";
 
 const nativeFs = await vi.importActual("node:fs");
 const actualConfig = JSON.parse(nativeFs.readFileSync(new URL("../config/program-text-monitoring.json", import.meta.url), "utf8"));
 const canonical = "a9b42e3f-6d7e-4b0d-8132-77c2042b311d", alias = "d53e5643-1f05-4b97-ad7c-84fecb061189";
-// These exact identities were independently re-read from shared_award_sources.
-// In particular, the current-scholar FAQ legitimately retains its alias owner.
+// Existing identities were independently read from shared_award_sources.
+// The new application identity is reserved in its reviewed pending proposal;
+// its actual guarded acquisition was checked without approving collection.
+// The current-scholar FAQ legitimately retains its alias owner.
 const reviewed = [
   { id: "e179694a-c623-4534-91d6-ef90fa0b0e38", shared_award_id: canonical,
     url: "https://www.noaa.gov/office-education/hollings-scholarship", page_type: "homepage", acquisition: "rendered_html" },
@@ -44,8 +43,12 @@ const reviewed = [
     url: "https://www.noaa.gov/office-education/hollings-scholarship/current/faq", page_type: "faq", acquisition: "rendered_html" },
   { id: "8f1f2753-2271-4158-9272-26a66ed2a996", shared_award_id: canonical,
     url: "https://www.noaa.gov/media/file/pdf-hollings-project-plan-form-062316-office-of-education", page_type: "pdf", acquisition: "pdf_text", pdf_transport: "browser" },
+  { id: "e5acfcc4-3469-4fc8-99f1-ee14e8dbbda1", shared_award_id: canonical,
+    url: "https://www.noaa.gov/office-education/hollings-scholarship/prospective/faq", page_type: "faq", acquisition: "rendered_html" },
+  { id: "1cfc6e13-6e13-4917-81c2-a8dc4c0292fb", shared_award_id: canonical,
+    url: "https://www.noaa.gov/office-education/undergraduate-scholarships", page_type: "application", acquisition: "rendered_html" },
 ];
-const sourceRows = () => reviewed.map(({ acquisition: _acquisition, pdf_transport: _transport, ...source }) => ({ ...source, admin_review_status: "open" }));
+const sourceRows = () => reviewed.map(({ id, shared_award_id, url, page_type }) => ({ id, shared_award_id, url, page_type, admin_review_status: "open" }));
 
 beforeEach(() => {
   shared.config = structuredClone(actualConfig); shared.sources = sourceRows(); shared.calls = []; shared.destroyed = 0;
@@ -55,7 +58,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("reviewed source-bound browser acquisition configuration", () => {
-  it("enables browser acquisition for exactly the four reviewed NOAA source identities", () => {
+  it("enables browser acquisition only for the six reviewed NOAA identities", () => {
     const browserOverrides = Object.entries(actualConfig.sources).filter(([, options]) => options.acquisition === "rendered_html" || options.pdf_transport === "browser");
     expect(browserOverrides.map(([id]) => id).sort()).toEqual(reviewed.map(source => source.id).sort());
     for (const source of reviewed) {
@@ -67,7 +70,7 @@ describe("reviewed source-bound browser acquisition configuration", () => {
   });
   it("passes explicit per-source acquisition and transport without replacing source identities", async () => {
     const report = await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);
-    expect(report.results).toHaveLength(4); expect(shared.calls).toHaveLength(4);
+    expect(report.results).toHaveLength(6); expect(shared.calls).toHaveLength(6);
     for (const source of reviewed) {
       const call = shared.calls.find(value => value.source.id === source.id);
       expect(call.source).toMatchObject({ url: source.url, shared_award_id: source.shared_award_id });

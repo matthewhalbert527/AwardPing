@@ -29,6 +29,18 @@ function fixture() {
 }
 
 describe("current program details require their own review", () => {
+  it("cold-validates separately approved text sources while leaving legacy status held", async () => {
+    const f = fixture(), source = f.context.sources[0]; source.admin_review_status = "review_later";
+    source.text_source_approvals = [{ schema: "awardping.program-text-source-approval.v1", id: source.shared_award_id,
+      source_id: source.id, shared_award_id: source.shared_award_id, source_url: source.url, cohort_key: "example", epoch,
+      content_hash: "a".repeat(64), current: true }];
+    expect((await validateProgramFactReview(f.review, f.context)).review).toEqual(f.review);
+    expect(source.admin_review_status).toBe("review_later");
+    source.text_source_approvals[0].cohort_key = "different_award";
+    await expect(validateProgramFactReview(f.review, f.context)).rejects.toThrow("source_not_current");
+    source.text_source_approvals = [];
+    await expect(validateProgramFactReview(f.review, f.context)).rejects.toThrow("source_not_current");
+  });
   it("creates only unresolved suggestions, never legacy fact approval", () => {
     const { context } = fixture(); const draft = emptyProgramFactReview({ ...context, cycle: "2027" });
     expect(draft.reviewed_all_sources).toBe(false); expect(draft.fields.map(field => field.field)).toEqual(PROGRAM_FACT_FIELDS);

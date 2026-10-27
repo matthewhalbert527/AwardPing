@@ -25,6 +25,7 @@ export type SharedAwardCard = {
   officialHomepage: string | null;
   summary: string | null;
   deadline: string | null;
+  hasApplicationRoutes?: boolean;
   importantDates?: string[];
   academicLevels: string[];
   disciplines: string[];
@@ -623,6 +624,7 @@ function AwardDirectoryCardContent({
           latestUpdateAt={award.latestUpdateAt}
           firstPublishedCaptureAt={award.firstPublishedCaptureAt}
         />
+        {award.hasApplicationRoutes ? <p className="mt-2 text-xs font-medium text-[var(--muted)]">Requirements and benefits by route</p> : null}
       </div>
       <div className="award-row-deadline">
         <span>{deadline.entries.length ? deadline.label : "Deadline"}</span>
@@ -632,7 +634,7 @@ function AwardDirectoryCardContent({
             <AwardDateValue value={entry.value} />
             {entry.status === "past" && <small className="block font-normal text-[var(--muted)]">Past date</small>}
           </strong>
-        )) : <strong>Not listed</strong>}
+        )) : <strong>{award.hasApplicationRoutes ? "View route deadlines" : "Not listed"}</strong>}
       </div>
     </div>
   );

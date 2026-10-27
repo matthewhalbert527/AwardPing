@@ -18,7 +18,7 @@ export default async function AdminProgramFactsPage() {
   try { batch = await loadProgramFactBatch(); }
   catch { return <ReviewShell><section className="card p-6" role="alert"><h1 className="admin-page-title">Current award details</h1><p className="mt-2">The current 25-award review batch could not be loaded. No approvals or public details were changed. Reload to try again.</p></section></ReviewShell>; }
 
-  return <ReviewShell><ProgramFactReviewBoard initialAwards={batch.awards} initialPublication={batch.publication} /></ReviewShell>;
+  return <ReviewShell><ProgramFactReviewBoard initialAwards={batch.awards} initialPublication={batch.publication} variationCoverageRequired /></ReviewShell>;
 }
 
 function ReviewShell({ children }: { children: React.ReactNode }) {

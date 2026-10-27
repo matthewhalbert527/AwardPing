@@ -11,7 +11,7 @@ import {
   getPublicAwardPageResolutionBySlug,
   type PublicAwardPageData,
 } from "@/lib/public-award-pages";
-import { publicAwardHref, publicAwardQueryId, publicAwardSection } from "@/lib/public-award-links";
+import { publicAwardHref, publicAwardQueryId, publicAwardSection, publicAwardVariantId } from "@/lib/public-award-links";
 import { getSeoPage, seoPages } from "@/lib/seo-pages";
 
 export const dynamic = "force-dynamic";
@@ -25,7 +25,7 @@ type Props = {
   params: Promise<{ slug: string }>;
   // A repeated key arrives as an array; publicAwardQueryId keeps only a
   // single well-formed id.
-  searchParams?: Promise<{ source?: string | string[]; change?: string | string[]; section?: string | string[] }>;
+  searchParams?: Promise<{ source?: string | string[]; change?: string | string[]; section?: string | string[]; variant?: string | string[] }>;
 };
 
 export function generateStaticParams() {
@@ -73,6 +73,7 @@ export default async function SlugPage({ params, searchParams }: Props) {
     sourceId: publicAwardQueryId(query.source),
     changeId: publicAwardQueryId(query.change),
     section: publicAwardSection(query.section),
+    variantId: publicAwardVariantId(query.variant),
   };
   const page = getSeoPage(slug);
   if (page) return <SeoLandingPageContent page={page} />;
@@ -83,6 +84,7 @@ export default async function SlugPage({ params, searchParams }: Props) {
   // list is still loaded (through the public gates) and can be selected.
   const initialResolution = await getPublicAwardPageResolutionBySlug(slug, {
     changeId: context.changeId,
+    variantId: context.variantId,
   }).catch(() => ({ kind: "unavailable" as const }));
   if (initialResolution.kind === "unavailable") {
     return <AwardUnavailable retryHref={retryHref} />;
@@ -94,7 +96,7 @@ export default async function SlugPage({ params, searchParams }: Props) {
 
   const user = await getCurrentUser();
   const resolution = user
-    ? await getPublicAwardPageResolutionBySlug(slug, { userId: user.id, changeId: context.changeId }).catch(
+    ? await getPublicAwardPageResolutionBySlug(slug, { userId: user.id, changeId: context.changeId, variantId: context.variantId }).catch(
         () => ({ kind: "unavailable" as const }),
       )
     : initialResolution;
@@ -222,7 +224,7 @@ function PublicAwardPage({
       <SiteHeader />
       <main className="public-award-console-wrap">
         <PublicAwardWorkspace
-          key={`${data.award.id}:${initialSection ?? ""}:${initialSourceId ?? ""}:${initialChangeId ?? ""}`}
+          key={`${data.award.id}:${data.variations?.selected_scope_key ?? ""}:${initialSection ?? ""}:${initialSourceId ?? ""}:${initialChangeId ?? ""}`}
           data={data}
           initialChangeId={initialChangeId}
           initialSourceId={initialSourceId}

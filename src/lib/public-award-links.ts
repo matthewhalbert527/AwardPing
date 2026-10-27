@@ -13,7 +13,13 @@ export type PublicAwardContext = {
   sourceId?: string | null;
   changeId?: string | null;
   section?: string | null;
+  variantId?: string | null;
 };
+
+/** Stable provider-inventory keys, never a URL or a free-form route. */
+export function publicAwardVariantId(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9_-]{0,127}$/.test(value) && value !== "legacy_common" ? value : undefined;
+}
 
 export function publicAwardSection(value: unknown) {
   return typeof value === "string" && ["overview", "updates", "applying", "sources"].includes(value)
@@ -43,6 +49,8 @@ export function publicAwardHref(path: string, context: PublicAwardContext = {}) 
   if (context.changeId) params.set(PUBLIC_AWARD_CHANGE_PARAM, context.changeId);
   const section = publicAwardSection(context.section);
   if (section) params.set("section", section);
+  const variant = publicAwardVariantId(context.variantId);
+  if (variant && variant !== "common") params.set("variant", variant);
   const query = params.toString();
   const safePath = sameOriginPath(path);
   return query ? `${safePath}?${query}` : safePath;

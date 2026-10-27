@@ -29,7 +29,7 @@ describe("current award details admin page", () => {
     const html = renderToStaticMarkup(await AdminProgramFactsPage());
     expect(mocks.admin).toHaveBeenCalledExactlyOnceWith("admin@example.org");
     expect(mocks.batch).toHaveBeenCalledTimes(1);
-    expect(mocks.board.mock.calls[0][0]).toEqual({ initialAwards: data.awards, initialPublication: data.publication });
+    expect(mocks.board.mock.calls[0][0]).toEqual({ initialAwards: data.awards, initialPublication: data.publication, variationCoverageRequired: true });
     expect(html).toContain("Private review board"); expect(html).toContain("/dashboard/admin/issues");
     expect(mocks.user.mock.invocationCallOrder[0]).toBeLessThan(mocks.admin.mock.invocationCallOrder[0]);
     expect(mocks.admin.mock.invocationCallOrder[0]).toBeLessThan(mocks.batch.mock.invocationCallOrder[0]);

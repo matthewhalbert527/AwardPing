@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { normalizePublicHttpUrl } from "./public-network-safety.mjs";
+import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetadata,
+  isProgramTextPublicDrivePdfContentType, hasProgramTextPublicDrivePdfEnvelope } from "./program-text-public-drive-pdf.mjs";
 
 // Pure retained-evidence contract. No browser, extraction engine, OCR bridge,
 // local file retention, process launch or source fetching is imported here.
@@ -88,11 +90,15 @@ export function validateProgramTextCapture(capture, { source } = {}) {
   if (!plain(capture.extractor) || Object.keys(capture.extractor).sort().join() !== "name,version" ||
       !scalarText(capture.extractor.name, 160) || !capture.extractor.name || !scalarText(capture.extractor.version, 160) || !capture.extractor.version) fail("invalid_extractor");
   const raw = capture.raw_source, isPdf = capture.acquisition.startsWith("pdf_");
+  const publicDrive = capture.extractor.version === PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION;
+  if (publicDrive && !isProgramTextPublicDrivePdfMetadata(capture)) fail("invalid_public_drive_pdf_provenance");
   if (!plain(raw) || Object.keys(raw).sort().join() !== "byte_length,bytes,content_type,sha256" || !Buffer.isBuffer(raw.bytes) ||
       raw.byte_length !== raw.bytes.length || raw.bytes.length < 1 || raw.bytes.length > (isPdf ? programTextCaptureLimits.pdfBytes : programTextCaptureLimits.htmlBytes) ||
       !sha(raw.sha256) || hash(raw.bytes) !== raw.sha256 || !scalarText(raw.content_type, 200) ||
-      !(isPdf ? /^application\/pdf(?:;|$)/i : /^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i).test(raw.content_type)) fail("invalid_raw_source");
+      !(publicDrive ? isProgramTextPublicDrivePdfContentType(raw.content_type) :
+        (isPdf ? /^application\/pdf(?:;|$)/i : /^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i).test(raw.content_type))) fail("invalid_raw_source");
   if (isPdf && !raw.bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))) fail("invalid_pdf");
+  if (publicDrive && !hasProgramTextPublicDrivePdfEnvelope(raw.bytes)) fail("invalid_public_drive_pdf_envelope");
   if (typeof capture.text !== "string" || capture.text.length > programTextCaptureLimits.textCharacters ||
       Buffer.byteLength(capture.text) > programTextCaptureLimits.textBytes || capture.text.includes("\0") ||
       Buffer.from(capture.text).toString("utf8") !== capture.text || !sha(capture.text_sha256) || hash(capture.text) !== capture.text_sha256) fail("invalid_text");
@@ -117,6 +123,17 @@ export function validateProgramTextCapture(capture, { source } = {}) {
     ids.add(block.id); cursor = block.end_utf16;
   }
   if (capture.text.slice(cursor).trim()) fail("uncovered_text");
+  if (publicDrive) {
+    let page = 0;
+    const pageText = [];
+    for (const block of capture.blocks) {
+      if (block.kind !== "pdf_page" || !Number.isInteger(block.page) || block.page < 1 ||
+          block.page < page || complete.status === "complete" && block.page > page + 1) fail("invalid_public_drive_pdf_pages");
+      page = block.page;
+      pageText[page - 1] = (pageText[page - 1] || "") + block.text;
+    }
+    if (complete.status === "complete" && (!pageText.length || pageText.some(text => text.trim().length < 20))) fail("invalid_public_drive_pdf_pages");
+  }
   if (complete.status === "complete" && isKnownProgramTextFooterOnlyPdfReference({
     acquisition: capture.acquisition, text_length: capture.text.length, text_sha256: capture.text_sha256,
   })) fail("pdf_footer_only_text");

@@ -1,6 +1,7 @@
 import { buildProgramTextComparison, buildProgramTextReviewPackets } from "./program-text-review.mjs";
 import { programTextReference } from "./program-text-storage.mjs";
 import { programTextDeterministicNoChange, validatedProgramTextDeterministicProvenance, PROGRAM_TEXT_UNPAID_NULL_FIELDS } from "./program-text-deterministic-no-change.mjs";
+import { attachProgramTextSourceApprovals, hasProgramTextSourceAccess } from "./program-text-source-access.mjs";
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value !== null && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -12,6 +13,23 @@ async function result(query, context) {
   return data;
 }
 const iso = () => new Date().toISOString();
+const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+// Same RFC3339 calendar/offset rules as the existing promotion verifier, kept
+// local so text-only review does not import the legacy visual dependency tree.
+function candidateMicros(value) {
+  const m = typeof value === "string" && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!m) throw new Error("Invalid candidate creation timestamp");
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number), offsetHour = Number(m[10] || 0), offsetMinute = Number(m[11] || 0);
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) throw new Error("Invalid candidate creation timestamp");
+  const date = new Date(0); date.setUTCFullYear(year, month - 1, day); date.setUTCHours(hour, minute, second, 0);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day ||
+      date.getUTCHours() !== hour || date.getUTCMinutes() !== minute || date.getUTCSeconds() !== second) throw new Error("Invalid candidate creation timestamp");
+  return BigInt(date.getTime() - (m[9] === "-" ? -1 : 1) * (offsetHour * 60 + offsetMinute) * 60000) * 1000n + BigInt((m[7] || "").padEnd(6, "0"));
+}
+function compareCandidates(a, b) {
+  const left = candidateMicros(a.created_at), right = candidateMicros(b.created_at);
+  return left === right ? a.id < b.id ? -1 : a.id > b.id ? 1 : 0 : left < right ? -1 : 1;
+}
 
 export function programTextCandidateWork(row) {
   return { schema: "awardping.program-text-review-work.v1", id: row.id,
@@ -74,9 +92,10 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
           row.worker_metadata?.evidence_signature !== row.candidate_signature || row.worker_metadata?.bucket !== bucket ||
           ["previous_image_hash", "new_image_hash", "previous_file_hash", "new_file_hash"].some(key => row[key] != null)) throw new Error("Not text-only work");
       if (await sourceIsApproved(row.shared_award_source_id) !== true) throw new Error("Text review source is no longer approved");
-      const source = await result(supabase.from("shared_award_sources").select("id,shared_award_id,url,title,admin_review_status,text_monitoring_state").eq("id", row.shared_award_source_id).single(), "verify source");
+      const currentSource = await result(supabase.from("shared_award_sources").select("id,shared_award_id,url,title,admin_review_status,text_monitoring_state").eq("id", row.shared_award_source_id).single(), "verify source");
+      const [source] = await attachProgramTextSourceApprovals(supabase, [currentSource], { epoch: row.worker_metadata.epoch });
       const state = source.text_monitoring_state;
-      if (source.admin_review_status !== "open" || source.shared_award_id !== row.shared_award_id || source.url !== row.source_url ||
+      if (!hasProgramTextSourceAccess(source, { epoch: row.worker_metadata.epoch }) || source.shared_award_id !== row.shared_award_id || source.url !== row.source_url ||
           state?.epoch !== row.worker_metadata.epoch || !programTextEqual(state.baseline_ref, row.previous_snapshot_ref) ||
           !programTextEqual(state.latest_ref, row.new_snapshot_ref)) throw new Error("Text review pair is not current");
       if (!programTextEqual(await programIdentity(source), row.prompt_payload.program_identity)) throw new Error("Text review program identity changed");
@@ -145,9 +164,43 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
     },
     async listCandidates(statuses, limit = 20, { source_ids, epoch } = {}) {
       if (!Array.isArray(source_ids) || !source_ids.length || !epoch) return [];
-      return result(supabase.from(table).select("*").eq("candidate_scope", "program_text_change")
+      if (source_ids.length <= 100) return result(supabase.from(table).select("*").eq("candidate_scope", "program_text_change")
         .in("shared_award_source_id", source_ids).eq("worker_metadata->>epoch", epoch)
         .in("status", statuses).order("created_at").limit(limit), "list text reviews");
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !uuid(epoch) || !source_ids.every(uuid) ||
+          new Set(source_ids).size !== source_ids.length) throw new Error("Invalid bounded text review scope");
+      const metadata = new Map();
+      for (let start = 0; start < source_ids.length; start += 100) {
+        const ids = source_ids.slice(start, start + 100);
+        const { data: page, count, error } = await supabase.from(table).select("id,created_at,shared_award_source_id", { count: "exact" }).eq("candidate_scope", "program_text_change")
+          .in("shared_award_source_id", ids).eq("worker_metadata->>epoch", epoch)
+          .in("status", statuses).order("created_at").order("id").limit(limit);
+        if (error) throw new Error(`Program text repository: list bounded text review metadata failed (${error.code || "database"})`);
+        if (!Number.isSafeInteger(count) || count < 0 || !Array.isArray(page) || page.length !== Math.min(limit, count)) throw new Error("Incomplete bounded text review metadata");
+        let previous;
+        for (const row of page) {
+          if (!uuid(row?.id) || !ids.includes(row.shared_award_source_id) || metadata.has(row.id) ||
+              previous && compareCandidates(previous, row) >= 0) throw new Error("Invalid bounded text review identity");
+          candidateMicros(row.created_at); metadata.set(row.id, row); previous = row;
+        }
+      }
+      const chosen = [...metadata.values()].sort(compareCandidates).slice(0, limit);
+      if (!chosen.length) return [];
+      const found = await result(supabase.from(table).select("*").eq("candidate_scope", "program_text_change")
+        .in("id", chosen.map(row => row.id)).eq("worker_metadata->>epoch", epoch)
+        .in("status", statuses).order("created_at").order("id").limit(limit), "read selected text reviews");
+      const seen = new Set();
+      if (!Array.isArray(found) || found.length > chosen.length) throw new Error("Invalid selected text reviews");
+      for (const row of found) {
+        const original = metadata.get(row?.id);
+        if (!original || !chosen.some(chosenRow => chosenRow.id === row.id) || seen.has(row.id) || row.candidate_scope !== "program_text_change" ||
+            row.worker_metadata?.epoch !== epoch || !statuses.includes(row.status) || row.shared_award_source_id !== original.shared_award_source_id ||
+            candidateMicros(row.created_at) !== candidateMicros(original.created_at)) throw new Error("Selected text review identity changed");
+        seen.add(row.id);
+      }
+      // A concurrently claimed row may disappear; never expand/retry the paid
+      // work set to fill that vacancy. Each returned row still gets cold CAS verification.
+      return found.sort(compareCandidates);
     },
   };
   return repository;

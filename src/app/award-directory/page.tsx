@@ -24,7 +24,7 @@ type OfficeAwardTrackingRow = Pick<AwardRow, "shared_award_id">;
 type SharedAwardDirectoryRow = Pick<
   SharedAwardRow,
   "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts" | "public_facts_generated_at"
-> & { completeSnapshot?: boolean };
+> & { completeSnapshot?: boolean; hasApplicationRoutes?: boolean };
 type SharedChangeDirectoryRow = Pick<
   SharedChangeRow,
   | "id"
@@ -175,6 +175,7 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
       public_facts: publication.publishedFacts,
       public_facts_generated_at: publication.textFactReview?.reviewedAt || publication.registry.last_verified_at,
       completeSnapshot: Boolean(publication.textFactReview),
+      hasApplicationRoutes: (publication.textFactReview?.variationCount || 0) > 0,
     }),
   );
   const [eligibleEvents, firstPublishedCaptureDates] = await Promise.all([
@@ -222,6 +223,7 @@ function mapSharedAwards(
       officialHomepage: award.official_homepage,
       summary: compactAwardDirectorySummary(facts.overview || award.summary, award.name),
       deadline: facts.deadline,
+      hasApplicationRoutes: award.hasApplicationRoutes,
       importantDates: facts.importantDates,
       academicLevels: facts.academicLevels,
       disciplines: facts.disciplines,

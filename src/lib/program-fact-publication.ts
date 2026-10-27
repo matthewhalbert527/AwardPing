@@ -19,6 +19,16 @@ function publicValues(value: unknown): value is Record<string, Json> {
 
 /** Apply only an atomically published whole batch, on top of the legacy identity gate. */
 export function applyProgramFactPublication(index: Stage1PublicationIndex, snapshot: unknown): Stage1PublicationIndex {
+  return applyFactPublication(index, snapshot, false);
+}
+
+/** The aggregate may cover many bounded units; this does not raise a review's evidence limit. */
+export function applyProgramVariationPublication(index: Stage1PublicationIndex, snapshot: unknown): Stage1PublicationIndex {
+  if (!object(snapshot) || snapshot.schema !== "awardping.program-variation-publication.v1") throw new Error("Invalid variation publication.");
+  return applyFactPublication(index, { ...snapshot, schema: "awardping.program-fact-publication.v1" }, true);
+}
+
+function applyFactPublication(index: Stage1PublicationIndex, snapshot: unknown, variations: boolean): Stage1PublicationIndex {
   if (!object(snapshot) || snapshot.schema !== "awardping.program-fact-publication.v1" || !uuid(snapshot.revision) ||
     typeof snapshot.active !== "boolean" || !Array.isArray(snapshot.cohorts)) throw new Error("Invalid approved program-fact release.");
   if (!snapshot.active) {
@@ -27,21 +37,33 @@ export function applyProgramFactPublication(index: Stage1PublicationIndex, snaps
   }
   if (!index.available || index.verifiedEntries.length !== 25 || snapshot.cohorts.length !== 25) throw new Error("Incomplete program-fact release.");
   const cohorts = snapshot.cohorts;
-  const seen = new Set<string>(), sources = new Set<string>(), reviews = new Set<string>();
+  const seen = new Set<string>(), sources = new Set<string>(), reviews = new Set<string>(), inventories = new Set<string>();
   const entries = index.entries.map(entry => {
     const row = cohorts.find(row => object(row) && row.cohort_key === entry.registry.cohort_key);
     if (!object(row) || seen.has(String(row.cohort_key)) || row.award_id !== entry.canonicalAwardId ||
       !uuid(row.review_id) || reviews.has(row.review_id) || !uuid(row.epoch) || !stamp(row.reviewed_at) || typeof row.current !== "boolean" ||
       !publicValues(row.public_facts) ||
-      !Array.isArray(row.source_ids) || !row.source_ids.length || row.source_ids.length > 500 ||
+      !Array.isArray(row.source_ids) || !row.source_ids.length ||
+      (variations ? !Number.isSafeInteger(row.source_count) || row.source_count !== row.source_ids.length : row.source_ids.length > 500) ||
+      (variations && (!uuid(row.inventory_id) || !uuid(row.inventory_revision) || inventories.has(row.inventory_id) || !Number.isSafeInteger(row.variant_count) || (row.variant_count as number) < 0)) ||
       !row.source_ids.every(uuid) || new Set(row.source_ids).size !== row.source_ids.length ||
       row.source_ids.some(id => sources.has(id))) throw new Error("Wrong or incomplete award approval.");
+    if (variations && (!object(row.source_bindings) || Object.keys(row.source_bindings).length !== row.source_ids.length ||
+        row.source_ids.some(id => {
+          const binding = (row.source_bindings as Record<string, unknown>)[id];
+          if (!object(binding) || Object.keys(binding).length !== 2 || typeof binding.url !== "string" || binding.url.length > 4000 ||
+              typeof binding.shared_award_id !== "string" || !entry.memberAwardIds.includes(binding.shared_award_id)) return true;
+          try { const url = new URL(binding.url); return url.protocol !== "https:" || Boolean(url.username || url.password); } catch { return true; }
+        }))) throw new Error("Pinned variation source identities are incomplete.");
     seen.add(String(row.cohort_key)); reviews.add(row.review_id); row.source_ids.forEach(id => sources.add(id));
+    if (variations) inventories.add(row.inventory_id as string);
     // Keep the independently pinned identity homepage even if its collection
     // role has moved to a new official page. No legacy identity is rewritten.
     const allowedSourceIds = [...new Set([...row.source_ids, ...(entry.officialHomepageSourceId ? [entry.officialHomepageSourceId] : [])])];
     return { ...entry, publishedFacts: row.public_facts as Json, allowedSourceIds, allowedSourceIdSet: new Set(allowedSourceIds),
-      textFactReview: { id: row.review_id, reviewedAt: row.reviewed_at, current: row.current, releaseRevision: snapshot.revision as string } };
+      ...(variations ? { approvedTextSourceBindings: row.source_bindings as Record<string, { url: string; shared_award_id: string }> } : {}),
+      textFactReview: { id: row.review_id, reviewedAt: row.reviewed_at, current: row.current, releaseRevision: snapshot.revision as string,
+        ...(variations ? { variationInventoryId: row.inventory_id as string, variationInventoryRevision: row.inventory_revision as string, variationCount: row.variant_count as number } : {}) } };
   });
   if (seen.size !== 25) throw new Error("Duplicate program-fact review identities.");
   return { ...index, entries, verifiedEntries: entries.filter(entry => entry.effectivelyVerified),

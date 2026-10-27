@@ -14,6 +14,7 @@ import {
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isSameOriginMutationRequest } from "@/lib/same-origin-mutation";
+import { loadProgramVariationTrackingSources, trackProgramVariationForOffice } from "@/lib/program-variation-tracking.server";
 
 export const runtime = "nodejs";
 
@@ -68,6 +69,17 @@ export async function POST(request: Request, { params }: Props) {
     return NextResponse.json({ error: "Shared award was not found." }, { status: 404 });
   }
   const admin = createSupabaseAdminClient();
+  if (publication.textFactReview?.variationInventoryId) {
+    try {
+      const { context, sources } = await loadProgramVariationTrackingSources(admin, publication);
+      const supabase = await createSupabaseServerClient();
+      const result = await trackProgramVariationForOffice({ supabase, publication, context, sources,
+        officeId: officeContext.current.officeId, cadence: parsed.data.cadence });
+      return NextResponse.json({ ok: true, ...result });
+    } catch (error) {
+      return NextResponse.json({ error: "Shared award could not be tracked. Refresh and try again." }, { status: trackingMutationStatus(error) });
+    }
+  }
   const { data: sharedSources, error: sharedSourcesError } = await admin
     .from("shared_award_sources")
     .select("*")

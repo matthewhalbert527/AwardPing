@@ -36,6 +36,84 @@ MAX_SCREENSHOT_PIXELS = 25000000
 CHALLENGE = re.compile(r"\b(checking your browser|verify you are human|access denied|just a moment|enable javascript and cookies to continue|sign in to continue|enable javascript to continue)\b", re.I)
 SAFE_REASON = re.compile(r"^[a-z][a-z0-9_]{0,100}$")
 SNAPSHOT_STYLES = ["visibility", "display", "opacity", "content-visibility", "clip-path", "clip"]
+DIAGNOSTIC_MODE = "browser-transport-v1"
+DIAGNOSTIC_LIMIT = 64
+DIAGNOSTIC_ERRORS = {"ERR_ABORTED", "ERR_TIMED_OUT", "ERR_CONNECTION_TIMED_OUT", "ERR_CONNECTION_RESET",
+                     "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_REFUSED", "ERR_NAME_NOT_RESOLVED",
+                     "ERR_PROXY_CONNECTION_FAILED", "ERR_TUNNEL_CONNECTION_FAILED", "ERR_HTTP2_PROTOCOL_ERROR",
+                     "ERR_FAILED", "ERR_BLOCKED_BY_CLIENT", "ERR_CERT_AUTHORITY_INVALID",
+                     "ERR_CERT_COMMON_NAME_INVALID", "ERR_CERT_DATE_INVALID", "ERR_SSL_PROTOCOL_ERROR"}
+
+
+def diagnostic_url(value):
+    """Inert identity only: no credentials, query, fragment, raw path or URL fetch."""
+    if not isinstance(value, str) or len(value) > 16384:
+        return None
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        if parsed.scheme not in ("http", "https", "ws", "wss") or not host or parsed.username or parsed.password:
+            return None
+        # Origin labels are bounded DNS/IP syntax, not arbitrary console content.
+        if len(host) > 253 or not re.fullmatch(r"[A-Za-z0-9.:-]+", host):
+            return None
+        port = parsed.port
+        origin = parsed.scheme + "://" + ("[" + host.lower() + "]" if ":" in host else host.lower())
+        if port is not None and port != (443 if parsed.scheme in ("https", "wss") else 80):
+            origin += ":" + str(port)
+        return {"origin": origin, "path_sha256": hashlib.sha256(parsed.path.encode("utf-8")).hexdigest()}
+    except (TypeError, ValueError, UnicodeError):
+        return None
+
+
+class BrowserDiagnostics:
+    """Opt-in, bounded observations; never a dependency/completeness approval."""
+
+    def __init__(self):
+        self.stage = "setup"
+        self.cdp = "unavailable"
+        self.events = []
+        self.event_bytes = 2
+        self.dropped = 0
+
+    def event(self, kind, url=None, **fields):
+        if len(self.events) >= DIAGNOSTIC_LIMIT or sum(event["kind"] == kind for event in self.events) >= 16:
+            self.dropped = min(self.dropped + 1, 1000000)
+            return
+        event = {"kind": kind, **({"url": identity} if (identity := diagnostic_url(url)) else {}), **fields}
+        encoded_bytes = len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
+        if self.event_bytes + encoded_bytes > 35000:
+            self.dropped = min(self.dropped + 1, 1000000)
+            return
+        self.events.append(event)
+        self.event_bytes += encoded_bytes
+
+    def error(self, kind, value, url=None):
+        text = str(value)[:16384]
+        found = re.search(r"\bERR_[A-Z0-9_]+\b", text)
+        code = found.group() if found and found.group() in DIAGNOSTIC_ERRORS else "other"
+        self.event(kind, url, code=code, message_sha256=hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest())
+
+    def websocket(self, event):
+        initiator = event.get("initiator") or {}
+        kind = initiator.get("type")
+        kind = kind if kind in ("parser", "script", "preload", "preflight", "other") else "other"
+        # CDP is passive here. No stack strings, arguments, request IDs, headers,
+        # response bodies or asynchronous parent stacks are retained.
+        frames = (initiator.get("stack") or {}).get("callFrames") or []
+        origins = []
+        for frame in frames[:4]:
+            identity = diagnostic_url(frame.get("url"))
+            if identity and identity not in origins:
+                origins.append(identity)
+        self.event("websocket_created", event.get("url"), initiator_type=kind, initiator_urls=origins)
+
+    def snapshot(self):
+        return {"schema": "awardping.browser-transport-diagnostics.v1", "last_stage": self.stage,
+                "cdp_observation": self.cdp, "events": list(self.events), "dropped_events": self.dropped,
+                "dependency_status": "unverified", "upstream_websocket_connections": 0}
+
+
 HTML_LINK_SCRIPT = """() => {
     const anchors = document.querySelectorAll('a');
     if (anchors.length > 10000) return {error: 'html_link_count_limit'};
@@ -67,10 +145,13 @@ HTML_LINK_SCRIPT = """() => {
 class CaptureFailure(Exception):
     """Bounded failure label; no source content or credentials in output."""
 
-    def __init__(self, reason, *, diagnostics=None):
+    def __init__(self, reason, *, diagnostics=None, browser_diagnostics=None):
         if isinstance(reason, CaptureFailure) and diagnostics is None:
             diagnostics = reason.diagnostics
+        inherited_browser = reason.browser_diagnostics if isinstance(reason, CaptureFailure) else None
         super().__init__(str(reason))
+        self.browser_diagnostics = (browser_diagnostics.snapshot() if isinstance(browser_diagnostics, BrowserDiagnostics)
+                                    else inherited_browser)
         self.diagnostics = None
         stages = {"document_dimensions", "fitting_target", "fitted_pre_screenshot",
                   "jpeg_dimensions", "post_screenshot_bounds", "post_screenshot_viewport"}
@@ -690,6 +771,10 @@ def capture(request, fixture=None):
     profile = request.get("capture_profile", PROFILE)
     if profile not in (PROFILE, *EVIDENCE_PROFILES, SOURCE_HTML_PROFILE):
         raise CaptureFailure("invalid_capture_profile")
+    diagnostic_mode = request.get("diagnostic_mode")
+    if diagnostic_mode is not None and (diagnostic_mode != DIAGNOSTIC_MODE or profile != PROFILE):
+        raise CaptureFailure("invalid_diagnostic_mode")
+    diagnostic = BrowserDiagnostics() if diagnostic_mode == DIAGNOSTIC_MODE else None
     source_id = request.get("source_id")
     if not isinstance(source_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", source_id):
         raise CaptureFailure("invalid_source_id")
@@ -716,6 +801,8 @@ def capture(request, fixture=None):
                 # step (observed with 1.64). Consume messages without connecting,
                 # responding or making synchronous browser calls from this callback.
                 state["telemetry"]["blocked_websockets"] += 1
+                if diagnostic:
+                    diagnostic.event("websocket_blocked", socket.url)
                 socket.on_message(lambda _: None)
             context.route_web_socket("**/*", websocket_sink)
 
@@ -748,9 +835,25 @@ def capture(request, fixture=None):
             page.on("dialog", lambda dialog: dialog.dismiss())
             page.on("download", lambda download: download.cancel())
             page.on("pageerror", lambda _: state["telemetry"].__setitem__("page_errors", state["telemetry"]["page_errors"] + 1))
+            if diagnostic:
+                page.on("pageerror", lambda error: diagnostic.error("page_error", error))
+                page.on("console", lambda message: diagnostic.error("console_error", message.text,
+                    (message.location or {}).get("url")) if message.type in ("error", "warning") else None)
+                page.on("domcontentloaded", lambda: setattr(diagnostic, "stage", "dom_content_loaded"))
+                page.on("load", lambda: setattr(diagnostic, "stage", "load"))
+                try:
+                    session = context.new_cdp_session(page)
+                    session.on("Network.webSocketCreated", diagnostic.websocket)
+                    session.send("Network.enable", {"maxTotalBufferSize": 0, "maxResourceBufferSize": 0})
+                    diagnostic.cdp = "enabled"
+                except Exception:
+                    # An unavailable optional observer never changes capture guards.
+                    diagnostic.cdp = "unavailable"
 
             def failed(req):
                 state["telemetry"]["failed_requests"] += 1
+                if diagnostic:
+                    diagnostic.error("request_failed", req.failure or "", req.url)
                 if re.search(r"ERR_(CERT_|SSL_|TLS_|INSECURE_RESPONSE)", req.failure or "", re.I):
                     state["failure"] = "transport_security_refused"
 
@@ -761,9 +864,18 @@ def capture(request, fixture=None):
                     state["response"] = {"url": response.url, "status": response.status,
                                          "content_type": headers.get("content-type", "").lower(),
                                          "upstream_challenge": response.status == 202 and headers.get("x-amzn-waf-action") == "challenge"}
+                    if diagnostic:
+                        diagnostic.stage = "navigation_response"
+                        diagnostic.event("navigation_response", response.url, status=response.status)
 
             page.on("requestfailed", failed)
             page.on("response", response_seen)
+            if diagnostic:
+                def request_seen(req):
+                    if req.is_navigation_request() and req.frame == page.main_frame:
+                        diagnostic.stage = "navigation_request"
+                        diagnostic.event("navigation_request", req.url)
+                page.on("request", request_seen)
         except Exception:
             state["failure"] = "browser_guard_setup_failed"
             page.close()
@@ -771,6 +883,8 @@ def capture(request, fixture=None):
 
     def page_action(page):
         try:
+            if diagnostic:
+                diagnostic.stage = "document_observation"
             response = state["response"]
             if not response or not 200 <= response["status"] < 300:
                 raise CaptureFailure(f"http_{response['status']}" if response else "http_unavailable")
@@ -814,6 +928,8 @@ def capture(request, fixture=None):
             if state["response"] is not response:
                 raise CaptureFailure("http_response_changed_during_capture")
             state["captured_response"] = response
+            if diagnostic:
+                diagnostic.stage = "document_observed"
         except CaptureFailure as error:
             state["failure"] = error
         except Exception:
@@ -836,10 +952,12 @@ def capture(request, fixture=None):
                                           "--disable-default-apps", "--disable-extensions", "--disable-quic",
                                           "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                                           "--webrtc-ip-handling-policy=disable_non_proxied_udp"])
-    except Exception:
-        raise CaptureFailure(state["failure"] or "browser_fetch_failed") from None
+    except Exception as error:
+        if diagnostic:
+            diagnostic.error("fetch_error", error)
+        raise CaptureFailure(state["failure"] or "browser_fetch_failed", browser_diagnostics=diagnostic) from None
     if state["failure"]:
-        raise CaptureFailure(state["failure"])
+        raise CaptureFailure(state["failure"], browser_diagnostics=diagnostic)
     if state["observed"] is None:
         raise CaptureFailure("capture_unavailable")
     if state["response"] is not state["captured_response"]:
@@ -859,6 +977,8 @@ def capture(request, fixture=None):
             "document": document, "capture_profile": profile, "readiness": readiness,
             "warnings": [], "telemetry": state["telemetry"],
             "engine": {"scrapling": version("scrapling"), "playwright": version("playwright"), "adaptive": False, "stealth": False}}
+    if diagnostic:
+        result["browser_diagnostics"] = diagnostic.snapshot()
     if profile in EVIDENCE_PROFILES:
         result.update(state["evidence"])
         if not result["screenshot"]["semantics_bracketed"]:
@@ -871,13 +991,14 @@ def capture(request, fixture=None):
 def main():
     logging.disable(logging.CRITICAL)
     diagnostics = None
+    browser_diagnostics = None
     try:
         raw = sys.stdin.buffer.read(16385)
         if len(raw) > 16384:
             raise CaptureFailure("request_size_limit")
         request = json.loads(raw)
         required = {"url", "source_id", "proxy_url", "executable_path"}
-        if not isinstance(request, dict) or not required <= set(request) or set(request) - required - {"capture_profile"}:
+        if not isinstance(request, dict) or not required <= set(request) or set(request) - required - {"capture_profile", "diagnostic_mode"}:
             raise CaptureFailure("invalid_request")
         with contextlib.redirect_stdout(sys.stderr):
             result = capture(request)
@@ -886,9 +1007,11 @@ def main():
     except CaptureFailure as error:
         reason = str(error) if SAFE_REASON.fullmatch(str(error)) else "capture_failed"
         diagnostics = error.diagnostics
+        browser_diagnostics = error.browser_diagnostics
     except Exception:
         reason = "invalid_request_or_capture_failure"
-    print(json.dumps({"error": reason, **({"diagnostics": diagnostics} if diagnostics else {})}))
+    print(json.dumps({"error": reason, **({"diagnostics": diagnostics} if diagnostics else {}),
+                      **({"browser_diagnostics": browser_diagnostics} if browser_diagnostics else {})}))
     return 2
 
 

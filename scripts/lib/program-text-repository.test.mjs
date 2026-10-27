@@ -109,6 +109,21 @@ describe("saved-pair preflight and claims", () => {
   it("re-verifies the live source, exact state pair, retained raw captures and complete saved plan", async () => {
     const f = fixture(), db = fake([{ data: f.sourceRow }]); expect(await repo(db, f).verifyCandidate(f.row)).toBe(true);
   });
+  it("cold-refreshes independent text approval before reviewing a legacy-held source", async () => {
+    const f = fixture(); f.sourceRow.admin_review_status = "review_later";
+    const approval = { schema: "awardping.program-text-source-approval.v1", id, source_id: source.id, shared_award_id: source.shared_award_id,
+      source_url: source.url, cohort_key: "example", epoch, content_hash: "a".repeat(64), current: true };
+    const db = fake([{ data: f.sourceRow }, { data: { schema: "awardping.program-text-source-approval-page.v1", epoch,
+      source_ids: [source.id], approvals: [approval] } }]);
+    expect(await repo(db, f).verifyCandidate(f.row)).toBe(true);
+    expect(f.sourceRow.admin_review_status).toBe("review_later");
+    expect(db.calls.some(call => call.rpc === "get_program_text_source_approvals")).toBe(true);
+    const revoked = fake([{ data: f.sourceRow }, { data: { schema: "awardping.program-text-source-approval-page.v1", epoch,
+      source_ids: [source.id], approvals: [] } }]);
+    const loadCapture = vi.fn();
+    await expect(repo(revoked, f, { loadCapture }).verifyCandidate(f.row)).rejects.toThrow("not current");
+    expect(loadCapture).not.toHaveBeenCalled();
+  });
   it.each([
     f => { f.sourceRow.admin_review_status = "review_later"; }, f => { f.sourceRow.url = "https://example.org/moved"; },
     f => { f.sourceRow.shared_award_id = token; }, f => { f.sourceRow.text_monitoring_state = {}; },

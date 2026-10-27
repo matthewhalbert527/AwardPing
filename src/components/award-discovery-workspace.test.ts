@@ -828,6 +828,14 @@ describe("AwardDiscoveryWorkspace update status", () => {
 });
 
 describe("AwardDiscoveryWorkspace search-card consistency", () => {
+  it("identifies approved application routes without substituting a route deadline for shared facts", () => {
+    const row: SharedAwardCard = { ...gates, deadline: null, importantDates: [], hasApplicationRoutes: true };
+    for (const query of [[], ["Gates", true]] as const) {
+      const $ = load(renderRows([row], [...query], false, "2026-10-17T20:00:00Z"));
+      expect($.text()).toContain("Requirements and benefits by route");
+      expect($(".award-row-deadline").text()).toContain("View route deadlines");
+    }
+  });
   it.each([false, true])("keeps Gates' scoped application dates and first-capture provenance while searching (signed in: %s)", (isAuthenticated) => {
     const row: SharedAwardCard = {
       ...gates,

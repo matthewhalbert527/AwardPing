@@ -27,6 +27,8 @@ import {
   type Stage1PublicationIndex,
 } from "@/lib/stage1-publication";
 import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
+import { loadPublishedVariationContext } from "@/lib/program-variation-review.server";
+import type { PublishedVariationContext } from "@/lib/program-variation-review-types";
 
 type SharedAwardRow = Pick<
   Database["public"]["Tables"]["shared_awards"]["Row"],
@@ -69,6 +71,7 @@ export type PublicAwardPageData = {
   /** Pinned published-facts review, not newest source check or AI generation. */
   factsReviewedAt?: string | null;
   factsNeedReview?: boolean;
+  variations?: PublishedVariationContext & { cohort_key: string };
   /** One server clock value shared by SSR and hydration for date status. */
   presentationAsOf?: string;
   lastCheckedAt: string | null;
@@ -98,6 +101,7 @@ export type PublicAwardPageData = {
 
 export type PublicAwardPageOptions = {
   userId?: string | null;
+  variantId?: string | null;
   /**
    * A deep-linked change id (already validated by the page). When it names
    * an eligible update of this award that is older than the recent list, the
@@ -212,6 +216,15 @@ async function loadPublicAwardPageData(
   options: PublicAwardPageOptions = {},
 ): Promise<PublicAwardPageData | null> {
   const admin = createSupabaseAdminClient();
+  const variations = publication.textFactReview?.variationInventoryId
+    ? await loadPublishedVariationContext(publication.registry.cohort_key, { scopeKey: options.variantId || undefined }) : null;
+  if (publication.textFactReview?.variationInventoryId && (!variations ||
+      variations.inventory_id !== publication.textFactReview.variationInventoryId || variations.revision !== publication.textFactReview.variationInventoryRevision ||
+      variations.source_ids.some(id => !publication.allowedSourceIdSet.has(id) ||
+        variations.source_bindings[id]?.url !== publication.approvedTextSourceBindings?.[id]?.url ||
+        variations.source_bindings[id]?.shared_award_id !== publication.approvedTextSourceBindings?.[id]?.shared_award_id) ||
+      options.variantId && variations.selected_scope_key !== options.variantId)) throw new Error("The approved application route could not be confirmed.");
+  if (options.variantId && !variations) throw new Error("This award has no approved application route with that identity.");
   const requestedChangeId = options.changeId || null;
   // A deep-linked update older than the recent list is fetched by id through
   // the same publication, release, source, evidence and suppression gates,
@@ -228,7 +241,7 @@ async function loadPublicAwardPageData(
       })
     : Promise.resolve([]);
   const [sourcesResult, recentEvents, requestedEvents] = await Promise.all([
-    admin
+    variations ? loadVariationPublicSources(admin, publication, variations) : admin
       .from("shared_award_sources")
       .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, last_checked_at")
       .in("shared_award_id", publication.memberAwardIds)
@@ -260,10 +273,10 @@ async function loadPublicAwardPageData(
   // Trackability is still applied to every row individually.
   const officialSources = ((sources || []) as SharedSourceRow[])
     .filter((source) => isTrackableOfficialSourceUrl(source.url))
-    .filter((source) => source.admin_review_status === "open")
+    .filter((source) => Boolean(variations) || source.admin_review_status === "open")
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
-    .filter(isPublicAwardSource);
+    .filter(source => Boolean(variations) || isPublicAwardSource(source));
   // The reviewed homepage is looked up over the rows again, still under the
   // allowlist and identity-exclusion gates but WITHOUT the open-status,
   // trackability and public-quality gates: it stays pinned even when the
@@ -289,7 +302,7 @@ async function loadPublicAwardPageData(
   const officialChanges = eligibleEvents.map((entry) => entry.event);
   const facts = publicAwardFactsFromAward({
     summary: award.summary,
-    publicFacts: award.public_facts,
+    publicFacts: variations?.public_facts || award.public_facts,
     sources: officialSources,
     completeSnapshot: Boolean(publication.textFactReview),
   });
@@ -303,9 +316,7 @@ async function loadPublicAwardPageData(
     url: source.url,
     pageType: source.page_type,
     lastCheckedAt: source.last_checked_at,
-    facts: publicAwardFactsFromAward({
-      sources: [source],
-    }),
+    facts: publicAwardFactsFromAward(variations ? { publicFacts: {}, completeSnapshot: true } : { sources: [source] }),
   }));
   const limitedChanges = officialChanges;
   const unreadChangeIds = options.userId
@@ -325,8 +336,9 @@ async function loadPublicAwardPageData(
     facts,
     metaDescription: publicAwardMetaDescription(award.name, facts),
     officialHomepage: publication.registry.official_homepage,
-    factsReviewedAt: publication.textFactReview?.reviewedAt || publication.registry.last_verified_at,
-    factsNeedReview: publication.textFactReview ? !publication.textFactReview.current : undefined,
+    factsReviewedAt: variations?.reviewed_at || publication.textFactReview?.reviewedAt || publication.registry.last_verified_at,
+    factsNeedReview: variations ? !variations.current : publication.textFactReview ? !publication.textFactReview.current : undefined,
+    ...(variations ? { variations: { ...variations, cohort_key: publication.registry.cohort_key } } : {}),
     presentationAsOf: new Date().toISOString(),
     lastCheckedAt: latestCheckedAt(officialSources),
     sources: publicSources,
@@ -342,6 +354,34 @@ async function loadPublicAwardPageData(
       unread: unreadChangeIds ? unreadChangeIds.has(change.id) : true,
     })),
   };
+}
+
+/** A selected approved unit stays bounded even when the full provider inventory is large. */
+export async function loadVariationPublicSources(admin: ReturnType<typeof createSupabaseAdminClient>, publication: Stage1PublicationEntry, unit: PublishedVariationContext) {
+  const unitIds = unit.source_ids;
+  const ids = [...new Set([...unitIds, ...(publication.officialHomepageSourceId ? [publication.officialHomepageSourceId] : [])])];
+  if (!ids.length || ids.length > 501 || ids.some(id => !publication.allowedSourceIdSet.has(id))) throw new Error("Incomplete approved source set.");
+  const data: SharedSourceRow[] = [];
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const part = ids.slice(offset, offset + 100);
+    const result = await admin.from("shared_award_sources")
+      .select("id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,last_checked_at")
+      .in("id", part).order("id").limit(101);
+    if (result.error || result.data?.length !== part.length || new Set(result.data.map(source => source.id)).size !== part.length ||
+        result.data.some(source => !part.includes(source.id) || !publication.memberAwardIds.includes(source.shared_award_id))) throw new Error("Approved source identities changed.");
+    for (const source of result.data) {
+      const binding = unit.source_bindings[source.id];
+      if (!binding) {
+        if (source.id !== publication.officialHomepageSourceId || source.url !== publication.officialHomepageUrl) throw new Error("Unbound public source identity.");
+        data.push(source); continue;
+      }
+      if (source.url !== binding.url || source.shared_award_id !== binding.shared_award_id) throw new Error("Approved source URL or owner changed.");
+      data.push({ ...source, title: readableSourceTitle(binding.title, binding.url), display_title: null,
+        page_type: (binding.page_type || "other") as SharedSourceRow["page_type"], page_description: null,
+        page_metadata: null, page_metadata_generated_at: null, page_metadata_model: null });
+    }
+  }
+  return { data, error: null };
 }
 
 // Adds deep-linked events that the gates returned to the recent list without

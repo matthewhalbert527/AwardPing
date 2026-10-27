@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
-import { compareScraplingCaptures, scraplingEvidenceProfile, scraplingEvidenceProfileV2, validateScraplingCapture } from "./scrapling-capture.mjs";
+import { captureScraplingSource, compareScraplingCaptures, scraplingEvidenceProfile, scraplingEvidenceProfileV2,
+  validateScraplingBrowserDiagnostics, validateScraplingCapture } from "./scrapling-capture.mjs";
 
 const source = { id: "award-source", url: "https://example.edu/award" };
 const firstTime = "2026-10-15T12:00:00.000Z";
@@ -48,6 +49,65 @@ function fixture(capturedAt = firstTime) {
 function pair() {
   return [fixture(firstTime), fixture(secondTime)];
 }
+
+function diagnosticFixture() {
+  return { schema: "awardping.browser-transport-diagnostics.v1", last_stage: "document_observed",
+    cdp_observation: "enabled", events: [
+      { kind: "navigation_request", url: { origin: "https://example.edu", path_sha256: "a".repeat(64) } },
+      { kind: "navigation_response", url: { origin: "https://example.edu", path_sha256: "a".repeat(64) }, status: 200 },
+      { kind: "websocket_blocked", url: { origin: "wss://example.edu", path_sha256: "b".repeat(64) } },
+      { kind: "websocket_created", initiator_type: "script", initiator_urls: [
+        { origin: "https://example.edu", path_sha256: "c".repeat(64) }] },
+      { kind: "console_error", code: "other", message_sha256: "d".repeat(64) },
+      { kind: "fetch_error", code: "ERR_TIMED_OUT", message_sha256: "e".repeat(64) },
+    ], dropped_events: 0, dependency_status: "unverified", upstream_websocket_connections: 0 };
+}
+
+describe("opt-in private browser transport diagnostics", () => {
+  it("accepts only bounded sanitized observations and returns a detached copy", () => {
+    const value = diagnosticFixture(), result = validateScraplingBrowserDiagnostics(value);
+    expect(result).toEqual(value); result.events.length = 0; expect(value.events).toHaveLength(6);
+    const record = fixture(); record.browser_diagnostics = value;
+    expect(validateScraplingCapture(record, { source }).browser_diagnostics.dependency_status).toBe("unverified");
+    expect(validateScraplingCapture(record, { source }).publishable).toBe(false);
+  });
+  it.each(["https://user:SECRET@example.edu", "https://example.edu/?token=SECRET", "https://example.edu/SECRET",
+    "https://example.edu#SECRET", "file:///SECRET", "https://example.edu/", "wss://example.edu:443"])("rejects non-origin URL data %s", origin => {
+    const value = diagnosticFixture(); value.events[0].url.origin = origin;
+    expect(() => validateScraplingBrowserDiagnostics(value)).toThrow("invalid_browser_diagnostics");
+  });
+  it.each([
+    value => { value.raw_console = "SECRET"; },
+    value => { value.events[0].headers = { authorization: "SECRET" }; },
+    value => { value.events[0].url.query = "SECRET"; },
+    value => { value.events[0].url.path_sha256 = "SECRET"; },
+    value => { value.events[3].initiator_urls = Array(5).fill(value.events[0].url); },
+    value => { value.events[3].stack = "SECRET"; },
+    value => { value.events[4].code = "ERR_SECRET"; },
+    value => { value.events[4].message = "SECRET"; },
+    value => { value.events[4].message_sha256 = "SECRET"; },
+    value => { value.events = Array(17).fill(value.events[0]); },
+    value => { value.events = Array(65).fill(value.events[0]); },
+    value => { value.events = [null]; },
+    value => { value.events[1].status = 600; },
+    value => { value.last_stage = "SECRET"; },
+    value => { value.cdp_observation = "SECRET"; },
+    value => { value.upstream_websocket_connections = 1; },
+    value => { value.dependency_status = "complete"; },
+    value => { value.dropped_events = 1000001; },
+  ])("rejects unsafe or authority-bearing telemetry mutation %#", change => {
+    const value = diagnosticFixture(); change(value);
+    expect(() => validateScraplingBrowserDiagnostics(value)).toThrow("invalid_browser_diagnostics");
+  });
+  it.each([null, 1, "true"])("rejects invalid diagnostic opt-in before starting a collector %j", async browserDiagnostics => {
+    await expect(captureScraplingSource(source, { pythonPath: "unused", executablePath: "unused", browserDiagnostics }))
+      .rejects.toMatchObject({ pilotReason: "invalid_runtime_options" });
+  });
+  it("does not permit diagnostic opt-in to enable a retired visual capture profile", async () => {
+    await expect(captureScraplingSource(source, { pythonPath: "unused", executablePath: "unused",
+      captureProfile: scraplingEvidenceProfile, browserDiagnostics: true })).rejects.toMatchObject({ pilotReason: "invalid_runtime_options" });
+  });
+});
 
 function evidenceFixture(capturedAt = firstTime) {
   const record = fixture(capturedAt);
