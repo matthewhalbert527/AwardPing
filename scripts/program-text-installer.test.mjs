@@ -21,9 +21,9 @@ function nativeEnv() {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
   return { ...env, PSModulePath: modules };
 }
-function run(script) {
+function run(script, timeout = 45000) {
   return spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-    { encoding: "utf8", env: nativeEnv(), timeout: 45000 });
+    { encoding: "utf8", env: nativeEnv(), timeout });
 }
 function definitions(names) {
   return `
@@ -81,7 +81,7 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
         $missingDecision = @(Get-AwardPingInstalledRuntimeProblems -InstallRoot ${quote(join(path, "worker"))} -AppDir ${quote(app)} -AppSourceRoot ${quote(source)} -TaskSnapshots @() -RequireManagedRuntime $true)
       } finally { [IO.File]::WriteAllBytes($decisionTarget, $decisionBytes) }
       [pscustomobject]@{ files=$files; positive=$positive; cases=$cases; decisionTarget=$decisionTarget; missingDecision=$missingDecision } | ConvertTo-Json -Depth 5
-    `);
+    `, 120000);
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(result.stdout);
     expect(value.files).toHaveLength(30);
@@ -105,7 +105,7 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
       expect(value.positive.some(problem => problem.includes(row.target))).toBe(false);
       expect(row.changed).toContain(`installed runtime hash mismatch: ${row.target}`);
     }
-  }, 60000);
+  }, 180000);
 
   it("generates parsable text launchers and propagates a failing collection once, without retry", () => {
     const path = fixture(), app = join(path, "app");

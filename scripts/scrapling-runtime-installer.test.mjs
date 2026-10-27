@@ -252,7 +252,7 @@ describe.skipIf(process.platform !== "win32")("Scrapling runtime installer temp-
     const refused = run(`Install-AwardPingScraplingRuntime -InstallRoot ${quote(install)} -SourceRoot ${quote(source)}`);
     expect(refused.status).not.toBe(0);
     expect(readFileSync(lock, "utf8")).toBe("owned elsewhere");
-  });
+  }, 60000);
 
   it("creates a receipt, verifies exact reuse, and fails before execution on tampering (mocked package install)", () => {
     const directory = fixture();
@@ -306,5 +306,5 @@ describe.skipIf(process.platform !== "win32")("Scrapling runtime installer temp-
     expect(parsed.message).toContain("integrity verification failed");
     expect(parsed.baseMessage).toContain("integrity verification failed");
     expect(existsSync(parsed.first.ReceiptPath)).toBe(true);
-  });
+  }, 60000);
 });

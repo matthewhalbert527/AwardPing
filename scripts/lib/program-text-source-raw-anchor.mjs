@@ -8,10 +8,16 @@ const fail = why => { throw new Error('Text source raw anchor: ' + why); };
 const OWNER = 'd955a846-cee1-4c01-932e-e3cb7215f3fb';
 const SOURCE = 'c49e85e3-3b19-4052-891f-c2bc67e8b8f6';
 const AUTHORITY = 'https://www.nsf.gov/funding/opportunities/grfp-nsf-graduate-research-fellowship-program/nsf26-526/solicitation';
-export const FINITE_NSF_TARGETS = Object.freeze([
-  'https://www.nsf.gov/policies/document/graduate-research-fellowship-program-grfp-administrative',
-  'https://www.nsf.gov/policies/pappg',
-]);
+const GUIDE_INDEX = 'https://www.nsf.gov/policies/document/graduate-research-fellowship-program-grfp-administrative';
+const GUIDE_PDF = 'https://nsf-gov-resources.nsf.gov/files/nsf25033.pdf';
+// Each target has one independently reviewed authority and literal link. The
+// PDF grant does not authorize arbitrary NSF subdomains, years or documents.
+const PROFILES = Object.freeze([
+  { target: GUIDE_INDEX, authority_id: SOURCE, authority_url: AUTHORITY, page_type: 'other', literal_href: GUIDE_INDEX },
+  { target: 'https://www.nsf.gov/policies/pappg', authority_id: SOURCE, authority_url: AUTHORITY, page_type: 'other', literal_href: '/policies/pappg' },
+  { target: GUIDE_PDF, authority_id: '89681230-d6b4-46ba-8649-a8c19633c7aa', authority_url: GUIDE_INDEX, page_type: 'pdf', literal_href: GUIDE_PDF },
+].map(Object.freeze));
+export const FINITE_NSF_TARGETS = Object.freeze(PROFILES.map(profile => profile.target));
 const FORBIDDEN = new Set(['head', 'script', 'style', 'template', 'noscript', 'iframe', 'object', 'embed', 'svg', 'math', 'header', 'nav', 'footer']);
 const whitespace = char => /[\t\n\f\r ]/.test(char ?? '');
 
@@ -47,7 +53,7 @@ function startTagAttributes(tag, absoluteStart) {
   return attributes;
 }
 
-function resolveFiniteHref(literal, finalURL, target) {
+function resolveFiniteHref(literal, finalURL, target, profile) {
   // Initial increment deliberately excludes entity/percent encoded URLs,
   // dot segments, relative-directory resolution, queries and delegation.
   if (typeof literal !== 'string' || !literal || literal.length > 2048 || /[^\x21-\x7e]/u.test(literal) || /[\\&%]/u.test(literal) ||
@@ -55,7 +61,7 @@ function resolveFiniteHref(literal, finalURL, target) {
   const pathPart = literal.replace(/^https:\/\/[^/]+/, '').split('#')[0];
   if (pathPart.includes('//') || pathPart.split('/').some(part => part === '.' || part === '..')) fail('ambiguous_path_normalization');
   let linked, requested; try { linked = new URL(literal, finalURL); requested = new URL(target); } catch { fail('invalid_url'); }
-  if (linked.protocol !== 'https:' || linked.username || linked.password || linked.search || linked.origin !== 'https://www.nsf.gov' ||
+  if (linked.protocol !== 'https:' || linked.username || linked.password || linked.search || linked.origin !== new URL(profile.target).origin ||
       requested.protocol !== 'https:' || requested.username || requested.password || requested.search || requested.hash || requested.href !== target ||
       requested.origin !== linked.origin) fail('URL_or_ownership_boundary');
   if (literal.startsWith('https://') && linked.href !== literal) fail('noncanonical_absolute_href');
@@ -69,9 +75,10 @@ function resolveFiniteHref(literal, finalURL, target) {
 
 /** Input offset is a locator only, never trusted evidence. Cold restoration and
  * current source/epoch/role CAS still belong to the existing server workflow. */
-function deriveRawAnchor({ authority_ref: ref, rawBytes, anchor_start_utf16, target_page_url }) {
+function deriveRawAnchor({ authority_ref: ref, rawBytes, anchor_start_utf16, target_page_url, profile }) {
   validateProgramTextReference(ref);
-  if (ref.source.id !== SOURCE || ref.source.shared_award_id !== OWNER || ref.source.url !== AUTHORITY || ref.final_url !== AUTHORITY ||
+  if (ref.source.id !== profile.authority_id || ref.source.shared_award_id !== OWNER || ref.source.page_type !== 'other' ||
+      ref.source.url !== profile.authority_url || ref.final_url !== profile.authority_url ||
       ref.acquisition !== 'http_html' || ref.completeness.status !== 'complete' || ref.completeness.reasons.length ||
       !ref.artifacts.raw.object_key.endsWith('/original.html') || !/^text\/html(?:;|$)/i.test(ref.artifacts.raw.content_type)) fail('authority_identity_or_transport');
   if (!Buffer.isBuffer(rawBytes) || rawBytes.length < 1 || rawBytes.length > 2 * 1024 * 1024 ||
@@ -94,7 +101,7 @@ function deriveRawAnchor({ authority_ref: ref, rawBytes, anchor_start_utf16, tar
   const rawStartTag = html.slice(startTag.startOffset, startTag.endOffset), attributes = startTagAttributes(rawStartTag, startTag.startOffset);
   const hrefs = attributes.filter(a => a.name === 'href');
   if (hrefs.length !== 1 || hrefs[0].value === null || hrefs[0].value !== $(node).attr('href')) fail('duplicate_encoded_or_missing_href');
-  const href = hrefs[0], resolved = resolveFiniteHref(href.value, ref.final_url, target_page_url);
+  const href = hrefs[0], resolved = resolveFiniteHref(href.value, ref.final_url, target_page_url, profile);
   const byteOffset = offset => Buffer.byteLength(html.slice(0, offset), 'utf8');
   const anchor = { tag: 'a', namespace: node.namespace, ordinal: all.indexOf(node), start_utf16: startTag.startOffset, end_utf16: startTag.endOffset,
     start_byte: byteOffset(startTag.startOffset), end_byte: byteOffset(startTag.endOffset), start_tag: rawStartTag, start_tag_sha256: sha(Buffer.from(rawStartTag)),
@@ -115,17 +122,19 @@ const canonical = x => Array.isArray(x) ? x.map(canonical) : object(x) ? Object.
 export const PROGRAM_TEXT_RAW_ANCHOR_KIND = 'retained_raw_html_anchor.v1';
 /** No client receipt is accepted. A complete cold capture is replayed here. */
 export function buildProgramTextRawAnchorProviderLink(proposal, capture) {
+  const profile = PROFILES.find(item => item.target === proposal.source?.url);
   if (!exact(proposal.link_proof, ['kind', 'anchor_start_utf16', 'target_page_url']) ||
       proposal.link_proof.kind !== PROGRAM_TEXT_RAW_ANCHOR_KIND || proposal.link_proof.target_page_url !== proposal.source.url ||
       proposal.cohort_key !== 'nsf_grfp' || proposal.expected_canonical_shared_award_id !== OWNER ||
-      proposal.source.shared_award_id !== OWNER || proposal.source.expected_member_kind !== 'canonical' || proposal.source.page_type !== 'other') fail('finite_NSF_scope');
+      proposal.source.shared_award_id !== OWNER || proposal.source.expected_member_kind !== 'canonical' ||
+      !profile || proposal.source.page_type !== profile.page_type) fail('finite_NSF_scope');
   validateProgramTextCapture(capture);
   if (JSON.stringify(canonical(programTextReference(capture))) !== JSON.stringify(canonical(proposal.authority_ref))) fail('cold_capture_reference_changed');
   const link = deriveRawAnchor({ authority_ref: proposal.authority_ref, rawBytes: capture.raw_source.bytes,
-    anchor_start_utf16: proposal.link_proof.anchor_start_utf16, target_page_url: proposal.source.url });
-  // Exact observed literal forms only. No fragment, alias, query, offsite, new
-  // base or directory-resolution permission is added by this increment.
-  const expectedHref = proposal.source.url === FINITE_NSF_TARGETS[0] ? FINITE_NSF_TARGETS[0] : '/policies/pappg';
+    anchor_start_utf16: proposal.link_proof.anchor_start_utf16, target_page_url: proposal.source.url, profile });
+  // Exact observed literal forms only, including the one indexed NSF PDF.
+  // No fragment, alias, query, new base or directory-resolution grant.
+  const expectedHref = profile.literal_href;
   if (!FINITE_NSF_TARGETS.includes(proposal.source.url) || link.anchor.literal_href !== expectedHref || Buffer.byteLength(link.anchor.start_tag)>4096) fail('finite_literal_href');
   return link;
 }

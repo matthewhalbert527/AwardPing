@@ -27,8 +27,8 @@ const activeStatuses = [
 ] as const;
 
 const sourceIntakeSchema = z.object({
-  url: z.string().trim().optional(),
-  urls: z.union([z.string(), z.array(z.string())]).optional(),
+  url: z.string().trim().max(2048).optional(),
+  urls: z.union([z.string().max(450 * 1024), z.array(z.string().max(2048)).max(200)]).optional(),
   awardName: z.string().trim().max(180).optional(),
   notes: z.string().trim().max(2000).optional(),
   intakeType: z.enum(sourceIntakeTypes).default("unknown"),
@@ -42,7 +42,18 @@ export async function POST(request: Request) {
   const setup = await validateAdminRequest();
   if (setup.response) return setup.response;
 
-  const parsed = sourceIntakeSchema.safeParse(await request.json().catch(() => null));
+  let body: unknown;
+  try {
+    body = await readIntakeBody(request);
+  } catch (error) {
+    if (error instanceof RangeError) {
+      return NextResponse.json(
+        { ok: false, error: "Submit at most 200 URLs in one request." }, { status: 413 },
+      );
+    }
+    body = null;
+  }
+  const parsed = sourceIntakeSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
       { ok: false, error: "Paste one or more source URLs to queue for intake." },
@@ -79,7 +90,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    submissions = dedupeIntakeSubmissions(submissions).slice(0, 200);
+    submissions = dedupeIntakeSubmissions(submissions);
+    if (submissions.length > 200) {
+      return NextResponse.json({ ok: false, error: "Submit at most 200 URLs in one request." }, { status: 400 });
+    }
   } catch (error) {
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : "One URL could not be normalized." },
@@ -156,6 +170,31 @@ export async function POST(request: Request) {
     },
     { status: failures.length ? 207 : 200 },
   );
+}
+
+// Auth and same-origin validation precede reading any request bytes. The
+// streamed limit also applies when Content-Length is absent or understated.
+async function readIntakeBody(request: Request): Promise<unknown> {
+  const limit = 512 * 1024;
+  const declared = request.headers.get("content-length");
+  if (declared && /^\d+$/.test(declared) && Number(declared) > limit) throw new RangeError("intake_body_limit");
+  const reader = request.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > limit) throw new RangeError("intake_body_limit");
+      chunks.push(value);
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
 }
 
 async function findExistingActiveRequest(

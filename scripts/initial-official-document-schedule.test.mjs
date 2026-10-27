@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const maintenance = readFileSync(
   new URL("./run-awardping-maintenance.mjs", import.meta.url),
@@ -76,43 +76,71 @@ describe("permanent first-observation discovery schedule", () => {
   });
 
   it("pauses the short source budget only while the bounded expansion phase is active", async () => {
-    const createDeadline = executableSourcePhaseDeadline();
-    const deadline = createDeadline(100, "source deadline");
-    const result = await deadline.run(async () => {
-      await delay(20);
-      const endExpansion = deadline.beginPhase({
-        name: "expansion-state-capture",
-        timeoutMs: 250,
-        message: "expansion deadline",
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    // A nonzero controlled epoch preserves the production armedAt sentinel.
+    vi.setSystemTime(new Date("2026-10-27T12:00:00.000Z"));
+    try {
+      const createDeadline = executableSourcePhaseDeadline();
+      const deadline = createDeadline(100, "source deadline");
+      const result = deadline.run(async () => {
+        await delay(20);
+        const endExpansion = deadline.beginPhase({
+          name: "expansion-state-capture",
+          timeoutMs: 250,
+          message: "expansion deadline",
+        });
+        await delay(150);
+        endExpansion();
+        await delay(20);
+        return "complete";
       });
-      await delay(150);
-      endExpansion();
-      await delay(20);
-      return "complete";
-    });
-    expect(result).toBe("complete");
+      const completes = expect(result).resolves.toBe("complete");
+      // At 169ms the 100ms source budget has stayed paused during expansion.
+      await vi.advanceTimersByTimeAsync(169);
+      expect(deadline.expired()).toBe(false);
+      await vi.advanceTimersByTimeAsync(21);
+      await completes;
+      expect(deadline.expired()).toBe(false);
 
-    const ordinary = createDeadline(40, "ordinary source deadline");
-    await expect(ordinary.run(async () => {
-      await delay(100);
-    })).rejects.toMatchObject({
-      code: "AWARDPING_SOURCE_TIMEOUT",
-      timeout_phase: "source",
-    });
-
-    const expansion = createDeadline(200, "ordinary source deadline");
-    await expect(expansion.run(async () => {
-      expansion.beginPhase({
-        name: "expansion-state-capture",
-        timeoutMs: 40,
-        message: "expansion deadline",
+      const ordinary = createDeadline(40, "ordinary source deadline");
+      const ordinaryExpires = expect(ordinary.run(async () => {
+        await delay(100);
+      })).rejects.toMatchObject({
+        code: "AWARDPING_SOURCE_TIMEOUT",
+        timeout_phase: "source",
+        timeout_ms: 40,
       });
-      await delay(100);
-    })).rejects.toMatchObject({
-      code: "AWARDPING_SOURCE_TIMEOUT",
-      timeout_phase: "expansion-state-capture",
-    });
-    expect(expansion.expired()).toBe(true);
+      await vi.advanceTimersByTimeAsync(39);
+      expect(ordinary.expired()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await ordinaryExpires;
+      expect(ordinary.expired()).toBe(true);
+      await vi.advanceTimersByTimeAsync(60); // Settle its owned delayed callback.
+
+      const expansion = createDeadline(200, "ordinary source deadline");
+      const expansionExpires = expect(expansion.run(async () => {
+        expansion.beginPhase({
+          name: "expansion-state-capture",
+          timeoutMs: 40,
+          message: "expansion deadline",
+        });
+        await delay(100);
+      })).rejects.toMatchObject({
+        code: "AWARDPING_SOURCE_TIMEOUT",
+        timeout_phase: "expansion-state-capture",
+        timeout_ms: 40,
+      });
+      await vi.advanceTimersByTimeAsync(39);
+      expect(expansion.expired()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expansionExpires;
+      expect(expansion.expired()).toBe(true);
+      await vi.advanceTimersByTimeAsync(60);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 });
 
