@@ -5,7 +5,7 @@ import { programTextReference, validateProgramTextReference } from "../../script
 import { hasPublishableProgramTextEvidence } from "@/lib/program-text-event-evidence";
 import { hasPublishableEventEvidence, isPublicChangeEvent, type PublicChangeEventVisualEvidence } from "@/lib/public-change-event";
 import { changeDetailsLabel, changeDetailsSearchText, changeDetailsToSummary, isMeaningfulChangeDetails } from "@/lib/change-details";
-import { changeSummaryPresentation, dedupeChangeSummaries, displayChangeSummary, isUsefulChangeSummary } from "@/lib/change-summary";
+import { changeSummaryPresentation, dedupeChangeSummaries, displayChangeSummary, isUsefulChangeForAward, isUsefulChangeSummary } from "@/lib/change-summary";
 import { buildPublicDigestChanges } from "@/lib/public-updates-core";
 import { isMonitorableAwardSource, isPublicAwardSource, isUsableAwardFactSource } from "@/lib/source-quality";
 import type { Stage1PublicationEntry } from "@/lib/stage1-publication";
@@ -44,6 +44,42 @@ function fixture(url = source.url) {
 }
 const record = (value: Json) => value as Record<string, Json>;
 
+// Synthetic immutable references, using the actual scoped NSF closure wording.
+// Keep the exact public canonical name: spelling out Science Foundation would
+// accidentally match Sciences in the summary and conceal the plural-word bug.
+function nsfCycleStatusFixture(wording = {
+  summary: "Applications for Chemistry; Geosciences; Mathematical Sciences; Physics and Astronomy are now closed.",
+  previous: "October 23, 2026 by 8:00 p.m. Eastern time Chemistry; Geosciences; Mathematical Sciences; Physics and Astronomy",
+  current: "October 23, 2026 by 8:00 p.m. Eastern time Chemistry; Geosciences; Mathematical Sciences; Physics and Astronomy applications are closed",
+}) {
+  const nsfSource = { id: "d4509d97-da9b-4e12-bbe9-45129e6ce1c1", shared_award_id: "d955a846-cee1-4c01-932e-e3cb7215f3fb",
+    url: "https://www.nsfgrfp.org/", title: "NSF Graduate Research Fellowship Program", page_type: "homepage" };
+  const make = (text: string, day: number) => Reflect.apply(buildProgramTextCapture, undefined, [{ source: nsfSource,
+    final_url: "https://www.nsf.gov/funding/initiatives/grfp", captured_at: `2026-10-${day}T12:00:00.000Z`,
+    acquisition: "http_html", extractor: { name: "scrapling-full-body-html", version: "program-text-v1/html-document-v2" },
+    raw_bytes: Buffer.from(`<main><p>${text}</p></main>`), content_type: "text/html; charset=UTF-8", text,
+    blocks: [{ id: "block-000012", text, start_utf16: 0, end_utf16: text.length }] }]) as ReturnType<typeof buildProgramTextCapture>;
+  const previous = make(wording.previous, 10), current = make(wording.current, 11);
+  const details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed", summary: wording.summary,
+    program_changes: [{ field: "cycle_status", operation: "replace", summary: wording.summary,
+      previous_quote: { block_id: "block-000012", start_utf16: 0, end_utf16: previous.text.length, text: previous.text },
+      current_quote: { block_id: "block-000012", start_utf16: 0, end_utf16: current.text.length, text: current.text } }] };
+  const event = { id: "755e336b-cb87-4861-84a8-062e6c71a65e", shared_award_id: nsfSource.shared_award_id,
+    shared_award_source_id: nsfSource.id, source_url: nsfSource.url, source_title: nsfSource.title, source_page_type: nsfSource.page_type,
+    summary: wording.summary, change_details: details, visual_review_candidate_id: "8d40add5-89ea-4f96-9c31-f1f68c1fa472" };
+  const evidence: PublicChangeEventVisualEvidence = { id: "10513e49-6647-4ae2-9e2c-3dfbee4dda90", change_event_id: event.id,
+    shared_award_id: nsfSource.shared_award_id, shared_award_source_id: nsfSource.id, visual_review_candidate_id: event.visual_review_candidate_id,
+    candidate_signature: "a".repeat(64), bucket: "synthetic-immutable-test-only", evidence_schema_version: "program-text-event-evidence-v1", evidence_status: "verified_text",
+    previous_capture: json(programTextReference(previous)), current_capture: json(programTextReference(current)),
+    localization: json({ schema: "awardping.program-text-publication.v1", epoch: "ec349339-ff62-4d2e-a610-8c361b4044ec", comparison_id: "a".repeat(64),
+      program_changes: details.program_changes, supporting_blocks: { previous: previous.blocks, current: current.blocks } }),
+    created_at: "2026-10-11T12:05:00.000Z", verified_at: "2026-10-11T12:05:00.000Z", backfilled_at: null };
+  const publication = { canonicalAwardId: nsfSource.shared_award_id, memberAwardIds: [nsfSource.shared_award_id], allowedSourceIds: [nsfSource.id],
+    allowedSourceIdSet: new Set([nsfSource.id]), publishedFacts: {}, sourceIdentityRules: [], effectivelyVerified: true } as unknown as Stage1PublicationEntry;
+  return { event, evidence, publication, source: { ...nsfSource, admin_review_status: "open" },
+    award: { id: nsfSource.shared_award_id, name: nsfSource.title, status: "active" } };
+}
+
 describe("explicit text-backed publication evidence", () => {
   it("accepts complete immutable text references and exact quotations without image slots", () => {
     const f = fixture();
@@ -51,6 +87,30 @@ describe("explicit text-backed publication evidence", () => {
     expect(hasPublishableProgramTextEvidence(f.event, f.evidence)).toBe(true);
     expect(hasPublishableEventEvidence(f.event, f.evidence)).toBe(true);
     expect(isPublicChangeEvent(f)).toBe(true);
+  });
+
+  it("keeps the exact NSF Applications closure in public eligibility and digest without rewriting it", () => {
+    const f = nsfCycleStatusFixture(), original = JSON.stringify({ event: f.event, evidence: f.evidence });
+    expect(f.award.name).toBe("NSF Graduate Research Fellowship Program");
+    expect(hasPublishableProgramTextEvidence(f.event, f.evidence)).toBe(true);
+    expect(isUsefulChangeSummary(f.event.summary, f.event.change_details)).toBe(true);
+    expect(isUsefulChangeForAward({ awardName: f.award.name, sourceTitle: f.source.title, sourceUrl: f.source.url,
+      summary: f.event.summary, change_details: f.event.change_details })).toBe(true);
+    expect(isPublicChangeEvent(f)).toBe(true);
+    const digest = buildPublicDigestChanges([{ ...f.event, detected_at: f.evidence.verified_at! }], new Map([[f.award.id, f.award.name]]));
+    expect(digest).toHaveLength(1); expect(digest[0].summary).toBe(f.event.summary);
+    expect(JSON.stringify({ event: f.event, evidence: f.evidence })).toBe(original);
+    f.publication.allowedSourceIdSet.clear(); expect(isPublicChangeEvent(f)).toBe(false);
+  });
+
+  it("still rejects irrelevant root-homepage wording despite structurally bound text evidence", () => {
+    const f = nsfCycleStatusFixture({ summary: "The site header changed its decorative background colour.",
+      previous: "The site header has a blue decorative background.", current: "The site header has a green decorative background." });
+    expect(hasPublishableProgramTextEvidence(f.event, f.evidence)).toBe(true);
+    expect(isUsefulChangeSummary(f.event.summary, f.event.change_details)).toBe(true);
+    expect(isUsefulChangeForAward({ awardName: f.award.name, sourceTitle: f.source.title, sourceUrl: f.source.url,
+      summary: f.event.summary, change_details: f.event.change_details })).toBe(false);
+    expect(isPublicChangeEvent(f)).toBe(false);
   });
 
   it("does not let legacy baseline or visual-review holds hide a new accepted text comparison", () => {

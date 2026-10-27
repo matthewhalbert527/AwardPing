@@ -1030,7 +1030,7 @@ function isRelevantToAward(
   const tokens = meaningfulAwardTokens([awardName, sourceTitle].filter(Boolean).join(" "));
   if (tokens.some((token) => normalizedSummary.includes(token))) return true;
 
-  return /\b(application|apply|deadline|eligible|eligibility|requirement|recommendation|transcript|essay|interview|tuition|stipend|funding|fellowship|scholarship|award|admission|selection|nomination|candidate|submit|submission)\b/.test(
+  return /\b(applications?|apply|deadline|eligible|eligibility|requirement|recommendation|transcript|essay|interview|tuition|stipend|funding|fellowship|scholarship|award|admission|selection|nomination|candidate|submit|submission)\b/.test(
     normalizedSummary,
   );
 }
