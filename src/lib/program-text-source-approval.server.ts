@@ -24,7 +24,7 @@ export const revokeProgramTextSource = (id: string, expectedHash: string, reason
 export async function loadProgramTextSourcePending(id: string) {
   const db = createSupabaseAdminClient();
   const approved = await loadProgramTextSourceApprovalReceipt(db, id, { epoch: monitoring.epoch });
-  if (approved) return { status: "approved_record", ...approved, provider_link: programTextRawAnchorLinkDisplay(approved.provider_link) };
+  if (approved) return { status: "approved_record", ...approved, source: approved.proposal.source, provider_link: programTextRawAnchorLinkDisplay(approved.provider_link) };
   const { descriptor, pending, proof } = await loadProgramTextSourcePendingBundle(db, id);
   return { ...descriptor, approved: false, current: false, already_approved: false, proposal: pending.validation.proposal, provider_link: programTextRawAnchorLinkDisplay(pending.validation.provider_link),
     target_text: proof?.document.text ?? null, url_alias_boundary: pending.url_alias_boundary ?? [] };
