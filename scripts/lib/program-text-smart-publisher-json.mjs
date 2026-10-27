@@ -1,3 +1,4 @@
+import { projectSmartKbPublisherJson, SMART_KB_PUBLISHER_SOURCE_PROFILES } from "./program-text-smart-kb-publisher-json.mjs";
 import { createHash } from "node:crypto";
 import { load } from "cheerio";
 
@@ -15,6 +16,9 @@ export const SMART_PUBLISHER_JSON_SOURCE_PROFILES = Object.freeze([
     url: "https://www.smartscholarship.org/smart", page_id: "smart_index", page_sys_id: "2a47254fdb350300ecc734cc7c961992", portal_id: PORTAL, expected_base_href: "/smart", programme_pointer: HOME }),
   Object.freeze({ key: "eligibility", id: "c33cc2f4-2cbd-458c-b630-537eb3d50f72", shared_award_id: OWNER,
     url: "https://www.smartscholarship.org/smart/en?id=smart_eligibility", page_id: "smart_eligibility", page_sys_id: "a15b540a872a86105831a7530cbb355c", portal_id: PORTAL, expected_base_href: "/smart", programme_pointer: ELIGIBILITY }),
+  // key is the reviewed model family; source identity remains the literal alias.
+  Object.freeze({ key: "home", id: "92eebc07-7392-4136-ba13-d9cd5455c8f9", shared_award_id: "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108", page_type: "homepage", version: PROJECTOR_VERSION,
+    url: "https://www.smartscholarship.org/smart/en", page_id: "smart_index", page_sys_id: "2a47254fdb350300ecc734cc7c961992", portal_id: PORTAL, expected_base_href: "/smart", programme_pointer: HOME }),
 ]);
 const MAX_BYTES = 512 * 1024;
 const fail = code => { throw Object.assign(new Error(`SMART publisher JSON held: ${code}`), { code: `program_text_smart_json_${code}` }); };
@@ -1362,8 +1366,10 @@ function modelWidgets(document, profile) {
 /** Project only the reviewed programme-rule model. Whole original JSON remains
  * the caller's private raw evidence. This does NOT assert HTML/WS completeness. */
 export function projectSmartPublisherJson(raw, { source } = {}) {
+  if (SMART_KB_PUBLISHER_SOURCE_PROFILES.some(profile => profile.id === source?.id)) return projectSmartKbPublisherJson(raw, { source });
   const profile = SMART_PUBLISHER_JSON_SOURCE_PROFILES.find(p => source?.id === p.id);
   check(profile && source.shared_award_id === profile.shared_award_id && source.url === profile.url, "source_identity");
+  if (profile.id === "92eebc07-7392-4136-ba13-d9cd5455c8f9") check(source.page_type === "homepage", "source_identity");
   const parsed = parseOriginal(raw), document = parsed.document, result = document?.result;
   check(plain(document) && equal(Object.keys(document), ["result"]) && plain(result), "result_shape");
   check(equal(Object.keys(result).sort(), ["$$uiNotification", "announcements", "containers", "metatags", "page", "seotags", "theme", "user"].sort()), "result_fields");

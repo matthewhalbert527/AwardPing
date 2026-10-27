@@ -30,16 +30,20 @@
       "scripts/lib/program-text-artifacts.mjs",
       "scripts/lib/program-text-publisher-json.mjs",
       "scripts/lib/program-text-smart-publisher-json.mjs",
+      "scripts/lib/program-text-smart-kb-publisher-json.mjs",
+      "scripts/lib/program-text-smart-kb-reviewed-model.mjs",
+      "scripts/lib/program-text-source-raw-anchor.mjs",
       "scripts/lib/scrapling-capture.mjs",
       "scripts/scrapling/collector.py",
       "scripts/scrapling/smart_publisher_json.py",
+      "scripts/scrapling/html_document.py",
       "src/lib/change-event-suppression.ts",
       "src/lib/award-monitoring-policy.ts",
       "src/lib/source-quality.ts",
       "src/lib/source-ai-review-status.ts",
       "src/lib/source-url-policy.ts"
     ],
-    "hash": "d8709bae074472c022f6dd732555d24c528ef34da32a35dd0d00bb98f6c50e39"
+    "hash": "765d180eb60d2e75c33aad0d332701788fe7373975818e2e9d6547194668e456"
   },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",

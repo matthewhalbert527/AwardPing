@@ -18,6 +18,22 @@ ORIGIN = "https://www.smartscholarship.org"
 SOURCES = {
     "58aefec0-0d42-4b7b-9887-60d25940b3d0": (ORIGIN + "/smart", None),
     "c33cc2f4-2cbd-458c-b630-537eb3d50f72": (ORIGIN + "/smart/en?id=smart_eligibility", "smart_eligibility"),
+    "203baaf3-2905-4fdf-b4af-af84998195a8": (ORIGIN + "/smart/en?id=kb_article&sys_id=84f05b02db5ac3006bb8f4b40f9619cc", "kb_article"),
+    "2562f7c2-4709-4d63-ac25-c4638733a981": (ORIGIN + "/smart?id=kb_article&sys_id=b8fb18e0db8a8300ecc734cc7c9619d7", "kb_article"),
+    "39685b8a-3ad9-41c5-834b-b2aaafb2b0e5": (ORIGIN + "/smart?id=kb_article&sys_id=0383c5d6db2a03006bb8f4b40f961956", "kb_article"),
+    "92eebc07-7392-4136-ba13-d9cd5455c8f9": (ORIGIN + "/smart/en", None),
+}
+# Source ownership is exact, including the three registered alias-owned sources.
+# This is not an owner canonicalization or a general knowledge-base allowlist.
+SOURCE_OWNERS = {
+    "2562f7c2-4709-4d63-ac25-c4638733a981": "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108",
+    "39685b8a-3ad9-41c5-834b-b2aaafb2b0e5": "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108",
+    "92eebc07-7392-4136-ba13-d9cd5455c8f9": "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108",
+}
+ARTICLE_SYS_IDS = {
+    "203baaf3-2905-4fdf-b4af-af84998195a8": "84f05b02db5ac3006bb8f4b40f9619cc",
+    "2562f7c2-4709-4d63-ac25-c4638733a981": "b8fb18e0db8a8300ecc734cc7c9619d7",
+    "39685b8a-3ad9-41c5-834b-b2aaafb2b0e5": "0383c5d6db2a03006bb8f4b40f961956",
 }
 BODY_LIMIT = 512 * 1024
 MAIN_LIMIT = 5 * 1024 * 1024
@@ -56,7 +72,7 @@ def strict_json(value):
 
 
 def source_profile(source_id, url, owner):
-    if owner != OWNER or source_id not in SOURCES or SOURCES[source_id][0] != url:
+    if owner != SOURCE_OWNERS.get(source_id, OWNER) or source_id not in SOURCES or SOURCES[source_id][0] != url:
         raise PublisherJsonError("publisher_json_source_identity")
     return SOURCES[source_id]
 
@@ -192,9 +208,12 @@ class SmartPublisherJson:
                 pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True, errors="strict")
                 query = dict(pairs)
                 expected_keys = {"time", "portal_id", "request_uri"} | ({"id"} if self.request_page_id else set())
+                article_id = ARTICLE_SYS_IDS.get(self.source_id)
+                if article_id:
+                    expected_keys.add("sys_id")
                 source_url = urlsplit(self.url)
                 request_uri = source_url.path + ("?" + source_url.query if source_url.query else "")
-                if len(query) != len(pairs) or set(query) != expected_keys or query.get("portal_id") != PORTAL or query.get("id") != self.request_page_id or query.get("request_uri") != request_uri or not re.fullmatch(r"[0-9]{13}", query.get("time", "")):
+                if len(query) != len(pairs) or set(query) != expected_keys or query.get("portal_id") != PORTAL or query.get("id") != self.request_page_id or query.get("sys_id") != article_id or query.get("request_uri") != request_uri or not re.fullmatch(r"[0-9]{13}", query.get("time", "")):
                     raise ValueError()
                 binding = {"portal_id": query["portal_id"], "request_page_id": query.get("id"), "request_uri": query["request_uri"],
                            "url_sha256": digest(raw_url), "path": parsed.path, "query_sha256": digest(parsed.query)}

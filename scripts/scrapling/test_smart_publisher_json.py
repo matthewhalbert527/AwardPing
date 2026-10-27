@@ -7,8 +7,18 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
-from smart_publisher_json import (SmartPublisherJson, PublisherJsonError, SOURCES, OWNER, PORTAL, HOMEPAGE,
+from smart_publisher_json import (SmartPublisherJson, PublisherJsonError, SOURCES, SOURCE_OWNERS, ARTICLE_SYS_IDS, OWNER, PORTAL, HOMEPAGE,
                                   BODY_LIMIT, boot_portal_id, digest)
+
+# Independent fixed-clock byte receipts from the reviewed pre-extension pure
+# observers. Normal tests never load another checkout or make a live request.
+FROZEN_OBSERVATION_SHA256 = {
+    "58aefec0-0d42-4b7b-9887-60d25940b3d0": "8862c1f4fb2ffa621809ca5e5075f2f3bc1ce866560614f3f282448e3772b32e",
+    "c33cc2f4-2cbd-458c-b630-537eb3d50f72": "124bd0126608050c8723662533a48fff1c4afa915cdd058f4bd8eaab38e8fc0a",
+    "203baaf3-2905-4fdf-b4af-af84998195a8": "10a3b0e13df5b3d41ae7b1637ec210cf03db2b07fea38eb03f995a369282e25c",
+    "2562f7c2-4709-4d63-ac25-c4638733a981": "bc11a2ccc363b89be75be9a13f2970a3b2a080d1b16dc00198e6b82647d9aaa5",
+    "39685b8a-3ad9-41c5-834b-b2aaafb2b0e5": "c7da79b68dc01fb9b27725cb9291d065c0fd22f5652f228c0f8064f062b72512",
+}
 
 
 def boot(portal=PORTAL):
@@ -38,13 +48,15 @@ class Tests(unittest.TestCase):
     def pair(self, source_id=None, body='{"result":{"public":true}}'):
         source_id = source_id or next(iter(SOURCES))
         url, page_id = SOURCES[source_id]
-        observer, session = SmartPublisherJson(source_id, url, OWNER), Session(body)
+        observer, session = SmartPublisherJson(source_id, url, SOURCE_OWNERS.get(source_id, OWNER)), Session(body)
         observer.attach(session)
         self.complete(observer, "main", url, "Document", "text/html", "public initial HTML")
         parsed = url.split(".org", 1)[1]
         query = {"time": "1793070000000", "portal_id": PORTAL, "request_uri": parsed}
         if page_id:
             query["id"] = page_id
+        if source_id in ARTICLE_SYS_IDS:
+            query["sys_id"] = ARTICLE_SYS_IDS[source_id]
         api = "https://www.smartscholarship.org/api/now/sp/page?" + urlencode(query)
         self.complete(observer, "api", api, "XHR", "application/json", body)
         return observer, session, {"url": url, "final_url": url, "status_code": 200, "content_type": "text/html; charset=utf-8"}
@@ -56,7 +68,7 @@ class Tests(unittest.TestCase):
         observer.data({"requestId": key, "dataLength": len(text.encode())})
         observer.finished({"requestId": key})
 
-    def test_both_finite_sources_return_a_distinct_bound_snapshot(self):
+    def test_all_finite_sources_return_a_distinct_bound_snapshot(self):
         for source_id in SOURCES:
             with self.subTest(source=source_id):
                 observer, session, navigation = self.pair(source_id)
@@ -258,6 +270,120 @@ class Tests(unittest.TestCase):
         self.assertNotIn("eval", names); self.assertNotIn("exec", names); self.assertNotIn("open", names)
         sends = [n.args[0].value for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "send"]
         self.assertEqual(sorted(sends), sorted(["Page.getFrameTree", "Network.enable", "Network.getResponseBody"]))
+
+    def test_exact_six_sources_only_and_three_registered_alias_owners(self):
+        self.assertEqual(len(SOURCES), 6)
+        self.assertEqual(len(ARTICLE_SYS_IDS), 3)
+        self.assertEqual(set(SOURCE_OWNERS), {"2562f7c2-4709-4d63-ac25-c4638733a981", "39685b8a-3ad9-41c5-834b-b2aaafb2b0e5", "92eebc07-7392-4136-ba13-d9cd5455c8f9"})
+        self.assertIn("92eebc07-7392-4136-ba13-d9cd5455c8f9", SOURCES)
+        for source_id in ARTICLE_SYS_IDS:
+            owner = SOURCE_OWNERS.get(source_id, OWNER)
+            SmartPublisherJson(source_id, SOURCES[source_id][0], owner)
+            for wrong in {OWNER, "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108", "unregistered"} - {owner}:
+                with self.subTest(source=source_id, wrong_owner=wrong), self.assertRaisesRegex(PublisherJsonError, "source_identity"):
+                    SmartPublisherJson(source_id, SOURCES[source_id][0], wrong)
+
+    def test_KB_routes_cannot_be_reordered_normalized_or_swapped(self):
+        for source_id in ARTICLE_SYS_IDS:
+            url = SOURCES[source_id][0]
+            for changed in [url.replace("?id=kb_article&sys_id=", "?sys_id=") + "&id=kb_article", url.replace("/smart?", "/smart/en?"),
+                            url + "&view=other", url.replace(ARTICLE_SYS_IDS[source_id], "0" * 32)]:
+                if changed == url:
+                    continue
+                with self.subTest(source=source_id), self.assertRaisesRegex(PublisherJsonError, "source_identity"):
+                    SmartPublisherJson(source_id, changed, SOURCE_OWNERS.get(source_id, OWNER))
+
+    def test_KB_API_requires_exact_copied_article_parameter_and_entire_navigation_URI(self):
+        for source_id in ARTICLE_SYS_IDS:
+            for mutation in [lambda q: q.pop("sys_id"), lambda q: q.update(sys_id="0" * 32),
+                             lambda q: q.update(request_uri=q["request_uri"].replace(ARTICLE_SYS_IDS[source_id], "0" * 32)),
+                             lambda q: q.update(id="smart_eligibility"), lambda q: q.update(extra="unreviewed")]:
+                observer, session, navigation = self.pair(source_id)
+                from urllib.parse import parse_qsl, urlsplit
+                query = dict(parse_qsl(urlsplit(observer.requests["response"]["raw_url"]).query)); mutation(query)
+                observer.requests.pop("response"); observer.by_id.pop("api")
+                observer.request({"requestId": "api", "frameId": "main-frame", "type": "XHR", "request": {
+                    "method": "GET", "url": "https://www.smartscholarship.org/api/now/sp/page?" + urlencode(query)}})
+                with self.subTest(source=source_id), self.assertRaisesRegex(PublisherJsonError, "query_binding"):
+                    observer.observation(session, boot(), navigation)
+                self.assertNotIn("Network.getResponseBody", [c[0] for c in session.calls])
+
+    def test_KB_duplicate_article_parameter_is_not_collapsed_into_a_valid_binding(self):
+        for source_id in ARTICLE_SYS_IDS:
+            observer, session, navigation = self.pair(source_id)
+            url = observer.requests["response"]["raw_url"] + "&sys_id=" + ARTICLE_SYS_IDS[source_id]
+            observer.requests.pop("response"); observer.by_id.pop("api")
+            observer.request({"requestId": "api", "frameId": "main-frame", "type": "XHR", "request": {"method": "GET", "url": url}})
+            with self.assertRaisesRegex(PublisherJsonError, "query_binding"):
+                observer.observation(session, boot(), navigation)
+
+    def test_KB_incomplete_cached_redirected_post_crossframe_and_oversize_still_never_read(self):
+        mutations = [lambda o: o.requests["response"].update(finished=False), lambda o: o.cached({"requestId": "api"}),
+                     lambda o: o.failed({"requestId": "api"}), lambda o: o.data({"requestId": "api", "dataLength": BODY_LIMIT + 1}),
+                     lambda o: o.request({"requestId": "api", "redirectResponse": {}})]
+        for source_id in ARTICLE_SYS_IDS:
+            for mutation in mutations:
+                observer, session, navigation = self.pair(source_id); mutation(observer)
+                with self.assertRaises(PublisherJsonError):
+                    observer.observation(session, boot(), navigation)
+                self.assertNotIn("Network.getResponseBody", [c[0] for c in session.calls])
+            for method, frame in [("POST", "main-frame"), ("GET", "subframe")]:
+                observer, session, navigation = self.pair(source_id)
+                raw = observer.requests["response"]["raw_url"]; observer.requests.pop("response"); observer.by_id.pop("api")
+                observer.request({"requestId": "api", "frameId": frame, "type": "XHR", "request": {"method": method, "url": raw}})
+                with self.assertRaisesRegex(PublisherJsonError, "frame_or_method"):
+                    observer.observation(session, boot(), navigation)
+                self.assertNotIn("Network.getResponseBody", [c[0] for c in session.calls])
+
+    def test_old_two_observation_bytes_match_frozen_previous_receipts_with_fixed_clock(self):
+        fixed = SimpleNamespace(now=lambda _tz: __import__("datetime").datetime(2026, 10, 27, 6, 0, tzinfo=__import__("datetime").timezone.utc))
+        for source_id in list(FROZEN_OBSERVATION_SHA256)[:2]:
+            observer, session, navigation = self.pair(source_id)
+            with patch("smart_publisher_json.datetime", fixed):
+                current = observer.observation(session, boot(), navigation)
+            self.assertEqual(digest(json.dumps(current, ensure_ascii=False)), FROZEN_OBSERVATION_SHA256[source_id])
+
+    def test_own_home_alias_identity_does_not_become_the_canonical_home_source(self):
+        source_id = "92eebc07-7392-4136-ba13-d9cd5455c8f9"
+        observer, session, navigation = self.pair(source_id)
+        result = observer.observation(session, boot(), navigation)
+        self.assertEqual(result["source_id"], source_id)
+        self.assertEqual(result["source_url"], "https://www.smartscholarship.org/smart/en")
+        self.assertEqual(result["response"]["request_uri"], "/smart/en")
+        self.assertIsNone(result["response"]["request_page_id"])
+        for url, owner in [(SOURCES[source_id][0], OWNER), ("https://www.smartscholarship.org/smart", SOURCE_OWNERS[source_id]),
+                           (SOURCES[source_id][0] + "/", SOURCE_OWNERS[source_id])]:
+            with self.assertRaisesRegex(PublisherJsonError, "source_identity"):
+                SmartPublisherJson(source_id, url, owner)
+
+    def test_home_alias_copies_no_id_or_sys_id_and_rejects_another_navigation_route(self):
+        source_id = "92eebc07-7392-4136-ba13-d9cd5455c8f9"
+        for suffix in ["&id=smart_index", "&sys_id=" + "0" * 32, "&request_uri=%2Fsmart"]:
+            observer, session, navigation = self.pair(source_id)
+            raw = observer.requests["response"]["raw_url"] + suffix
+            observer.requests.pop("response"); observer.by_id.pop("api")
+            observer.request({"requestId": "api", "frameId": "main-frame", "type": "XHR", "request": {"method": "GET", "url": raw}})
+            with self.assertRaisesRegex(PublisherJsonError, "query_binding"):
+                observer.observation(session, boot(), navigation)
+            self.assertNotIn("Network.getResponseBody", [c[0] for c in session.calls])
+
+    def test_home_alias_keeps_all_complete_fresh_bounded_triple_guards(self):
+        source_id = "92eebc07-7392-4136-ba13-d9cd5455c8f9"
+        for mutation in [lambda o: o.cached({"requestId": "api"}), lambda o: o.failed({"requestId": "api"}),
+                         lambda o: o.requests["response"].update(finished=False), lambda o: o.data({"requestId": "api", "dataLength": BODY_LIMIT + 1}),
+                         lambda o: setattr(o, "now", lambda: o.started + 46)]:
+            observer, session, navigation = self.pair(source_id); mutation(observer)
+            with self.assertRaises(PublisherJsonError):
+                observer.observation(session, boot(), navigation)
+            self.assertNotIn("Network.getResponseBody", [c[0] for c in session.calls])
+
+    def test_all_five_previous_profile_observation_bytes_are_unchanged(self):
+        fixed = SimpleNamespace(now=lambda _tz: __import__("datetime").datetime(2026, 10, 27, 6, 0, tzinfo=__import__("datetime").timezone.utc))
+        for source_id, expected_sha256 in FROZEN_OBSERVATION_SHA256.items():
+            observer, session, navigation = self.pair(source_id)
+            with patch("smart_publisher_json.datetime", fixed):
+                current = observer.observation(session, boot(), navigation)
+            self.assertEqual(digest(json.dumps(current, ensure_ascii=False)), expected_sha256)
 
 
 class CollectorIntegrationTests(unittest.TestCase):

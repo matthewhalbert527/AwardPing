@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
+import { validateProgramTextCapture, programTextPublisherJsonSourceProfile, isProgramTextPublisherJsonExtractor } from "./program-text-capture-contract.mjs";
 import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetadata,
   isProgramTextPublicDrivePdfContentType } from "./program-text-public-drive-pdf.mjs";
-import { PROJECTOR_VERSION, SMART_PUBLISHER_JSON_SOURCE_PROFILES } from "./program-text-smart-publisher-json.mjs";
 import { publisherJsonOriginalLimit } from "./program-text-publisher-json.mjs";
 
 export const PROGRAM_TEXT_REFERENCE_SCHEMA = "awardping.program-text-reference.v1";
@@ -66,10 +65,10 @@ export function validateProgramTextReference(ref) {
       !keys(ref.artifacts, ["metadata", "raw", "text"])) fail("invalid_reference");
   const prefix = `program-text/sources/${ref.source.id}/${ref.capture_id}/`;
   const publisher = ref.acquisition === "publisher_json";
-  const profile = SMART_PUBLISHER_JSON_SOURCE_PROFILES.find(item => item.id === ref.source.id);
-  if (publisher && (!profile || profile.shared_award_id !== ref.source.shared_award_id || profile.url !== ref.source.url ||
-      ref.source.page_type !== (profile.key === "home" ? "homepage" : "eligibility") || ref.final_url !== ref.source.url ||
-      ref.extractor.name !== "smart-publisher-json" || ref.extractor.version !== PROJECTOR_VERSION)) fail("invalid_publisher_json_reference");
+  if (!publisher && isProgramTextPublisherJsonExtractor(ref.extractor)) fail("invalid_publisher_json_reference");
+  const profile = publisher ? programTextPublisherJsonSourceProfile(ref.source) : null;
+  if (publisher && (!profile || ref.final_url !== ref.source.url ||
+      ref.extractor.name !== "smart-publisher-json" || ref.extractor.version !== profile.version)) fail("invalid_publisher_json_reference");
   const publicDrive = ref.extractor.version === PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION;
   if (publicDrive && !isProgramTextPublicDrivePdfMetadata(ref)) fail("invalid_public_drive_pdf_provenance");
   for (const [role, a] of Object.entries(ref.artifacts)) {

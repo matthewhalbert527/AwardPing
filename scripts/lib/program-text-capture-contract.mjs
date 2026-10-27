@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { normalizePublicHttpUrl } from "./public-network-safety.mjs";
 import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetadata,
   isProgramTextPublicDrivePdfContentType, hasProgramTextPublicDrivePdfEnvelope } from "./program-text-public-drive-pdf.mjs";
-import { projectSmartPublisherJson, PROJECTOR_VERSION } from "./program-text-smart-publisher-json.mjs";
+import { projectSmartPublisherJson, PROJECTOR_VERSION, SMART_PUBLISHER_JSON_SOURCE_PROFILES } from "./program-text-smart-publisher-json.mjs";
+import { SMART_KB_PUBLISHER_SOURCE_PROFILES, SMART_KB_PROJECTOR_VERSION } from "./program-text-smart-kb-publisher-json.mjs";
 import { restorePublisherJsonObservation, publisherJsonOriginalLimit } from "./program-text-publisher-json.mjs";
 
 // Pure retained-evidence contract. No browser, extraction engine, OCR bridge,
@@ -23,6 +24,23 @@ const modes = new Set(["http_html", "rendered_html", "pdf_text", "pdf_ocr", "pub
 const fail = (reason, details = {}) => { throw Object.assign(new Error(`Program text capture: ${reason}`), details, { code: `program_text_${reason}` }); };
 const plain = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const sha = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+
+/** Exact source-bound publisher model, shared by collection and cold replay.
+ * The original two profile objects and all retained serializations stay intact. */
+export function programTextPublisherJsonSourceProfile(source) {
+  if (!plain(source)) return null;
+  const profile = [...SMART_PUBLISHER_JSON_SOURCE_PROFILES, ...SMART_KB_PUBLISHER_SOURCE_PROFILES].find(item => item.id === source.id);
+  if (!profile) return null;
+  const page_type = profile.page_type ?? (profile.key === "home" ? "homepage" : "eligibility");
+  if (profile.shared_award_id !== source.shared_award_id || profile.url !== source.url || page_type !== source.page_type) return null;
+  return { ...profile, page_type, version: profile.version ?? PROJECTOR_VERSION };
+}
+
+/** Reserved publisher tags cannot masquerade as ordinary HTML/PDF evidence. */
+export function isProgramTextPublisherJsonExtractor(extractor) {
+  return extractor?.name === "smart-publisher-json" ||
+    [PROJECTOR_VERSION, SMART_KB_PROJECTOR_VERSION].includes(extractor?.version);
+}
 const utf8 = bytes => { const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); if (!Buffer.from(text).equals(bytes)) fail("invalid_utf8"); return text; };
 function publicUrl(value) {
   if (typeof value !== "string" || value.length > 10_000) fail("invalid_url");
@@ -96,6 +114,7 @@ export function validateProgramTextCapture(capture, { source } = {}) {
   if (!plain(capture.extractor) || Object.keys(capture.extractor).sort().join() !== "name,version" ||
       !scalarText(capture.extractor.name, 160) || !capture.extractor.name || !scalarText(capture.extractor.version, 160) || !capture.extractor.version) fail("invalid_extractor");
   const raw = capture.raw_source, isPdf = capture.acquisition.startsWith("pdf_"), isPublisher = capture.acquisition === "publisher_json";
+  if (!isPublisher && isProgramTextPublisherJsonExtractor(capture.extractor)) fail("invalid_publisher_json_provenance");
   if (!isPublisher && Object.hasOwn(capture, "publisher_json")) fail("unexpected_publisher_json_provenance");
   const publicDrive = capture.extractor.version === PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION;
   if (publicDrive && !isProgramTextPublicDrivePdfMetadata(capture)) fail("invalid_public_drive_pdf_provenance");
@@ -132,8 +151,10 @@ export function validateProgramTextCapture(capture, { source } = {}) {
   if (capture.text.slice(cursor).trim()) fail("uncovered_text");
   if (isPublisher) {
     const metadata = capture.publisher_json;
+    const profile = programTextPublisherJsonSourceProfile(identity);
     if (!plain(metadata) || Object.keys(metadata).sort().join() !== "observation,projection" ||
-        capture.extractor.name !== "smart-publisher-json" || capture.extractor.version !== PROJECTOR_VERSION ||
+        !profile || source && !programTextPublisherJsonSourceProfile(source) ||
+        capture.extractor.name !== "smart-publisher-json" || capture.extractor.version !== profile.version ||
         complete.status !== "complete") fail("invalid_publisher_json_provenance");
     const observation = restorePublisherJsonObservation(metadata.observation, raw.bytes, { source: identity });
     if (observation.navigation.final_url !== capture.final_url || new Date(observation.captured_at).toISOString() !== capture.captured_at)
@@ -142,6 +163,15 @@ export function validateProgramTextCapture(capture, { source } = {}) {
     const same = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
     if (!same(metadata.projection, projection.provenance) || capture.text !== projection.text || !same(capture.blocks, projection.blocks))
       fail("publisher_json_projection_mismatch");
+    if (profile.version === SMART_KB_PROJECTOR_VERSION) {
+      // Titles, link attributes and generated status labels cannot turn an
+      // empty/loading-only article body into complete programme coverage.
+      const pointer = profile.programme_pointer + "/data/text";
+      const articleText = projection.blocks.filter(block => block.context?.representation === "publisher_text" &&
+        Array.isArray(block.context.sources) && block.context.sources.some(item => item.pointer === pointer))
+        .map(block => block.text).join("\n");
+      if (!articleText.trim() || isProgramTextHtmlShell(articleText)) fail("publisher_json_article_body_incomplete");
+    }
   }
   if (publicDrive) {
     let page = 0;

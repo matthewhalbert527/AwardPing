@@ -10,8 +10,14 @@ import { captureScraplingPublisherJson, captureScraplingSource, scraplingPublish
   validateScraplingPublisherJsonObservation } from "./scrapling-capture.mjs";
 const hash = x => createHash("sha256").update(x).digest("hex");
 const owner = "d7d4d117-f312-456f-a75c-3dbd5d372c99", portal = "f2a05466db71c300b67330ca7c9619f0";
-const home = { id: "58aefec0-0d42-4b7b-9887-60d25940b3d0", shared_award_id: owner, url: "https://www.smartscholarship.org/smart" };
-const eligibility = { id: "c33cc2f4-2cbd-458c-b630-537eb3d50f72", shared_award_id: owner, url: "https://www.smartscholarship.org/smart/en?id=smart_eligibility" };
+const home = { id: "58aefec0-0d42-4b7b-9887-60d25940b3d0", shared_award_id: owner, url: "https://www.smartscholarship.org/smart", page_type: "homepage" };
+const eligibility = { id: "c33cc2f4-2cbd-458c-b630-537eb3d50f72", shared_award_id: owner, url: "https://www.smartscholarship.org/smart/en?id=smart_eligibility", page_type: "eligibility" };
+const extraSources = [
+  { id: "203baaf3-2905-4fdf-b4af-af84998195a8", shared_award_id: owner, url: "https://www.smartscholarship.org/smart/en?id=kb_article&sys_id=84f05b02db5ac3006bb8f4b40f9619cc", page_type: "faq" },
+  { id: "2562f7c2-4709-4d63-ac25-c4638733a981", shared_award_id: "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108", url: "https://www.smartscholarship.org/smart?id=kb_article&sys_id=b8fb18e0db8a8300ecc734cc7c9619d7", page_type: "application" },
+  { id: "39685b8a-3ad9-41c5-834b-b2aaafb2b0e5", shared_award_id: "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108", url: "https://www.smartscholarship.org/smart?id=kb_article&sys_id=0383c5d6db2a03006bb8f4b40f961956", page_type: "deadline" },
+  { id: "92eebc07-7392-4136-ba13-d9cd5455c8f9", shared_award_id: "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108", url: "https://www.smartscholarship.org/smart/en", page_type: "homepage" },
+];
 const options = { pythonPath: "synthetic-python", executablePath: "synthetic-browser", publisherJsonProfile: "smart-page-v1" };
 function observation(source = home) {
   const raw = '{"result":{"public":true}}', uri = new URL(source.url);
@@ -21,7 +27,7 @@ function observation(source = home) {
       request_id_sha256: hash("main"), frame_id_sha256: hash("frame"), portal_id: portal, base_hrefs: ["/smart"] },
     response: { request_id_sha256: hash("api"), url_sha256: hash("observed-api-url"), path: "/api/now/sp/page", query_sha256: hash("private-query"),
       method: "GET", status_code: 200, content_type: "application/json", frame_id_sha256: hash("frame"), portal_id: portal,
-      request_page_id: source.id === home.id ? null : "smart_eligibility", request_uri: uri.pathname + uri.search,
+      request_page_id: uri.searchParams.get("id"), request_uri: uri.pathname + uri.search,
       from_cache: false, from_service_worker: false, redirected: false, finished: true, decoded_bytes: Buffer.byteLength(raw), raw_sha256: hash(raw) } };
 }
 let output, code, sent, proxy;
@@ -87,6 +93,18 @@ describe("finite passive publisher JSON observation", () => {
     expect(mocks.spawn.mock.calls[0][2]).toMatchObject({ windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"] });
     expect(mocks.start).toHaveBeenCalledWith({ timeoutMs: 15000, maxResponseBytes: 60 * 1024 * 1024 });
     expect(mocks.finish).toHaveBeenCalledWith({ networkProxy: proxy, checkpoint: "checkpoint", maxBytes: 60 * 1024 * 1024, shutdownTimeoutMs: 5000 });
+  });
+  it.each(extraSources)("guards exact $id owner/type before transport and preserves its child request identity", async source => {
+    for (const bad of [{ ...source, page_type: "other" }, { ...source, page_type: undefined }, { ...source, shared_award_id: "wrong" },
+      { ...source, shared_award_id: source.shared_award_id === owner ? extraSources[1].shared_award_id : owner }, { ...source, url: source.url + "&other=1" }]) {
+      await expect(captureScraplingPublisherJson(bad, options)).rejects.toMatchObject({ pilotReason: "publisher_json_source_identity" });
+      expect(mocks.start).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
+    }
+    output = observation(source);
+    expect(await captureScraplingPublisherJson(source, options)).toEqual(output);
+    expect(sent).toEqual({ url: source.url, source_id: source.id, proxy_url: proxy.url, executable_path: options.executablePath,
+      publisher_json_profile: "smart-page-v1", shared_award_id: source.shared_award_id });
+    expect(mocks.finish).toHaveBeenCalledOnce();
   });
   it("finalizes the network boundary even if the collector proof is rejected", async () => {
     output.response.finished = false;

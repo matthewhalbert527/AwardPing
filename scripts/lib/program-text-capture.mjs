@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { fetchPublicHttpBuffer } from "./public-network-safety.mjs";
 import { captureScraplingSource, scraplingCaptureProfile, captureScraplingPublisherJson } from "./scrapling-capture.mjs";
 import { publisherJsonObservationMetadata, validateScraplingPublisherJsonObservation, scraplingPublisherJsonProfile } from "./program-text-publisher-json.mjs";
-import { projectSmartPublisherJson, PROJECTOR_VERSION } from "./program-text-smart-publisher-json.mjs";
+import { projectSmartPublisherJson } from "./program-text-smart-publisher-json.mjs";
 import { extractProgramTextPdfOcr } from "./program-text-ocr.mjs";
 import { fetchProgramTextBrowserPdf } from "./program-text-browser.mjs";
 import { fetchProgramTextPublicDrivePdf } from "./program-text-public-drive-transport.mjs";
@@ -11,7 +11,7 @@ import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, programTextPublicDrivePdfIdentit
   isProgramTextPublicDrivePdfTransition, isProgramTextPublicDrivePdfContentType,
   hasProgramTextPublicDrivePdfEnvelope } from "./program-text-public-drive-pdf.mjs";
 
-import { buildProgramTextCapture, programTextCaptureLimits, programTextCaptureInternals } from "./program-text-capture-contract.mjs";
+import { buildProgramTextCapture, programTextCaptureLimits, programTextCaptureInternals, programTextPublisherJsonSourceProfile } from "./program-text-capture-contract.mjs";
 export { PROGRAM_TEXT_CAPTURE_SCHEMA, PROGRAM_TEXT_CAPTURE_PROFILE, programTextCaptureLimits,
   buildProgramTextCapture, validateProgramTextCapture, blocksFromHtmlDocument } from "./program-text-capture-contract.mjs";
 const { hash, fail, utf8, publicUrl, sourceIdentity, isAcquisition, htmlProjection, htmlCompleteness,
@@ -68,13 +68,14 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
   const started = Date.now();
   const remaining = () => { const value = timeoutMs - (Date.now() - started); if (value < 1) fail("capture_timeout"); return value; };
   if (acquisition === "publisher_json") {
-    if (publisher_json_profile !== scraplingPublisherJsonProfile || allowedFinalUrls.length || pdf_transport !== "http" || source.page_type === "pdf")
+    const profile = programTextPublisherJsonSourceProfile(source);
+    if (!profile || publisher_json_profile !== scraplingPublisherJsonProfile || allowedFinalUrls.length || pdf_transport !== "http")
       fail("invalid_publisher_json_mode");
     const observation = validateScraplingPublisherJsonObservation(await (adapters.publisherJson || captureScraplingPublisherJson)(source,
       { pythonPath, executablePath, timeoutMs: remaining(), publisherJsonProfile: publisher_json_profile }), { source });
     const raw = Buffer.from(observation.raw_json), projection = projectSmartPublisherJson(raw, { source });
     const capture = buildProgramTextCapture({ source, final_url: observation.navigation.final_url, captured_at: observation.captured_at, acquisition,
-      extractor: { name: "smart-publisher-json", version: PROJECTOR_VERSION }, raw_bytes: raw, content_type: "application/json",
+      extractor: { name: "smart-publisher-json", version: profile.version }, raw_bytes: raw, content_type: "application/json",
       text: projection.text, blocks: projection.blocks,
       publisher_json: { observation: publisherJsonObservationMetadata(observation, { source }), projection: projection.provenance } });
     remaining(); return capture;

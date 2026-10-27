@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const shared = vi.hoisted(() => ({ config: null, sources: [], calls: [], destroyed: 0 }));
+const shared = vi.hoisted(() => ({ config: null, sources: [], cohort: "noaa_hollings", calls: [], destroyed: 0 }));
 vi.mock("node:fs", async original => {
   const actual = await original();
   return { ...actual, existsSync: filename => /(?:\.env\.worker\.local|\.awardping-scrapling-runtime\.json)$/.test(String(filename)) ? false : actual.existsSync(filename),
@@ -12,7 +12,7 @@ vi.mock("./supabase-service-client.mjs", () => ({ closeSupabaseServiceTransport:
     if (name === "get_program_text_fact_review_batch") return { data: [] };
     if (name === "get_program_variation_admin_batch") return { data: emptyVariationBatchFixture() };
     if (name !== "get_program_text_worker_roster_page") throw new Error("Unexpected mutating RPC");
-    const roles = [{ cohort_key: "noaa_hollings", source_role: "current_documents",
+    const roles = [{ cohort_key: shared.cohort, source_role: "current_documents",
       source_ids: shared.sources.map(source => source.id), manifest_status: "reviewed_text", revision: "33333333-3333-4333-8333-333333333333",
       evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: Object.fromEntries(shared.sources.map(source =>
         [source.id, { source_url: source.url, shared_award_id: source.shared_award_id }])) } }];
@@ -49,32 +49,56 @@ const reviewed = [
     url: "https://www.noaa.gov/office-education/undergraduate-scholarships", page_type: "application", acquisition: "rendered_html" },
 ];
 const sourceRows = () => reviewed.map(({ id, shared_award_id, url, page_type }) => ({ id, shared_award_id, url, page_type, admin_review_status: "open" }));
+const smartCanonical = "d7d4d117-f312-456f-a75c-3dbd5d372c99", smartAlias = "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108";
+// Independent reviewed identities, including the existing alias-owned routes.
+// Expected owners, literal URLs and page types do not come from the configuration.
+const smartReviewed = [
+  { id: "58aefec0-0d42-4b7b-9887-60d25940b3d0", shared_award_id: smartCanonical,
+    url: "https://www.smartscholarship.org/smart", page_type: "homepage" },
+  { id: "c33cc2f4-2cbd-458c-b630-537eb3d50f72", shared_award_id: smartCanonical,
+    url: "https://www.smartscholarship.org/smart/en?id=smart_eligibility", page_type: "eligibility" },
+  { id: "203baaf3-2905-4fdf-b4af-af84998195a8", shared_award_id: smartCanonical,
+    url: "https://www.smartscholarship.org/smart/en?id=kb_article&sys_id=84f05b02db5ac3006bb8f4b40f9619cc", page_type: "faq" },
+  { id: "2562f7c2-4709-4d63-ac25-c4638733a981", shared_award_id: smartAlias,
+    url: "https://www.smartscholarship.org/smart?id=kb_article&sys_id=b8fb18e0db8a8300ecc734cc7c9619d7", page_type: "application" },
+  { id: "39685b8a-3ad9-41c5-834b-b2aaafb2b0e5", shared_award_id: smartAlias,
+    url: "https://www.smartscholarship.org/smart?id=kb_article&sys_id=0383c5d6db2a03006bb8f4b40f961956", page_type: "deadline" },
+  { id: "92eebc07-7392-4136-ba13-d9cd5455c8f9", shared_award_id: smartAlias,
+    url: "https://www.smartscholarship.org/smart/en", page_type: "homepage" },
+];
+const smartSourceRows = () => smartReviewed.map(profile => ({ ...profile, admin_review_status: "open" }));
 
 beforeEach(() => {
-  shared.config = structuredClone(actualConfig); shared.sources = sourceRows(); shared.calls = []; shared.destroyed = 0;
+  shared.config = structuredClone(actualConfig); shared.sources = sourceRows(); shared.cohort = "noaa_hollings"; shared.calls = []; shared.destroyed = 0;
   for (const [key, value] of Object.entries({ NEXT_PUBLIC_SUPABASE_URL: "https://fixture.invalid", SUPABASE_SERVICE_ROLE_KEY: "fake-never-sent",
     R2_BUCKET: "private-bucket", R2_ENDPOINT: "https://fixture.invalid", R2_ACCESS_KEY_ID: "fake-never-sent", R2_SECRET_ACCESS_KEY: "fake-never-sent" })) vi.stubEnv(key, value);
 });
 afterEach(() => vi.unstubAllEnvs());
 
 describe("reviewed source-bound browser acquisition configuration", () => {
-  it("opts only the two audited SMART pages into explicit publisher JSON collection", async () => {
-    const owner = "d7d4d117-f312-456f-a75c-3dbd5d372c99";
-    const profiles = [
-      { id: "58aefec0-0d42-4b7b-9887-60d25940b3d0", url: "https://www.smartscholarship.org/smart" },
-      { id: "c33cc2f4-2cbd-458c-b630-537eb3d50f72", url: "https://www.smartscholarship.org/smart/en?id=smart_eligibility" },
-    ];
+  it("opts only the six reviewed SMART identities into explicit publisher JSON collection", async () => {
     expect(Object.entries(actualConfig.sources).filter(([, value]) => value.acquisition === "publisher_json").map(([id]) => id).sort())
-      .toEqual(profiles.map(profile => profile.id).sort());
-    for (const profile of profiles) expect(actualConfig.sources[profile.id]).toEqual({ source_url: profile.url, shared_award_id: owner,
+      .toEqual(smartReviewed.map(profile => profile.id).sort());
+    for (const profile of smartReviewed) expect(actualConfig.sources[profile.id]).toEqual({ source_url: profile.url, shared_award_id: profile.shared_award_id,
       acquisition: "publisher_json", publisher_json_profile: "smart-page-v1" });
-    shared.sources = profiles.map(profile => ({ ...profile, shared_award_id: owner, page_type: "other", admin_review_status: "open" }));
+    shared.sources = smartSourceRows(); shared.cohort = "smart";
     await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);
-    expect(shared.calls).toHaveLength(2);
-    for (const call of shared.calls) expect(call.captureOptions).toMatchObject({ acquisition: "publisher_json", publisher_json_profile: "smart-page-v1" });
-    shared.calls = []; shared.sources[0].shared_award_id = canonical;
-    const report = await runProgramTextWorker(["--mode=collect", "--apply=true", `--source-id=${profiles[0].id}`, "--domain-delay-ms=0"]);
-    expect(report.results).toEqual([{ source_id: profiles[0].id, status: "held", reason: "source_configuration_changed" }]); expect(shared.calls).toEqual([]);
+    expect(shared.calls).toHaveLength(6);
+    for (const profile of smartReviewed) {
+      const call = shared.calls.find(value => value.source.id === profile.id);
+      expect(call.source).toMatchObject(profile);
+      expect(call.captureOptions).toMatchObject({ acquisition: "publisher_json", publisher_json_profile: "smart-page-v1" });
+    }
+  });
+  it.each(smartReviewed.flatMap(source => [
+    { id: source.id, field: "url", value: `${source.url}/changed` },
+    { id: source.id, field: "shared_award_id", value: source.shared_award_id === smartCanonical ? smartAlias : smartCanonical },
+  ]))("holds changed SMART literal binding $id / $field before acquisition", async ({ id, field, value }) => {
+    shared.sources = smartSourceRows(); shared.cohort = "smart";
+    shared.sources.find(source => source.id === id)[field] = value;
+    const report = await runProgramTextWorker(["--mode=collect", "--apply=true", `--source-id=${id}`, "--domain-delay-ms=0"]);
+    expect(report.results).toEqual([{ source_id: id, status: "held", reason: "source_configuration_changed" }]);
+    expect(shared.calls).toEqual([]);
   });
   it("enables browser acquisition only for the six reviewed NOAA identities", () => {
     const browserOverrides = Object.entries(actualConfig.sources).filter(([, options]) => options.acquisition === "rendered_html" || options.pdf_transport === "browser");

@@ -1,8 +1,7 @@
 import { captureProgramTextSource, validateProgramTextCapture } from "./program-text-capture.mjs";
 import { programTextReference, validateProgramTextReference } from "./program-text-storage.mjs";
 import { buildProgramTextComparison, buildProgramTextReviewPackets, validateProgramTextReviewResult, hasProgramTextPublisherDataChange } from "./program-text-review.mjs";
-import { isKnownProgramTextHtmlShellReference } from "./program-text-capture-contract.mjs";
-import { smartPublisherSources, smartPublisherOwner } from "./program-text-publisher-json.mjs";
+import { isKnownProgramTextHtmlShellReference, programTextPublisherJsonSourceProfile } from "./program-text-capture-contract.mjs";
 
 export const PROGRAM_TEXT_STATE_SCHEMA = "awardping.program-text-state.v1";
 export const PROGRAM_TEXT_REVIEW_WORK_SCHEMA = "awardping.program-text-review-work.v1";
@@ -101,8 +100,8 @@ export async function monitorProgramTextSource({ source, epoch, cycle_id = null,
     } catch { return held("baseline_state_write_failed", { current_ref: currentRef }); }
   }
   if (!sameConfiguration(state.baseline_ref, currentRef)) {
-    const profile = smartPublisherSources[source.id];
-    const firstMeaningful = profile && source.url === profile.url && source.shared_award_id === smartPublisherOwner &&
+    const profile = programTextPublisherJsonSourceProfile(source);
+    const firstMeaningful = profile &&
       state.status === "baseline_ready" && equal(state.baseline_ref, state.latest_ref) &&
       isKnownProgramTextHtmlShellReference(state.baseline_ref) && currentRef.acquisition === "publisher_json" &&
       currentRef.final_url === state.baseline_ref.final_url && Date.parse(currentRef.captured_at) > Date.parse(state.last_checked_at);

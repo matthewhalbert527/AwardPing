@@ -2,6 +2,7 @@ import { validateProgramTextCapture, programTextCaptureInternals } from "./progr
 import { programTextReference, validateProgramTextReference } from "./program-text-artifacts.mjs";
 import { programTextPublicDrivePdfIdentity, isProgramTextPublicDrivePdfMetadata } from "./program-text-public-drive-pdf.mjs";
 import { hasProgramTextSourceAccess } from "./program-text-source-access.mjs";
+import { buildProgramTextRawAnchorProviderLink } from "./program-text-source-raw-anchor.mjs";
 
 const object = value => value && typeof value === "object" && !Array.isArray(value);
 const exact = (value, keys) => object(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
@@ -11,6 +12,8 @@ const equal = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonica
 const fail = reason => { throw new Error(`Text source approval: ${reason}`); };
 export const PROGRAM_TEXT_SOURCE_APPROVAL_REQUEST = "awardping.program-text-source-approval-request.v1";
 export const PROGRAM_TEXT_SOURCE_PENDING_REQUEST = "awardping.program-text-source-pending-request.v1";
+export const PROGRAM_TEXT_SOURCE_RAW_APPROVAL_REQUEST = "awardping.program-text-source-approval-request.v2";
+export const PROGRAM_TEXT_SOURCE_RAW_PENDING_REQUEST = "awardping.program-text-source-pending-request.v2";
 
 /** Database-recorded collision identities are audit data, never alias permission. */
 export function validateProgramTextURLAliasBoundary(value, proposal) {
@@ -34,10 +37,11 @@ export function validateProgramTextURLAliasBoundary(value, proposal) {
 
 /** Only retained originals are read here; no network acquisition or approval occurs. */
 async function validate(proposal, { epoch, loadCapture }, pending) {
-  const names = ["schema", "id", "cohort_key", "epoch", "expected_canonical_shared_award_id", "source", "authority_ref", "link_block_id", "roles", "registration_scope"];
+  const rawAnchor = proposal?.schema === (pending ? PROGRAM_TEXT_SOURCE_RAW_PENDING_REQUEST : PROGRAM_TEXT_SOURCE_RAW_APPROVAL_REQUEST);
+  const names = ["schema", "id", "cohort_key", "epoch", "expected_canonical_shared_award_id", "source", "authority_ref", rawAnchor ? "link_proof" : "link_block_id", "roles", "registration_scope"];
   if (!pending) names.push("target_ref");
   if (!exact(proposal, names) ||
-      proposal.schema !== (pending ? PROGRAM_TEXT_SOURCE_PENDING_REQUEST : PROGRAM_TEXT_SOURCE_APPROVAL_REQUEST) || !uuid(proposal.id) || !uuid(epoch) || proposal.epoch !== epoch ||
+      proposal.schema !== (rawAnchor ? (pending ? PROGRAM_TEXT_SOURCE_RAW_PENDING_REQUEST : PROGRAM_TEXT_SOURCE_RAW_APPROVAL_REQUEST) : (pending ? PROGRAM_TEXT_SOURCE_PENDING_REQUEST : PROGRAM_TEXT_SOURCE_APPROVAL_REQUEST)) || !uuid(proposal.id) || !uuid(epoch) || proposal.epoch !== epoch ||
       !uuid(proposal.expected_canonical_shared_award_id) || !/^[a-z0-9_-]{1,80}$/.test(proposal.cohort_key || "") ||
       !exact(proposal.source, ["id", "shared_award_id", "url", "title", "page_type", "create", "expected_member_kind", "expected_admin_review_status", "expected_text_monitoring_state"]) ||
       !uuid(proposal.source.id) || !uuid(proposal.source.shared_award_id) || typeof proposal.source.create !== "boolean" ||
@@ -67,14 +71,17 @@ async function validate(proposal, { epoch, loadCapture }, pending) {
       proposal.target_ref.source.shared_award_id !== source.shared_award_id || proposal.target_ref.source.url !== source.url ||
       proposal.target_ref.source.title !== source.title || proposal.target_ref.source.page_type !== source.page_type ||
       proposal.target_ref.final_url !== source.url && !isProgramTextPublicDrivePdfMetadata(proposal.target_ref))) fail("source_or_alias_identity");
-  const documents = [];
+  const documents = []; let authorityCapture;
   for (const ref of references) {
     const capture = await loadCapture(ref);
     validateProgramTextCapture(capture);
     if (capture.completeness.status !== "complete" || capture.completeness.reasons.length) fail("incomplete_original");
     if (!equal(programTextReference(capture), ref)) fail("retained_original_changed");
+    if (ref === proposal.authority_ref) authorityCapture = capture;
     documents.push({ reference: ref, text: capture.text, blocks: capture.blocks, blocks_json: JSON.stringify(canonical(capture.blocks)) });
   }
+  if (rawAnchor) return { schema: pending ? "awardping.program-text-source-pending-proof.v2" : "awardping.program-text-source-approval-proof.v2",
+    proposal, source_text: documents, provider_link: buildProgramTextRawAnchorProviderLink(proposal, authorityCapture) };
   const authority = documents[0], block = authority.blocks.find(row => row.id === proposal.link_block_id);
   if (!block || block.kind !== "source_link" || block.context?.source_attribute !== "href" ||
       !Array.isArray(block.context.base_hrefs) || block.context.base_hrefs.length || !block.text ||
@@ -153,7 +160,7 @@ export async function approveProgramTextSourceOperation(db, id, expectedHash, ac
   const { descriptor, pending, proof } = await loadProgramTextSourcePendingBundle(db, id);
   if (descriptor.content_hash !== expectedHash || descriptor.epoch !== context.epoch || !proof) fail("complete_pending_probe_required");
   const request = pending.validation.proposal;
-  const proposal = { ...request, schema: PROGRAM_TEXT_SOURCE_APPROVAL_REQUEST, target_ref: descriptor.proof.reference,
+  const proposal = { ...request, schema: request.schema === PROGRAM_TEXT_SOURCE_RAW_PENDING_REQUEST ? PROGRAM_TEXT_SOURCE_RAW_APPROVAL_REQUEST : PROGRAM_TEXT_SOURCE_APPROVAL_REQUEST, target_ref: descriptor.proof.reference,
     source: { ...request.source, create: false, expected_admin_review_status: descriptor.source.admin_review_status,
       expected_text_monitoring_state: descriptor.source.text_monitoring_state } };
   const validation = await validateProgramTextSourceApproval(proposal, context);

@@ -10,6 +10,10 @@ export const smartPublisherPortal = "f2a05466db71c300b67330ca7c9619f0";
 export const smartPublisherSources = Object.freeze({
   "58aefec0-0d42-4b7b-9887-60d25940b3d0": Object.freeze({ url: "https://www.smartscholarship.org/smart", request_page_id: null }),
   "c33cc2f4-2cbd-458c-b630-537eb3d50f72": Object.freeze({ url: "https://www.smartscholarship.org/smart/en?id=smart_eligibility", request_page_id: "smart_eligibility" }),
+  "203baaf3-2905-4fdf-b4af-af84998195a8": Object.freeze({ url: "https://www.smartscholarship.org/smart/en?id=kb_article&sys_id=84f05b02db5ac3006bb8f4b40f9619cc", request_page_id: "kb_article", shared_award_id: "d7d4d117-f312-456f-a75c-3dbd5d372c99", page_type: "faq" }),
+  "2562f7c2-4709-4d63-ac25-c4638733a981": Object.freeze({ url: "https://www.smartscholarship.org/smart?id=kb_article&sys_id=b8fb18e0db8a8300ecc734cc7c9619d7", request_page_id: "kb_article", shared_award_id: "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108", page_type: "application" }),
+  "39685b8a-3ad9-41c5-834b-b2aaafb2b0e5": Object.freeze({ url: "https://www.smartscholarship.org/smart?id=kb_article&sys_id=0383c5d6db2a03006bb8f4b40f961956", request_page_id: "kb_article", shared_award_id: "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108", page_type: "deadline" }),
+  "92eebc07-7392-4136-ba13-d9cd5455c8f9": Object.freeze({ url: "https://www.smartscholarship.org/smart/en", request_page_id: null, shared_award_id: "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108", page_type: "homepage" }),
 });
 const digest = value => createHash("sha256").update(value).digest("hex");
 const fail = reason => { throw Object.assign(new Error(reason), { pilotReason: reason, code: `program_text_${reason}` }); };
@@ -20,7 +24,8 @@ export function validateScraplingPublisherJsonObservation(value, { source } = {}
     Object.keys(object).length === keys.length && keys.every(key => Object.hasOwn(object, key));
   const hash = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
   const spec = smartPublisherSources[source?.id];
-  if (!spec || source.url !== spec.url || source.shared_award_id !== smartPublisherOwner) fail("publisher_json_source_identity");
+  if (!spec || source.url !== spec.url || source.shared_award_id !== (spec.shared_award_id ?? smartPublisherOwner) ||
+      (spec.page_type && source.page_type !== spec.page_type)) fail("publisher_json_source_identity");
   const top = ["schema", "profile", "source_id", "source_url", "captured_at", "navigation", "response", "raw_json"];
   if (!exact(value, top) || value.schema !== scraplingPublisherJsonObservationSchema || value.profile !== scraplingPublisherJsonProfile ||
       value.source_id !== source.id || value.source_url !== source.url || typeof value.captured_at !== "string" ||

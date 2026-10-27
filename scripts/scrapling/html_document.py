@@ -243,7 +243,7 @@ def extract_html_document(html, url, *, neutral_div_blocks=False):
             pending.extend(child.children)
         return True
 
-    def visit(node, ancestors):
+    def visit(node, ancestors, covered_table_cell=False):
         nonlocal headings
         if node.tag == "#text":
             return
@@ -279,7 +279,11 @@ def extract_html_document(html, url, *, neutral_div_blocks=False):
                     sibling_button_path.append(match[1])
         require(len(sibling_button_path) <= 100, "html_depth_limit")
         sibling_context = {"sibling_button_path": sibling_button_path} if sibling_button_path else {}
-        if node.text and (node.tag in SEMANTIC or level or neutral_div(node, ancestors)):
+        # An emitted table cell owns its entire source text. Its actual DOM
+        # descendants must not be matched again against later repeated cells.
+        # Keep traversing for links/headings; distinct sibling cells stay intact.
+        emitted_table_cell = False
+        if node.text and not covered_table_cell and (node.tag in SEMANTIC or level or neutral_div(node, ancestors)):
             row = next((ancestor for ancestor in reversed(ancestors) if ancestor.tag == "tr"), None)
             table_row = [child.text for child in row.children if child.tag in {"td", "th"}] if row else []
             block = {"kind": "heading" if level else node.tag, "text": node.text,
@@ -289,12 +293,13 @@ def extract_html_document(html, url, *, neutral_div_blocks=False):
                 block["table_cell"] = {"raw_colspan": node.attrs.get("colspan", "1"), "raw_rowspan": node.attrs.get("rowspan", "1"),
                     "scope": node.attrs.get("scope", ""), "headers": node.attrs.get("headers", ""), "id": node.attrs.get("id", "")}
             add(blocks, block)
+            emitted_table_cell = node.tag in {"td", "th"}
         if node.tag == "a" and "href" in node.attrs:
             add(links, {"text": node.text, "raw_href": node.attrs["href"], "source_url": url,
                         "base_hrefs": list(base_hrefs), "heading_path": heading_path, "list_path": list_path,
                         **details_context, **sibling_context})
         for child in node.children:
-            visit(child, [*ancestors, node])
+            visit(child, [*ancestors, node], covered_table_cell or emitted_table_cell)
 
     visit(tree, [])
     if not blocks and tree.text:

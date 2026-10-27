@@ -279,7 +279,9 @@ export function compareScraplingCaptures(previous, current) {
 export async function captureScraplingPublisherJson(source, { pythonPath, executablePath, timeoutMs = 90000,
   publisherJsonProfile } = {}) {
   const spec = smartPublisherSources[source?.id];
-  if (!spec || source.url !== spec.url || source.shared_award_id !== smartPublisherOwner) fail("publisher_json_source_identity");
+  const expectedType = spec?.page_type ?? (spec?.request_page_id === null ? "homepage" : "eligibility");
+  if (!spec || source.url !== spec.url || source.shared_award_id !== (spec.shared_award_id ?? smartPublisherOwner) ||
+      source.page_type !== expectedType) fail("publisher_json_source_identity");
   publicUrl(source.url);
   if (publisherJsonProfile !== scraplingPublisherJsonProfile || !pythonPath || !executablePath ||
       !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000) fail("invalid_publisher_json_runtime_options");
