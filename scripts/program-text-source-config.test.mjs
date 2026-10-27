@@ -58,6 +58,24 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("reviewed source-bound browser acquisition configuration", () => {
+  it("opts only the two audited SMART pages into explicit publisher JSON collection", async () => {
+    const owner = "d7d4d117-f312-456f-a75c-3dbd5d372c99";
+    const profiles = [
+      { id: "58aefec0-0d42-4b7b-9887-60d25940b3d0", url: "https://www.smartscholarship.org/smart" },
+      { id: "c33cc2f4-2cbd-458c-b630-537eb3d50f72", url: "https://www.smartscholarship.org/smart/en?id=smart_eligibility" },
+    ];
+    expect(Object.entries(actualConfig.sources).filter(([, value]) => value.acquisition === "publisher_json").map(([id]) => id).sort())
+      .toEqual(profiles.map(profile => profile.id).sort());
+    for (const profile of profiles) expect(actualConfig.sources[profile.id]).toEqual({ source_url: profile.url, shared_award_id: owner,
+      acquisition: "publisher_json", publisher_json_profile: "smart-page-v1" });
+    shared.sources = profiles.map(profile => ({ ...profile, shared_award_id: owner, page_type: "other", admin_review_status: "open" }));
+    await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);
+    expect(shared.calls).toHaveLength(2);
+    for (const call of shared.calls) expect(call.captureOptions).toMatchObject({ acquisition: "publisher_json", publisher_json_profile: "smart-page-v1" });
+    shared.calls = []; shared.sources[0].shared_award_id = canonical;
+    const report = await runProgramTextWorker(["--mode=collect", "--apply=true", `--source-id=${profiles[0].id}`, "--domain-delay-ms=0"]);
+    expect(report.results).toEqual([{ source_id: profiles[0].id, status: "held", reason: "source_configuration_changed" }]); expect(shared.calls).toEqual([]);
+  });
   it("enables browser acquisition only for the six reviewed NOAA identities", () => {
     const browserOverrides = Object.entries(actualConfig.sources).filter(([, options]) => options.acquisition === "rendered_html" || options.pdf_transport === "browser");
     expect(browserOverrides.map(([id]) => id).sort()).toEqual(reviewed.map(source => source.id).sort());

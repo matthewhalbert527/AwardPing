@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { normalizePublicHttpUrl } from "./public-network-safety.mjs";
 import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetadata,
   isProgramTextPublicDrivePdfContentType, hasProgramTextPublicDrivePdfEnvelope } from "./program-text-public-drive-pdf.mjs";
+import { projectSmartPublisherJson, PROJECTOR_VERSION } from "./program-text-smart-publisher-json.mjs";
+import { restorePublisherJsonObservation, publisherJsonOriginalLimit } from "./program-text-publisher-json.mjs";
 
 // Pure retained-evidence contract. No browser, extraction engine, OCR bridge,
 // local file retention, process launch or source fetching is imported here.
@@ -17,7 +19,7 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 const knownHtmlShellText = "Loading... Skip to page contentSkip to chat Skip to page contentSkip to chat";
 const knownHtmlShellSha256 = hash(knownHtmlShellText);
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value) && !/^0{8}(?:-0{4}){3}-0{12}$/.test(value);
-const modes = new Set(["http_html", "rendered_html", "pdf_text", "pdf_ocr"]);
+const modes = new Set(["http_html", "rendered_html", "pdf_text", "pdf_ocr", "publisher_json"]);
 const fail = (reason, details = {}) => { throw Object.assign(new Error(`Program text capture: ${reason}`), details, { code: `program_text_${reason}` }); };
 const plain = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const sha = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -42,9 +44,13 @@ function sameIdentity(a, b) { return a.id === b.id && a.shared_award_id === b.sh
 const canonical = value => Array.isArray(value) ? value.map(canonical) : plain(value)
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 function fingerprint(capture) {
-  return hash(JSON.stringify(canonical([capture.schema, capture.capture_profile, capture.source, capture.final_url,
+  const values = [capture.schema, capture.capture_profile, capture.source, capture.final_url,
     capture.captured_at, capture.acquisition, capture.extractor, capture.raw_source.content_type,
-    capture.raw_source.sha256, capture.raw_source.byte_length, capture.text_sha256, capture.blocks, capture.completeness])));
+    capture.raw_source.sha256, capture.raw_source.byte_length, capture.text_sha256, capture.blocks, capture.completeness];
+  // Old capture identities remain byte-compatible. Only the new acquisition
+  // binds its additional transport and deterministic projection provenance.
+  if (capture.acquisition === "publisher_json") values.push(capture.publisher_json);
+  return hash(JSON.stringify(canonical(values)));
 }
 function scalarText(value, max = 10_000) { return typeof value === "string" && value.length <= max; }
 function splitSurrogate(text, index) { return index > 0 && index < text.length && /[\uD800-\uDBFF]/.test(text[index - 1]) && /[\uDC00-\uDFFF]/.test(text[index]); }
@@ -79,7 +85,7 @@ export function isKnownProgramTextFooterOnlyPdfReference(ref) {
 /** Validate a complete observation, not source approval or a factual conclusion. */
 export function validateProgramTextCapture(capture, { source } = {}) {
   const allowed = new Set(["schema", "capture_profile", "capture_id", "source", "final_url", "captured_at", "acquisition",
-    "extractor", "raw_source", "text", "text_sha256", "blocks", "completeness"]);
+    "extractor", "raw_source", "text", "text_sha256", "blocks", "completeness", "publisher_json"]);
   if (!plain(capture) || Object.keys(capture).some(key => !allowed.has(key)) || capture.schema !== PROGRAM_TEXT_CAPTURE_SCHEMA ||
       capture.capture_profile !== PROGRAM_TEXT_CAPTURE_PROFILE || !modes.has(capture.acquisition)) fail("invalid_contract");
   const identity = sourceIdentity(capture.source);
@@ -89,13 +95,14 @@ export function validateProgramTextCapture(capture, { source } = {}) {
       !Number.isFinite(Date.parse(capture.captured_at)) || new Date(capture.captured_at).toISOString() !== capture.captured_at) fail("invalid_timestamp");
   if (!plain(capture.extractor) || Object.keys(capture.extractor).sort().join() !== "name,version" ||
       !scalarText(capture.extractor.name, 160) || !capture.extractor.name || !scalarText(capture.extractor.version, 160) || !capture.extractor.version) fail("invalid_extractor");
-  const raw = capture.raw_source, isPdf = capture.acquisition.startsWith("pdf_");
+  const raw = capture.raw_source, isPdf = capture.acquisition.startsWith("pdf_"), isPublisher = capture.acquisition === "publisher_json";
+  if (!isPublisher && Object.hasOwn(capture, "publisher_json")) fail("unexpected_publisher_json_provenance");
   const publicDrive = capture.extractor.version === PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION;
   if (publicDrive && !isProgramTextPublicDrivePdfMetadata(capture)) fail("invalid_public_drive_pdf_provenance");
   if (!plain(raw) || Object.keys(raw).sort().join() !== "byte_length,bytes,content_type,sha256" || !Buffer.isBuffer(raw.bytes) ||
-      raw.byte_length !== raw.bytes.length || raw.bytes.length < 1 || raw.bytes.length > (isPdf ? programTextCaptureLimits.pdfBytes : programTextCaptureLimits.htmlBytes) ||
+      raw.byte_length !== raw.bytes.length || raw.bytes.length < 1 || raw.bytes.length > (isPdf ? programTextCaptureLimits.pdfBytes : isPublisher ? publisherJsonOriginalLimit : programTextCaptureLimits.htmlBytes) ||
       !sha(raw.sha256) || hash(raw.bytes) !== raw.sha256 || !scalarText(raw.content_type, 200) ||
-      !(publicDrive ? isProgramTextPublicDrivePdfContentType(raw.content_type) :
+      !(isPublisher ? raw.content_type === "application/json" : publicDrive ? isProgramTextPublicDrivePdfContentType(raw.content_type) :
         (isPdf ? /^application\/pdf(?:;|$)/i : /^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i).test(raw.content_type))) fail("invalid_raw_source");
   if (isPdf && !raw.bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))) fail("invalid_pdf");
   if (publicDrive && !hasProgramTextPublicDrivePdfEnvelope(raw.bytes)) fail("invalid_public_drive_pdf_envelope");
@@ -118,11 +125,24 @@ export function validateProgramTextCapture(capture, { source } = {}) {
         typeof block.text !== "string" || !block.text.trim() || capture.text.slice(block.start_utf16, block.end_utf16) !== block.text ||
         capture.text.slice(cursor, block.start_utf16).trim() ||
         block.heading !== undefined && !scalarText(block.heading) || block.kind !== undefined && !scalarText(block.kind, 80) ||
-        block.page !== undefined && (!isPdf || !Number.isInteger(block.page) || block.page < 1 || block.page > programTextCaptureLimits.pages) ||
+        block.page !== undefined && !(isPublisher && block.page === null) && (!isPdf || !Number.isInteger(block.page) || block.page < 1 || block.page > programTextCaptureLimits.pages) ||
         block.context !== undefined && (!plain(block.context) || Buffer.byteLength(JSON.stringify(block.context)) > 64 * 1024)) fail("invalid_block_binding");
     ids.add(block.id); cursor = block.end_utf16;
   }
   if (capture.text.slice(cursor).trim()) fail("uncovered_text");
+  if (isPublisher) {
+    const metadata = capture.publisher_json;
+    if (!plain(metadata) || Object.keys(metadata).sort().join() !== "observation,projection" ||
+        capture.extractor.name !== "smart-publisher-json" || capture.extractor.version !== PROJECTOR_VERSION ||
+        complete.status !== "complete") fail("invalid_publisher_json_provenance");
+    const observation = restorePublisherJsonObservation(metadata.observation, raw.bytes, { source: identity });
+    if (observation.navigation.final_url !== capture.final_url || new Date(observation.captured_at).toISOString() !== capture.captured_at)
+      fail("publisher_json_capture_binding");
+    const projection = projectSmartPublisherJson(raw.bytes, { source: identity });
+    const same = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+    if (!same(metadata.projection, projection.provenance) || capture.text !== projection.text || !same(capture.blocks, projection.blocks))
+      fail("publisher_json_projection_mismatch");
+  }
   if (publicDrive) {
     let page = 0;
     const pageText = [];
@@ -147,13 +167,14 @@ export function validateProgramTextCapture(capture, { source } = {}) {
 
 /** Adapter boundary: bytes and extraction are retained together; no screenshot slot. */
 export function buildProgramTextCapture({ source, final_url = source?.url, captured_at = new Date().toISOString(), acquisition,
-  extractor, raw_bytes, content_type, text, blocks, completeness = { status: "complete", reasons: [] } } = {}) {
+  extractor, raw_bytes, content_type, text, blocks, publisher_json, completeness = { status: "complete", reasons: [] } } = {}) {
   if (!Buffer.isBuffer(raw_bytes)) fail("raw_bytes_required");
   const capture = { schema: PROGRAM_TEXT_CAPTURE_SCHEMA, capture_profile: PROGRAM_TEXT_CAPTURE_PROFILE,
     source: sourceIdentity(source), final_url, captured_at: new Date(captured_at).toISOString(), acquisition,
     extractor: structuredClone(extractor), raw_source: { bytes: Buffer.from(raw_bytes), content_type,
       sha256: hash(raw_bytes), byte_length: raw_bytes.length }, text, text_sha256: hash(typeof text === "string" ? text : ""),
-    blocks: structuredClone(blocks), completeness: structuredClone(completeness) };
+    blocks: structuredClone(blocks), completeness: structuredClone(completeness),
+    ...(publisher_json === undefined ? {} : { publisher_json: structuredClone(publisher_json) }) };
   capture.capture_id = fingerprint(capture);
   return validateProgramTextCapture(capture, { source });
 }

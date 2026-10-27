@@ -55,19 +55,27 @@ function validReference(value: unknown, event: TextEvent) {
       Object.keys(source).some(key => !["id", "shared_award_id", "url", "title", "page_type"].includes(key)) ||
       ["title", "page_type"].some(key => source[key] !== undefined && (typeof source[key] !== "string" || (source[key] as string).length > 10_000)) ||
       !exact(extractor, ["name", "version"]) || !bounded(extractor.name, 160) || !bounded(extractor.version, 160) ||
-      !["http_html", "rendered_html", "pdf_text", "pdf_ocr"].includes(String(ref.acquisition)) ||
+      !["http_html", "rendered_html", "pdf_text", "pdf_ocr", "publisher_json"].includes(String(ref.acquisition)) ||
       !exact(complete, ["status", "reasons"]) || complete.status !== "complete" || !Array.isArray(complete.reasons) || complete.reasons.length ||
       !exact(artifacts, ["raw", "text", "metadata"])) return false;
-  const pdf = String(ref.acquisition).startsWith("pdf_"), prefix = `program-text/sources/${source.id}/${ref.capture_id}/`;
+  const pdf = String(ref.acquisition).startsWith("pdf_"), publisher = ref.acquisition === "publisher_json";
+  const prefix = `program-text/sources/${source.id}/${ref.capture_id}/`;
+  const publisherUrl = source.id === "58aefec0-0d42-4b7b-9887-60d25940b3d0" ? "https://www.smartscholarship.org/smart" :
+    source.id === "c33cc2f4-2cbd-458c-b630-537eb3d50f72" ? "https://www.smartscholarship.org/smart/en?id=smart_eligibility" : null;
+  if (publisher && (!publisherUrl || source.url !== publisherUrl || ref.final_url !== publisherUrl ||
+      source.page_type !== (source.id === "58aefec0-0d42-4b7b-9887-60d25940b3d0" ? "homepage" : "eligibility") ||
+      source.shared_award_id !== "d7d4d117-f312-456f-a75c-3dbd5d372c99" ||
+      extractor.name !== "smart-publisher-json" || extractor.version !== "smart-publisher-json-v1")) return false;
   for (const role of ["raw", "text", "metadata"] as const) {
     const artifact = object(artifacts[role]);
-    const name = role === "raw" ? pdf ? "original.pdf" : "original.html" : role === "text" ? "text.txt" : "metadata.json";
-    const maxBytes = role === "raw" ? (pdf ? 20 : 5) * 1024 * 1024 : role === "text" ? 8 * 1024 * 1024 : 32 * 1024 * 1024;
+    const name = role === "raw" ? publisher ? "original.json" : pdf ? "original.pdf" : "original.html" : role === "text" ? "text.txt" : "metadata.json";
+    const maxBytes = role === "raw" ? publisher ? 512 * 1024 : (pdf ? 20 : 5) * 1024 * 1024 : role === "text" ? 8 * 1024 * 1024 : 32 * 1024 * 1024;
     if (!exact(artifact, ["object_key", "sha256", "byte_length", "content_type"]) || artifact.object_key !== prefix + name || !hex(artifact.sha256) || !integer(artifact.byte_length, 1, maxBytes)) return false;
     if (role === "text" && (artifact.content_type !== "text/plain; charset=utf-8" || artifact.sha256 !== ref.text_sha256 || artifact.byte_length < (ref.text_length as number) || artifact.byte_length > 3 * (ref.text_length as number))) return false;
     if (role === "metadata" && artifact.content_type !== "application/json") return false;
     if (role === "raw" && (typeof artifact.content_type !== "string" || artifact.content_type.length > 200 ||
-        !(pdf ? /^application\/pdf(?:;|$)/i : /^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i).test(artifact.content_type))) return false;
+        !(publisher ? artifact.content_type === "application/json" :
+          (pdf ? /^application\/pdf(?:;|$)/i : /^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i).test(artifact.content_type)))) return false;
   }
   return true;
 }
@@ -110,6 +118,7 @@ export function hasPublishableProgramTextEvidence(event: TextEvent, evidence: Te
     if (!blocks) return false;
     const block = blocks.get(quote.block_id);
     if (!block || quote.start_utf16 < (block.start_utf16 as number) || quote.end_utf16 > (block.end_utf16 as number)) return false;
+    if (block.kind === "publisher_data" || object(block.context).representation === "publisher_data") return false;
     const offset = quote.start_utf16 - (block.start_utf16 as number), text = block.text as string;
     if (text.slice(offset, quote.end_utf16 - (block.start_utf16 as number)) !== quote.text || text.indexOf(quote.text) !== offset || text.indexOf(quote.text, offset + 1) >= 0) return false;
   }

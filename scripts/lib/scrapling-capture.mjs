@@ -3,6 +3,9 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { normalizePublicHttpUrl, startPublicNetworkProxy } from "./public-network-safety.mjs";
 import { finalizeCaptureNetworkBoundary } from "./capture-resource-limits.mjs";
+import { scraplingPublisherJsonProfile, scraplingPublisherJsonObservationSchema, smartPublisherOwner,
+  smartPublisherSources, validateScraplingPublisherJsonObservation } from "./program-text-publisher-json.mjs";
+export { scraplingPublisherJsonProfile, scraplingPublisherJsonObservationSchema, validateScraplingPublisherJsonObservation };
 
 export const scraplingCaptureProfile = "scrapling-visible-v1";
 export const scraplingEvidenceProfile = "scrapling-evidence-v1";
@@ -271,6 +274,32 @@ export function compareScraplingCaptures(previous, current) {
   }
 }
 
+
+/** Explicit finite opt-in; retains the same DNS/proxy/TLS/browser transport boundary. */
+export async function captureScraplingPublisherJson(source, { pythonPath, executablePath, timeoutMs = 90000,
+  publisherJsonProfile } = {}) {
+  const spec = smartPublisherSources[source?.id];
+  if (!spec || source.url !== spec.url || source.shared_award_id !== smartPublisherOwner) fail("publisher_json_source_identity");
+  publicUrl(source.url);
+  if (publisherJsonProfile !== scraplingPublisherJsonProfile || !pythonPath || !executablePath ||
+      !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000) fail("invalid_publisher_json_runtime_options");
+  const maxBytes = 60 * 1024 * 1024;
+  const proxy = await startPublicNetworkProxy({ timeoutMs: 15000, maxResponseBytes: maxBytes });
+  const checkpoint = proxy.policyCheckpoint();
+  let result, failure;
+  try {
+    result = await runCollectorProcess({ pythonPath, executablePath, source, proxyUrl: proxy.url, timeoutMs,
+      captureProfile: scraplingCaptureProfile, browserDiagnostics: false, publisherJsonProfile });
+    result = validateScraplingPublisherJsonObservation(result, { source });
+  } catch (error) { failure = error; }
+  finally {
+    try { await finalizeCaptureNetworkBoundary({ networkProxy: proxy, checkpoint, maxBytes, shutdownTimeoutMs: 5000 }); }
+    catch { failure = Object.assign(new Error("network_boundary_rejected"), { pilotReason: "network_boundary_rejected" }); }
+  }
+  if (failure) throw failure;
+  return result;
+}
+
 /** Scrapling owns fetching/extraction; this small bridge retains the existing egress boundary. */
 export async function captureScraplingSource(source, { pythonPath, executablePath, timeoutMs = 90000, captureProfile = scraplingCaptureProfile,
   browserDiagnostics = false } = {}) {
@@ -298,7 +327,7 @@ export async function captureScraplingSource(source, { pythonPath, executablePat
   return result;
 }
 
-function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, timeoutMs, captureProfile, browserDiagnostics }) {
+function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, timeoutMs, captureProfile, browserDiagnostics, publisherJsonProfile }) {
   return new Promise((resolve, reject) => {
     const env = Object.fromEntries(["SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PATH", "COMSPEC", "PATHEXT"]
       .filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
@@ -324,7 +353,7 @@ function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, tim
     const deadline = setTimeout(() => stop("capture_timeout"), timeoutMs);
     child.stdout.on("data", (data) => {
       bytes += data.length;
-      if (bytes > 24 * 1024 * 1024) { output = []; stop("collector_output_limit"); }
+      if (bytes > 24 * 1024 * 1024 || publisherJsonProfile && bytes > 2 * 1024 * 1024) { output = []; stop("collector_output_limit"); }
       else if (!reason) output.push(data);
     });
     // Drain library logs without exposing page data, URLs with tokens or runtime environment.
@@ -345,6 +374,7 @@ function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, tim
     });
     child.stdin.end(JSON.stringify({ url: source.url, source_id: source.id, proxy_url: proxyUrl, executable_path: executablePath || "",
       ...(captureProfile !== scraplingCaptureProfile ? { capture_profile: captureProfile } : {}),
+      ...(publisherJsonProfile ? { publisher_json_profile: publisherJsonProfile, shared_award_id: source.shared_award_id } : {}),
       ...(browserDiagnostics ? { diagnostic_mode: "browser-transport-v1" } : {}) }));
   });
 }

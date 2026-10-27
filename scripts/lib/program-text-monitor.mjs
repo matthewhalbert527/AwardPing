@@ -1,6 +1,8 @@
 import { captureProgramTextSource, validateProgramTextCapture } from "./program-text-capture.mjs";
 import { programTextReference, validateProgramTextReference } from "./program-text-storage.mjs";
-import { buildProgramTextComparison, buildProgramTextReviewPackets, validateProgramTextReviewResult } from "./program-text-review.mjs";
+import { buildProgramTextComparison, buildProgramTextReviewPackets, validateProgramTextReviewResult, hasProgramTextPublisherDataChange } from "./program-text-review.mjs";
+import { isKnownProgramTextHtmlShellReference } from "./program-text-capture-contract.mjs";
+import { smartPublisherSources, smartPublisherOwner } from "./program-text-publisher-json.mjs";
 
 export const PROGRAM_TEXT_STATE_SCHEMA = "awardping.program-text-state.v1";
 export const PROGRAM_TEXT_REVIEW_WORK_SCHEMA = "awardping.program-text-review-work.v1";
@@ -98,7 +100,23 @@ export async function monitorProgramTextSource({ source, epoch, cycle_id = null,
       return { status: "baseline_ready", initial_coverage: true, creates_update: false, state: next };
     } catch { return held("baseline_state_write_failed", { current_ref: currentRef }); }
   }
-  if (!sameConfiguration(state.baseline_ref, currentRef)) return held("extraction_configuration_changed", { current_ref: currentRef });
+  if (!sameConfiguration(state.baseline_ref, currentRef)) {
+    const profile = smartPublisherSources[source.id];
+    const firstMeaningful = profile && source.url === profile.url && source.shared_award_id === smartPublisherOwner &&
+      state.status === "baseline_ready" && equal(state.baseline_ref, state.latest_ref) &&
+      isKnownProgramTextHtmlShellReference(state.baseline_ref) && currentRef.acquisition === "publisher_json" &&
+      currentRef.final_url === state.baseline_ref.final_url && Date.parse(currentRef.captured_at) > Date.parse(state.last_checked_at);
+    if (!firstMeaningful || typeof callbacks.transitionKnownHtmlShell !== "function")
+      return held("extraction_configuration_changed", { current_ref: currentRef });
+    const next = { schema: PROGRAM_TEXT_STATE_SCHEMA, epoch, status: "baseline_ready", baseline_ref: currentRef, latest_ref: currentRef,
+      last_checked_at: currentRef.captured_at, first_captured_at: currentRef.captured_at, successful_checks: 1 };
+    try {
+      const result = await callbacks.transitionKnownHtmlShell({ source_id: source.id, expected_state: state, next_state: next, current_ref: currentRef });
+      if (result?.applied !== true || !uuid(result.journal_id) || !equal(result.state, next) || result.initial_coverage !== true || result.creates_update !== false)
+        return held("meaningful_first_coverage_unconfirmed", { current_ref: currentRef });
+      return { status: "baseline_ready", initial_coverage: true, creates_update: false, historical_transition_id: result.journal_id, state: next };
+    } catch { return held("meaningful_first_coverage_transition_failed", { current_ref: currentRef }); }
+  }
   if (Date.parse(currentRef.captured_at) <= Date.parse(state.latest_ref.captured_at) || Date.parse(currentRef.captured_at) < Date.parse(state.last_checked_at)) {
     return held("capture_order_invalid", { current_ref: currentRef });
   }
@@ -106,6 +124,17 @@ export async function monitorProgramTextSource({ source, epoch, cycle_id = null,
   try { previous = await restored(callbacks, state.baseline_ref, source); } catch { return held("baseline_original_unavailable", { current_ref: currentRef }); }
   const comparison = buildProgramTextComparison(previous, capture, { epoch, cycle_id });
   if (comparison.status === "held") return held("comparison_requires_review", { reasons: comparison.reasons, current_ref: currentRef });
+  if (hasProgramTextPublisherDataChange(comparison)) {
+    // Keep the complete changed observation and block factual readiness. No
+    // generated data label becomes a quote, paid request, update or new baseline.
+    const next = { ...state, status: "held", latest_ref: currentRef, last_checked_at: currentRef.captured_at,
+      successful_checks: state.successful_checks + 1 };
+    try {
+      if (!await cas(callbacks, source, state, next)) return held("state_changed_before_publisher_data_hold", { current_ref: currentRef });
+    } catch { return held("publisher_data_hold_write_failed", { current_ref: currentRef }); }
+    return held("publisher_data_change_requires_review", { baseline_ref: state.baseline_ref, current_ref: currentRef, state: next,
+      creates_update: false, paid_review_required: false });
+  }
   // Equal text hashes can advance without a model. Different text—even locally
   // classified reorder/noise—needs its persisted no-program-change validation.
   if (state.baseline_ref.text_sha256 === currentRef.text_sha256) {

@@ -257,6 +257,7 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
           executablePath: findProgramTextBrowserExecutable(env),
           acquisition: override.acquisition || (source.page_type === "pdf" || /\.pdf(?:\?|$)/i.test(source.url) ? "pdf_text" : "http_html"),
           pdf_transport: override.pdf_transport || "http",
+          ...(override.publisher_json_profile === undefined ? {} : { publisher_json_profile: override.publisher_json_profile }),
           allowedFinalUrls: override.allowed_final_urls || [], ocrOptions: { popplerDirectory: env.AWARDPING_POPPLER_DIRECTORY,
             tempRoot: env.AWARDPING_OCR_TEMP_ROOT } } });
       lastDomain.set(domain, Date.now());

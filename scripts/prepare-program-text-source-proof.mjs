@@ -74,15 +74,16 @@ export function validateProgramTextSourcePendingDescriptor(value, { pendingId, e
 
 function acquisitionOptions(config, source) {
   const override = config.sources?.[source.id] || {};
-  if (!plain(override) || Object.keys(override).some(key => !["source_url", "shared_award_id", "acquisition", "pdf_transport", "allowed_final_urls"].includes(key)) ||
+  if (!plain(override) || Object.keys(override).some(key => !["source_url", "shared_award_id", "acquisition", "pdf_transport", "allowed_final_urls", "publisher_json_profile"].includes(key)) ||
       Object.keys(override).length && (override.source_url !== source.url || override.shared_award_id !== source.shared_award_id)) fail("source_configuration_changed");
   const acquisition = override.acquisition || (source.page_type === "pdf" || /\.pdf(?:\?|$)/i.test(source.url) ? "pdf_text" : "http_html");
   const transport = override.pdf_transport || "http";
   // OCR needs a separately verified reading-order process; never use it as a fallback.
-  if (!["http_html", "rendered_html", "pdf_text"].includes(acquisition) || !["http", "browser"].includes(transport) ||
+  if (!["http_html", "rendered_html", "pdf_text", "publisher_json"].includes(acquisition) || !["http", "browser"].includes(transport) ||
       transport === "browser" && acquisition !== "pdf_text" ||
       override.allowed_final_urls !== undefined && (!Array.isArray(override.allowed_final_urls) || override.allowed_final_urls.length > 20 || !override.allowed_final_urls.every(safeHttps))) fail("invalid_acquisition_configuration");
-  return { acquisition, pdf_transport: transport, allowedFinalUrls: override.allowed_final_urls || [], timeoutMs: 90000 };
+  return { acquisition, pdf_transport: transport, allowedFinalUrls: override.allowed_final_urls || [], timeoutMs: 90000,
+    ...(override.publisher_json_profile === undefined ? {} : { publisher_json_profile: override.publisher_json_profile }) };
 }
 
 async function defaultRuntime({ envPath }) {
@@ -101,7 +102,7 @@ async function defaultRuntime({ envPath }) {
       verifyScraplingRuntimeBinding({ appDir: root, manifestPath, pythonPath });
       const archiveRoot = realpathSync.native(env.AWARDPING_PROGRAM_TEXT_ARCHIVE);
       if (pathIdentity(archiveRoot) !== pathIdentity(realpathSync.native(resolve(dirname(root), "runtime/program-text-archive")))) fail("private_archive_identity_changed");
-      const browserRequired = options.acquisition === "rendered_html" || options.pdf_transport === "browser";
+      const browserRequired = ["rendered_html", "publisher_json"].includes(options.acquisition) || options.pdf_transport === "browser";
       const executablePath = browserRequired ? findProgramTextBrowserExecutable() : undefined;
       if (browserRequired && !executablePath) fail("owned_browser_unavailable");
       return { pythonPath, executablePath, archiveRoot };

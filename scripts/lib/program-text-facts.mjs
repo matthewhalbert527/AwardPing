@@ -90,6 +90,7 @@ export async function validateProgramFactReview(review, { registry, roles, sourc
         if (!exact(quote, ["source_id", "capture_id", "block_id", "start_utf16", "end_utf16", "text"]) ||
             !nonempty(quote.text, 1600) || !Number.isSafeInteger(quote.start_utf16) || !Number.isSafeInteger(quote.end_utf16)) fail("invalid_support_quote");
         const capture = restored.get(quote.source_id), block = capture?.blocks.find(block => block.id === quote.block_id);
+        if (block?.kind === "publisher_data" || block?.context?.representation === "publisher_data") fail("publisher_data_is_not_source_quotation");
         if (!capture || capture.capture_id !== quote.capture_id || !block || quote.start_utf16 < block.start_utf16 ||
             quote.end_utf16 > block.end_utf16 || quote.end_utf16 - quote.start_utf16 !== quote.text.length ||
             capture.text.slice(quote.start_utf16, quote.end_utf16) !== quote.text) fail("quote_not_in_bound_original");

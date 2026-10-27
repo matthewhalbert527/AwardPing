@@ -97,7 +97,28 @@ cycle before calling the release complete. Codex recurring follow-ups stay off.
 
 ## Contracts
 
-Capture schema: `awardping.program-text-capture.v1`; profile `program-text-capture-v1`; acquisition `http_html|rendered_html|pdf_text|pdf_ocr`. Exact text block offsets are UTF16 with an exclusive end. Raw artifact hashes are SHA256 over the actual bytes. No image/layout artifact slots.
+Capture schema: `awardping.program-text-capture.v1`; profile `program-text-capture-v1`; acquisition `http_html|rendered_html|pdf_text|pdf_ocr|publisher_json`. Exact text block offsets are UTF16 with an exclusive end. Raw artifact hashes are SHA256 over the actual bytes. No image/layout artifact slots.
+
+The finite SMART publisher JSON adapter observes one already-issued anonymous
+same-page GET; it does not call a guessed API, submit a form or enable a
+WebSocket. The deterministic projector never executes publisher scripts.
+The adapter retains the entire complete JSON response as
+`original.json`, binds the actual navigation/frame/portal and reviewed `/smart`
+base, and replays a bounded deterministic programme projection on every restore.
+Only the separately audited home and eligibility identities are configured.
+Other SMART pages remain held until independently reviewed. This is a
+point-in-time publisher-data source, not a claim that HTML or live callbacks
+were completely observed.
+
+Only the exact known historical loading shell can use the narrowly authorized
+first-meaningful-coverage transaction. The immutable journal preserves the old
+state and source authority; the new capture starts at one and needs a separate
+ordinary repeat. No page identities, old history, queued reviews, factual
+approvals or initial-coverage notifications are transferred. Other acquisition
+changes still hold. Generated structured-value labels are not source quotations.
+Changed structured values preserve the baseline and enter held state without a
+paid review or publication; they need separate reconciliation. Reviewed prose
+changes retain the normal bounded review path.
 
 Event schema: `awardping.program-change.v1`; kind `program_details_changed`; summary and `program_changes`. Each change has an allowed program field, operation `add|remove|replace`, summary, and previous/current exact quote references (the absent side is null only for real additions/removals). Quote references contain block_id,start_utf16,end_utf16,text. Publication binds source/owner/URL, epoch, both immutable captures and the validated details.
 

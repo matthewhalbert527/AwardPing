@@ -84,7 +84,10 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
     `);
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(result.stdout);
-    expect(value.files).toHaveLength(19);
+    expect(value.files).toHaveLength(26);
+    for (const relative of ["scripts\\lib\\program-text-capture-contract.mjs", "scripts\\lib\\program-text-artifacts.mjs",
+      "scripts\\lib\\program-text-publisher-json.mjs", "scripts\\lib\\program-text-smart-publisher-json.mjs",
+      "scripts\\lib\\scrapling-capture.mjs", "scripts\\scrapling\\collector.py", "scripts\\scrapling\\smart_publisher_json.py"]) expect(value.files).toContain(relative);
     expect(value.files).toContain("scripts\\lib\\program-text-public-drive-pdf.mjs");
     expect(value.files).toContain("scripts\\lib\\program-text-public-drive-transport.mjs");
     expect(value.files).toContain("scripts\\prepare-program-text-source-proof.mjs");

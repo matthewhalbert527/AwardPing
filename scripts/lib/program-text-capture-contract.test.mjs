@@ -29,10 +29,20 @@ function historicalComplete(capture) {
 }
 
 describe("engine-free retained text capture contract", () => {
-  it("imports only hashing and the unchanged public URL policy, never PC capture/OCR/file/process engines", () => {
+  it("imports only pure retained-evidence validators and projection, never PC capture/OCR/file/process engines", () => {
     const code = readFileSync(new URL("./program-text-capture-contract.mjs", import.meta.url), "utf8");
-    const dependencies = [...code.matchAll(/^import\s+.*?from\s+["']([^"']+)["'];/gm)].map(match => match[1]);
-    expect(dependencies).toEqual(["node:crypto", "./public-network-safety.mjs"]);
+    const imports = value => [...value.matchAll(/^import\s+[\s\S]*?\sfrom\s+["']([^"']+)["'];/gm)].map(match => match[1]);
+    expect(imports(code)).toEqual(["node:crypto", "./public-network-safety.mjs", "./program-text-public-drive-pdf.mjs",
+      "./program-text-smart-publisher-json.mjs", "./program-text-publisher-json.mjs"]);
+    const projector = readFileSync(new URL("./program-text-smart-publisher-json.mjs", import.meta.url), "utf8");
+    const observation = readFileSync(new URL("./program-text-publisher-json.mjs", import.meta.url), "utf8");
+    expect(imports(projector)).toEqual(["node:crypto", "cheerio"]);
+    // Only the pure, parse5-backed string parser is bound. Replacing it with
+    // htmlparser2 changes real noscript markup semantics; never waive those
+    // content guards merely to use a smaller dependency entry point.
+    expect(projector).toContain('import { load } from "cheerio";');
+    expect(imports(observation)).toEqual(["node:crypto"]);
+    for (const pure of [projector, observation]) expect(pure).not.toMatch(/\b(?:fetch|spawn|eval|fromURL|loadBuffer|decodeStream|stringStream|readFileSync|writeFileSync)\s*\(|node:(?:fs|child_process|http|https|net)/);
     expect(code).not.toMatch(/\b(?:spawn|fileURLToPath|readFileSync|writeFileSync|captureScraplingSource|extractProgramTextPdfOcr|fetchProgramTextBrowserPdf)\s*\(/);
     expect(code).not.toMatch(/(?:import|require)\s*\([^)]*(?:ocr|capture\.mjs|playwright|scrapling|child_process|node:fs)/);
   });

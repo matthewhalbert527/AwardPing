@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { fetchPublicHttpBuffer } from "./public-network-safety.mjs";
-import { captureScraplingSource, scraplingCaptureProfile } from "./scrapling-capture.mjs";
+import { captureScraplingSource, scraplingCaptureProfile, captureScraplingPublisherJson } from "./scrapling-capture.mjs";
+import { publisherJsonObservationMetadata, validateScraplingPublisherJsonObservation, scraplingPublisherJsonProfile } from "./program-text-publisher-json.mjs";
+import { projectSmartPublisherJson, PROJECTOR_VERSION } from "./program-text-smart-publisher-json.mjs";
 import { extractProgramTextPdfOcr } from "./program-text-ocr.mjs";
 import { fetchProgramTextBrowserPdf } from "./program-text-browser.mjs";
 import { fetchProgramTextPublicDrivePdf } from "./program-text-public-drive-transport.mjs";
@@ -54,7 +56,8 @@ async function extractPdf(raw, timeoutMs) {
 }
 /** One explicit acquisition mode per source; no automatic browser/OCR fallback. */
 export async function captureProgramTextSource({ source, acquisition = source?.page_type === "pdf" ? "pdf_text" : "http_html",
-  pythonPath, executablePath, timeoutMs = programTextCaptureLimits.processTimeoutMs, allowedFinalUrls = [], pdf_transport = "http", ocrOptions = {}, adapters = {} } = {}) {
+  pythonPath, executablePath, timeoutMs = programTextCaptureLimits.processTimeoutMs, allowedFinalUrls = [], pdf_transport = "http", publisher_json_profile,
+  ocrOptions = {}, adapters = {} } = {}) {
   sourceIdentity(source);
   if (!isAcquisition(acquisition) || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120_000 ||
       !Array.isArray(allowedFinalUrls) || allowedFinalUrls.length > 20) fail("invalid_capture_options");
@@ -64,6 +67,19 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
   if (publicDrive && (source.page_type !== "pdf" || acquisition !== "pdf_text" || pdf_transport !== "http" || allowedFinalUrls.length)) fail("invalid_public_drive_pdf_mode");
   const started = Date.now();
   const remaining = () => { const value = timeoutMs - (Date.now() - started); if (value < 1) fail("capture_timeout"); return value; };
+  if (acquisition === "publisher_json") {
+    if (publisher_json_profile !== scraplingPublisherJsonProfile || allowedFinalUrls.length || pdf_transport !== "http" || source.page_type === "pdf")
+      fail("invalid_publisher_json_mode");
+    const observation = validateScraplingPublisherJsonObservation(await (adapters.publisherJson || captureScraplingPublisherJson)(source,
+      { pythonPath, executablePath, timeoutMs: remaining(), publisherJsonProfile: publisher_json_profile }), { source });
+    const raw = Buffer.from(observation.raw_json), projection = projectSmartPublisherJson(raw, { source });
+    const capture = buildProgramTextCapture({ source, final_url: observation.navigation.final_url, captured_at: observation.captured_at, acquisition,
+      extractor: { name: "smart-publisher-json", version: PROJECTOR_VERSION }, raw_bytes: raw, content_type: "application/json",
+      text: projection.text, blocks: projection.blocks,
+      publisher_json: { observation: publisherJsonObservationMetadata(observation, { source }), projection: projection.provenance } });
+    remaining(); return capture;
+  }
+  if (publisher_json_profile !== undefined) fail("unexpected_publisher_json_mode");
   if (acquisition === "rendered_html") {
     const record = await (adapters.renderedHtml || captureScraplingSource)(source,
       { pythonPath, executablePath, timeoutMs: remaining(), captureProfile: scraplingCaptureProfile });

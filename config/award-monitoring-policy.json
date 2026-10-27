@@ -19,6 +19,7 @@
       "scripts/process-monitoring-feedback-promotions.mjs",
       "scripts/lib/program-text-deterministic-no-change.mjs",
       "scripts/lib/program-text-review.mjs",
+      "scripts/lib/program-text-monitor.mjs",
       "scripts/lib/program-text-repository.mjs",
       "scripts/program-text-worker.mjs",
       "scripts/lib/program-text-source-access.mjs",
@@ -27,15 +28,18 @@
       "scripts/lib/program-text-capture-contract.mjs",
       "scripts/lib/program-text-capture.mjs",
       "scripts/lib/program-text-artifacts.mjs",
+      "scripts/lib/program-text-publisher-json.mjs",
+      "scripts/lib/program-text-smart-publisher-json.mjs",
       "scripts/lib/scrapling-capture.mjs",
       "scripts/scrapling/collector.py",
+      "scripts/scrapling/smart_publisher_json.py",
       "src/lib/change-event-suppression.ts",
       "src/lib/award-monitoring-policy.ts",
       "src/lib/source-quality.ts",
       "src/lib/source-ai-review-status.ts",
       "src/lib/source-url-policy.ts"
     ],
-    "hash": "d7593a4d1d8e6ca697c3cf6084fa31ac5c1fb48e8096d0780e63ffc4121a447d"
+    "hash": "d8709bae074472c022f6dd732555d24c528ef34da32a35dd0d00bb98f6c50e39"
   },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",

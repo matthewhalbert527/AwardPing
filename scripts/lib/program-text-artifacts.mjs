@@ -3,6 +3,8 @@ import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
 import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetadata,
   isProgramTextPublicDrivePdfContentType } from "./program-text-public-drive-pdf.mjs";
+import { PROJECTOR_VERSION, SMART_PUBLISHER_JSON_SOURCE_PROFILES } from "./program-text-smart-publisher-json.mjs";
+import { publisherJsonOriginalLimit } from "./program-text-publisher-json.mjs";
 
 export const PROGRAM_TEXT_REFERENCE_SCHEMA = "awardping.program-text-reference.v1";
 const sha = value => createHash("sha256").update(value).digest("hex");
@@ -31,7 +33,7 @@ export function programTextArtifactMap(capture) {
   validateProgramTextCapture(capture);
   const { bytes, ...source } = capture.raw_source;
   const metadata = { ...capture, raw_source: source };
-  const rawName = capture.acquisition.startsWith("pdf_") ? "original.pdf" : "original.html";
+  const rawName = capture.acquisition === "publisher_json" ? "original.json" : capture.acquisition.startsWith("pdf_") ? "original.pdf" : "original.html";
   const prefix = `program-text/sources/${capture.source.id}/${capture.capture_id}/`;
   return [
     ["raw", rawName, bytes, capture.raw_source.content_type],
@@ -57,21 +59,26 @@ export function validateProgramTextReference(ref) {
       Object.keys(ref.source).some(key => !sourceKeys.has(key)) || !httpUrl(ref.source.url) || !httpUrl(ref.final_url) ||
       ["title", "page_type"].some(key => ref.source[key] !== undefined && (typeof ref.source[key] !== "string" || ref.source[key].length > 10_000)) ||
       !keys(ref.extractor, ["name", "version"]) || ["name", "version"].some(key => typeof ref.extractor[key] !== "string" || !ref.extractor[key] || ref.extractor[key].length > 160) ||
-      !["http_html", "rendered_html", "pdf_text", "pdf_ocr"].includes(ref.acquisition) ||
+      !["http_html", "rendered_html", "pdf_text", "pdf_ocr", "publisher_json"].includes(ref.acquisition) ||
       !Number.isSafeInteger(ref.text_length) || ref.text_length < 1 || ref.text_length > 1_000_000 ||
       !isoDate(ref.captured_at) || !keys(ref.completeness, ["status", "reasons"]) || ref.completeness.status !== "complete" ||
       !Array.isArray(ref.completeness.reasons) || ref.completeness.reasons.length ||
       !keys(ref.artifacts, ["metadata", "raw", "text"])) fail("invalid_reference");
   const prefix = `program-text/sources/${ref.source.id}/${ref.capture_id}/`;
+  const publisher = ref.acquisition === "publisher_json";
+  const profile = SMART_PUBLISHER_JSON_SOURCE_PROFILES.find(item => item.id === ref.source.id);
+  if (publisher && (!profile || profile.shared_award_id !== ref.source.shared_award_id || profile.url !== ref.source.url ||
+      ref.source.page_type !== (profile.key === "home" ? "homepage" : "eligibility") || ref.final_url !== ref.source.url ||
+      ref.extractor.name !== "smart-publisher-json" || ref.extractor.version !== PROJECTOR_VERSION)) fail("invalid_publisher_json_reference");
   const publicDrive = ref.extractor.version === PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION;
   if (publicDrive && !isProgramTextPublicDrivePdfMetadata(ref)) fail("invalid_public_drive_pdf_provenance");
   for (const [role, a] of Object.entries(ref.artifacts)) {
-    const name = role === "metadata" ? "metadata.json" : role === "text" ? "text.txt" : ref.acquisition.startsWith("pdf_") ? "original.pdf" : "original.html";
+    const name = role === "metadata" ? "metadata.json" : role === "text" ? "text.txt" : publisher ? "original.json" : ref.acquisition.startsWith("pdf_") ? "original.pdf" : "original.html";
     const typeValid = role === "metadata" ? a?.content_type === "application/json" : role === "text" ? a?.content_type === "text/plain; charset=utf-8"
       : typeof a?.content_type === "string" && a.content_type.length <= 200 &&
-        (publicDrive ? isProgramTextPublicDrivePdfContentType(a.content_type) :
+        (publisher ? a.content_type === "application/json" : publicDrive ? isProgramTextPublicDrivePdfContentType(a.content_type) :
           (ref.acquisition.startsWith("pdf_") ? /^application\/pdf(?:;|$)/i : /^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i).test(a.content_type));
-    const limit = role === "raw" ? (ref.acquisition.startsWith("pdf_") ? 20 : 5) * 1024 * 1024 : role === "text" ? 8 * 1024 * 1024 : maxArtifactBytes;
+    const limit = role === "raw" ? publisher ? publisherJsonOriginalLimit : (ref.acquisition.startsWith("pdf_") ? 20 : 5) * 1024 * 1024 : role === "text" ? 8 * 1024 * 1024 : maxArtifactBytes;
     if (!keys(a, ["byte_length", "content_type", "object_key", "sha256"]) ||
         a.object_key !== prefix + name || !hex(a.sha256) || !Number.isSafeInteger(a.byte_length) ||
         a.byte_length < 1 || a.byte_length > limit || !typeValid) fail("invalid_artifact_binding");

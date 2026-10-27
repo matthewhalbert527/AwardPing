@@ -44,6 +44,40 @@ function fixture(url = source.url) {
 }
 const record = (value: Json) => value as Record<string, Json>;
 
+function syntheticSmartPublisherEvent() {
+  const url = "https://www.smartscholarship.org/smart", f = fixture(url);
+  const owner = "d7d4d117-f312-456f-a75c-3dbd5d372c99", id = "58aefec0-0d42-4b7b-9887-60d25940b3d0";
+  Object.assign(f.event, { shared_award_id: owner, shared_award_source_id: id });
+  Object.assign(f.evidence, { shared_award_id: owner, shared_award_source_id: id });
+  for (const capture of [f.evidence.previous_capture, f.evidence.current_capture]) {
+    const ref = record(capture), identity = record(ref.source), artifacts = record(ref.artifacts);
+    Object.assign(identity, { id, shared_award_id: owner, url, page_type: "homepage" });
+    ref.acquisition = "publisher_json"; ref.extractor = { name: "smart-publisher-json", version: "smart-publisher-json-v1" };
+    for (const [role, artifact] of Object.entries(artifacts)) {
+      const value = record(artifact);
+      value.object_key = `program-text/sources/${id}/${ref.capture_id}/${role === "raw" ? "original.json" : role === "text" ? "text.txt" : "metadata.json"}`;
+      if (role === "raw") value.content_type = "application/json";
+    }
+  }
+  return f;
+}
+
+describe("publisher JSON public text boundary", () => {
+  it("allows bound programme prose from the finite reviewed publisher profile", () => {
+    const f = syntheticSmartPublisherEvent();
+    expect(hasPublishableProgramTextEvidence(f.event, f.evidence)).toBe(true);
+    record(f.evidence.current_capture).extractor = { name: "smart-publisher-json", version: "unreviewed" };
+    expect(hasPublishableProgramTextEvidence(f.event, f.evidence)).toBe(false);
+  });
+  it.each(["kind", "representation"])("does not present generated publisher data as a source quotation (%s)", mode => {
+    const f = syntheticSmartPublisherEvent(), proof = record(f.evidence.localization), supporting = record(proof.supporting_blocks);
+    const block = record((supporting.current as Json[])[0]);
+    if (mode === "kind") block.kind = "publisher_data";
+    else block.context = { representation: "publisher_data", verbatim: false };
+    expect(hasPublishableProgramTextEvidence(f.event, f.evidence)).toBe(false);
+  });
+});
+
 // Synthetic immutable references, using the actual scoped NSF closure wording.
 // Keep the exact public canonical name: spelling out Science Foundation would
 // accidentally match Sciences in the summary and conceal the plural-word bug.

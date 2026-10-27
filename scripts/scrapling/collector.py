@@ -20,6 +20,7 @@ from scrapling import Selector
 from scrapling.fetchers import DynamicFetcher, Fetcher
 from curl_cffi.curl import CURL_WRITEFUNC_ERROR
 from html_document import HtmlDocumentError, extract_html_document
+from smart_publisher_json import SmartPublisherJson, PublisherJsonError, PROFILE as PUBLISHER_JSON_PROFILE
 
 
 SCHEMA = "awardping.scrapling-capture.v1"
@@ -778,6 +779,15 @@ def capture(request, fixture=None):
     source_id = request.get("source_id")
     if not isinstance(source_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", source_id):
         raise CaptureFailure("invalid_source_id")
+    publisher = None
+    if "publisher_json_profile" in request or "shared_award_id" in request:
+        if (request.get("publisher_json_profile") != PUBLISHER_JSON_PROFILE or
+                "capture_profile" in request or "diagnostic_mode" in request):
+            raise CaptureFailure("invalid_publisher_json_profile")
+        try:
+            publisher = SmartPublisherJson(source_id, url, request.get("shared_award_id"))
+        except PublisherJsonError as error:
+            raise CaptureFailure(str(error)) from None
     proxy = urlsplit(request["proxy_url"])
     if proxy.scheme != "http" or proxy.hostname != "127.0.0.1" or not proxy.port or proxy.username or proxy.password:
         raise CaptureFailure("invalid_proxy")
@@ -835,6 +845,10 @@ def capture(request, fixture=None):
             page.on("dialog", lambda dialog: dialog.dismiss())
             page.on("download", lambda download: download.cancel())
             page.on("pageerror", lambda _: state["telemetry"].__setitem__("page_errors", state["telemetry"]["page_errors"] + 1))
+            if publisher:
+                publisher_session = context.new_cdp_session(page)
+                publisher.attach(publisher_session)
+                state["publisher_session"] = publisher_session
             if diagnostic:
                 page.on("pageerror", lambda error: diagnostic.error("page_error", error))
                 page.on("console", lambda message: diagnostic.error("console_error", message.text,
@@ -876,6 +890,10 @@ def capture(request, fixture=None):
                         diagnostic.stage = "navigation_request"
                         diagnostic.event("navigation_request", req.url)
                 page.on("request", request_seen)
+        except PublisherJsonError as error:
+            state["failure"] = str(error)
+            page.close()
+            raise CaptureFailure(str(error)) from None
         except Exception:
             state["failure"] = "browser_guard_setup_failed"
             page.close()
@@ -928,10 +946,17 @@ def capture(request, fixture=None):
             if state["response"] is not response:
                 raise CaptureFailure("http_response_changed_during_capture")
             state["captured_response"] = response
+            if publisher:
+                state["publisher_observation"] = publisher.observation(
+                    state["publisher_session"], state["observed"][0]["html"],
+                    {"url": url, "final_url": state["observed"][0]["url"],
+                     "status_code": response["status"], "content_type": response["content_type"]})
             if diagnostic:
                 diagnostic.stage = "document_observed"
         except CaptureFailure as error:
             state["failure"] = error
+        except PublisherJsonError as error:
+            state["failure"] = str(error)
         except Exception:
             state["failure"] = "document_capture_failed"
 
@@ -968,6 +993,10 @@ def capture(request, fixture=None):
         raise CaptureFailure("non_html_response")
     observation, document, readiness = state["observed"]
     require_document_response_url(observation["url"], state["response"])
+    if publisher:
+        if "publisher_observation" not in state:
+            raise CaptureFailure("publisher_json_observation_missing")
+        return state["publisher_observation"]
     if state["telemetry"]["blocked_websockets"]:
         document["limitations"] = sorted(set(document["limitations"]) | {"websocket_live_updates_not_observed_client_connection_mocked"})
     result = {"schema": SCHEMA, "source_id": source_id, "url": url, "final_url": observation["url"],
@@ -998,7 +1027,13 @@ def main():
             raise CaptureFailure("request_size_limit")
         request = json.loads(raw)
         required = {"url", "source_id", "proxy_url", "executable_path"}
-        if not isinstance(request, dict) or not required <= set(request) or set(request) - required - {"capture_profile", "diagnostic_mode"}:
+        if not isinstance(request, dict) or not required <= set(request):
+            raise CaptureFailure("invalid_request")
+        extra = set(request) - required
+        if "publisher_json_profile" in request or "shared_award_id" in request:
+            if extra != {"publisher_json_profile", "shared_award_id"}:
+                raise CaptureFailure("invalid_request")
+        elif extra - {"capture_profile", "diagnostic_mode"}:
             raise CaptureFailure("invalid_request")
         with contextlib.redirect_stdout(sys.stderr):
             result = capture(request)

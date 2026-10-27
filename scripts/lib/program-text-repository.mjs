@@ -2,6 +2,7 @@ import { buildProgramTextComparison, buildProgramTextReviewPackets } from "./pro
 import { programTextReference } from "./program-text-storage.mjs";
 import { programTextDeterministicNoChange, validatedProgramTextDeterministicProvenance, PROGRAM_TEXT_UNPAID_NULL_FIELDS } from "./program-text-deterministic-no-change.mjs";
 import { attachProgramTextSourceApprovals, hasProgramTextSourceAccess } from "./program-text-source-access.mjs";
+import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value !== null && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -58,6 +59,18 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
     async compareAndSetState({ source_id, expected_state, next_state }) {
       return result(supabase.rpc("set_program_text_source_state", { p_source_id: source_id,
         p_expected_state: expected_state, p_next_state: next_state }), "source state CAS");
+    },
+    async transitionKnownHtmlShell({ source_id, expected_state, next_state, current_ref }) {
+      // Cold replay the full original and transport/projection bindings again
+      // before the finite server transaction. Old references go into its journal.
+      const capture = await loadCapture(current_ref);
+      validateProgramTextCapture(capture);
+      if (capture.acquisition !== "publisher_json" || capture.source.id !== source_id ||
+          !programTextEqual(programTextReference(capture), current_ref)) throw new Error("Publisher first coverage original changed");
+      const document = { reference: current_ref, text: capture.text, blocks: capture.blocks, blocks_json: JSON.stringify(canonical(capture.blocks)) };
+      return result(supabase.rpc("transition_known_smart_html_shell", { p_source_id: source_id, p_expected_state: expected_state,
+        p_next_state: next_state, p_document: document, p_policy: "awardping.smart-publisher-initial-coverage.v1",
+        p_reason: "First meaningful programme coverage replaces only this verified historical loading shell. Preserve the original state and require an independent repeat; no update or fact approval." }), "meaningful first coverage");
     },
     async enqueueReview(work) {
       const signature = work.comparison.comparison_id;

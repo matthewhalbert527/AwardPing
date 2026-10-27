@@ -3,6 +3,18 @@
   "epoch": "ec349339-ff62-4d2e-a610-8c361b4044ec",
   "enabled": true,
   "sources": {
+    "58aefec0-0d42-4b7b-9887-60d25940b3d0": {
+      "source_url": "https://www.smartscholarship.org/smart",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "c33cc2f4-2cbd-458c-b630-537eb3d50f72": {
+      "source_url": "https://www.smartscholarship.org/smart/en?id=smart_eligibility",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
     "e5acfcc4-3469-4fc8-99f1-ee14e8dbbda1": {
       "source_url": "https://www.noaa.gov/office-education/hollings-scholarship/prospective/faq",
       "shared_award_id": "a9b42e3f-6d7e-4b0d-8132-77c2042b311d",
