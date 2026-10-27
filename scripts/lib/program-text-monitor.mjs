@@ -2,6 +2,8 @@ import { captureProgramTextSource, validateProgramTextCapture } from "./program-
 import { programTextReference, validateProgramTextReference } from "./program-text-storage.mjs";
 import { buildProgramTextComparison, buildProgramTextReviewPackets, validateProgramTextReviewResult, hasProgramTextPublisherDataChange } from "./program-text-review.mjs";
 import { isKnownProgramTextHtmlShellReference, programTextPublisherJsonSourceProfile } from "./program-text-capture-contract.mjs";
+import { randomUUID } from "node:crypto";
+import { buildProgramTextCollectionFailure, validateProgramTextCollectionFailureReceipt } from "./program-text-collection-quality.mjs";
 
 export const PROGRAM_TEXT_STATE_SCHEMA = "awardping.program-text-state.v1";
 export const PROGRAM_TEXT_REVIEW_WORK_SCHEMA = "awardping.program-text-review-work.v1";
@@ -66,6 +68,19 @@ export async function monitorProgramTextSource({ source, epoch, cycle_id = null,
   if (!optionsValid(source, epoch, cycle_id)) return held("invalid_monitoring_identity");
   let state;
   try { state = await readState(callbacks, source, epoch); } catch { return held("source_state_invalid_or_epoch_changed"); }
+  async function failedAttempt(reason, journalReason, extra = {}, incomplete = null, retainedLocally = false) {
+    try {
+      if (typeof callbacks.recordCollectionFailure !== "function") throw new Error("Failure journal is unavailable");
+      const request = buildProgramTextCollectionFailure({ attempt_id: randomUUID(), source, epoch, expected_state: state,
+        reason_codes: [journalReason], capture: incomplete, retained_locally: retainedLocally });
+      const receipt = validateProgramTextCollectionFailureReceipt(await callbacks.recordCollectionFailure(request), request);
+      return held(reason, { ...extra, collection_failure_recorded: true, collection_failure: receipt });
+    } catch {
+      // Do not pretend a failed or raced journal write was durable. The run
+      // fails closed; no baseline, queue or old failure is rewritten or retried.
+      return held(reason, { ...extra, collection_failure_recorded: false, collection_failure_journal_reason: "collection_failure_journal_unconfirmed" });
+    }
+  }
   // Preserve the exact review pair. A fresh same-text observation must not make
   // an in-flight paid result stale or cause a duplicate automatic submission.
   if (["awaiting_review", "held", "error"].includes(state.status) && !equal(state.baseline_ref, state.latest_ref)) {
@@ -75,22 +90,24 @@ export async function monitorProgramTextSource({ source, epoch, cycle_id = null,
   try {
     capture = await (callbacks.capture || captureProgramTextSource)({ ...captureOptions, source });
     validateProgramTextCapture(capture, { source });
-  } catch (error) { return held(errorCode(error, "capture_failed")); }
+  } catch (error) { return failedAttempt(errorCode(error, "capture_failed"), "capture_failed"); }
   if (capture.completeness.status !== "complete") {
+    let retainedLocally = false;
     if (typeof callbacks.retainIncomplete === "function") {
-      try { await callbacks.retainIncomplete(capture); } catch { return held("incomplete_capture_retention_failed", { capture_id: capture.capture_id }); }
+      try { await callbacks.retainIncomplete(capture); retainedLocally = true; }
+      catch { return failedAttempt("incomplete_capture_retention_failed", "incomplete_capture_retention_failed", { capture_id: capture.capture_id }, capture); }
     }
-    return held("incomplete_capture", { capture_id: capture.capture_id, reasons: [...capture.completeness.reasons] });
+    return failedAttempt("incomplete_capture", "incomplete_capture", { capture_id: capture.capture_id, reasons: [...capture.completeness.reasons] }, capture, retainedLocally);
   }
   let currentRef;
   try {
     const saved = await callbacks.retain(capture);
     currentRef = checkRef(saved?.reference || saved, source);
-    if (!equal(currentRef, programTextReference(capture))) return held("retained_reference_mismatch");
+    if (!equal(currentRef, programTextReference(capture))) return failedAttempt("retained_reference_mismatch", "retained_reference_mismatch");
     const verified = await callbacks.verifyRetention(currentRef, capture);
     validateProgramTextCapture(verified, { source });
-    if (!equal(programTextReference(verified), currentRef)) return held("durable_readback_mismatch");
-  } catch { return held("durable_retention_failed", { capture_id: capture.capture_id }); }
+    if (!equal(programTextReference(verified), currentRef)) return failedAttempt("durable_readback_mismatch", "durable_readback_mismatch");
+  } catch { return failedAttempt("durable_retention_failed", "durable_retention_failed", { capture_id: capture.capture_id }); }
   if (!Object.keys(state).length) {
     const next = { schema: PROGRAM_TEXT_STATE_SCHEMA, epoch, status: "baseline_ready", baseline_ref: currentRef,
       latest_ref: currentRef, last_checked_at: currentRef.captured_at, first_captured_at: currentRef.captured_at, successful_checks: 1 };
@@ -140,7 +157,8 @@ export async function monitorProgramTextSource({ source, epoch, cycle_id = null,
     // Native/OCR text cannot rule out an image-only change in a new PDF. Even
     // metadata-only binary edits are held conservatively, not called an update.
     if (currentRef.acquisition.startsWith("pdf_") && state.baseline_ref.artifacts.raw.sha256 !== currentRef.artifacts.raw.sha256) {
-      return held("pdf_original_changed_without_text_change", { current_ref: currentRef, creates_update: false, paid_review_required: false });
+      return failedAttempt("pdf_original_changed_without_text_change", "pdf_original_changed_without_text_change",
+        { current_ref: currentRef, creates_update: false, paid_review_required: false });
     }
     const next = { ...state, status: "baseline_ready", baseline_ref: currentRef, latest_ref: currentRef, last_checked_at: currentRef.captured_at,
       successful_checks: state.successful_checks + 1 };

@@ -104,7 +104,8 @@ describe("program text source monitoring", () => {
     const current = capture(beforeText, 1, { ...extra, raw_bytes: Buffer.from(`%PDF-1.7\n% ${changedPart} after\n%%EOF`) });
     const h = harness(old, current), initialState = structuredClone(h.state), result = await run(h);
     expect(result).toEqual({ status: "held", reason: "pdf_original_changed_without_text_change", current_ref: programTextReference(current),
-      creates_update: false, paid_review_required: false });
+      creates_update: false, paid_review_required: false, collection_failure_recorded: false,
+      collection_failure_journal_reason: "collection_failure_journal_unconfirmed" });
     expect(h.order).toEqual(["retain", "verify"]); expect(h.callbacks.retain).toHaveBeenCalledWith(current);
     expect(h.state).toEqual(initialState); expect(h.state.successful_checks).toBe(1);
     expect(h.callbacks.compareAndSetState).not.toHaveBeenCalled(); expect(h.callbacks.enqueueReview).not.toHaveBeenCalled();

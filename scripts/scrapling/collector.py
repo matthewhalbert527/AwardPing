@@ -785,7 +785,8 @@ def capture(request, fixture=None):
                 "capture_profile" in request or "diagnostic_mode" in request):
             raise CaptureFailure("invalid_publisher_json_profile")
         try:
-            publisher = SmartPublisherJson(source_id, url, request.get("shared_award_id"))
+            publisher = SmartPublisherJson(source_id, url, request.get("shared_award_id"),
+                source_title=request.get("source_title"), source_page_type=request.get("source_page_type"))
         except PublisherJsonError as error:
             raise CaptureFailure(str(error)) from None
     proxy = urlsplit(request["proxy_url"])
@@ -1031,7 +1032,8 @@ def main():
             raise CaptureFailure("invalid_request")
         extra = set(request) - required
         if "publisher_json_profile" in request or "shared_award_id" in request:
-            if extra != {"publisher_json_profile", "shared_award_id"}:
+            if extra not in ({"publisher_json_profile", "shared_award_id"},
+                             {"publisher_json_profile", "shared_award_id", "source_title", "source_page_type"}):
                 raise CaptureFailure("invalid_request")
         elif extra - {"capture_profile", "diagnostic_mode"}:
             raise CaptureFailure("invalid_request")

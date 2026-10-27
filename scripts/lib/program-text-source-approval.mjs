@@ -3,6 +3,8 @@ import { programTextReference, validateProgramTextReference } from "./program-te
 import { programTextPublicDrivePdfIdentity, isProgramTextPublicDrivePdfMetadata } from "./program-text-public-drive-pdf.mjs";
 import { hasProgramTextSourceAccess } from "./program-text-source-access.mjs";
 import { buildProgramTextRawAnchorProviderLink } from "./program-text-source-raw-anchor.mjs";
+import { programTextSmartBodyTarget, buildProgramTextSmartBodyProviderLink } from "./program-text-smart-body-link.mjs";
+import { attachProgramTextCanonicalUrlAdmissions } from "./program-text-canonical-url-admission.mjs";
 
 const object = value => value && typeof value === "object" && !Array.isArray(value);
 const exact = (value, keys) => object(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
@@ -55,7 +57,8 @@ async function validate(proposal, { epoch, loadCapture }, pending) {
       exact(scope, ["kind", "inventory_id", "revision"]) && scope.kind === "variation_inventory" && uuid(scope.inventory_id) && uuid(scope.revision) && !proposal.roles.length)) fail("invalid_registration_scope");
   const source = proposal.source, url = programTextCaptureInternals.publicUrl(source.url);
   const driveDocument = source.page_type === "pdf" && programTextPublicDrivePdfIdentity(source.url);
-  if (url.protocol !== "https:" || url.search && !driveDocument || source.create && (source.expected_member_kind !== "canonical" ||
+  const smartBody = programTextSmartBodyTarget(proposal);
+  if (url.protocol !== "https:" || url.search && !driveDocument && !smartBody || source.create && (source.expected_member_kind !== "canonical" ||
       source.shared_award_id !== proposal.expected_canonical_shared_award_id || source.expected_admin_review_status !== null ||
       Object.keys(source.expected_text_monitoring_state).length) || !source.create && !["open", "review_later"].includes(source.expected_admin_review_status)) fail("source_identity_or_history");
   for (const role of proposal.roles) {
@@ -82,6 +85,8 @@ async function validate(proposal, { epoch, loadCapture }, pending) {
   }
   if (rawAnchor) return { schema: pending ? "awardping.program-text-source-pending-proof.v2" : "awardping.program-text-source-approval-proof.v2",
     proposal, source_text: documents, provider_link: buildProgramTextRawAnchorProviderLink(proposal, authorityCapture) };
+  if (smartBody) return { schema: pending ? "awardping.program-text-source-pending-proof.v1" : "awardping.program-text-source-approval-proof.v1",
+    proposal, source_text: documents, provider_link: buildProgramTextSmartBodyProviderLink(proposal, authorityCapture) };
   const authority = documents[0], block = authority.blocks.find(row => row.id === proposal.link_block_id);
   if (!block || block.kind !== "source_link" || block.context?.source_attribute !== "href" ||
       !Array.isArray(block.context.base_hrefs) || block.context.base_hrefs.length || !block.text ||
@@ -134,7 +139,9 @@ export async function loadProgramTextSourceApprovalReceipt(db, id, { epoch } = {
     if (proofs.schema !== "awardping.program-text-source-approval-page.v1" || proofs.epoch !== epoch || !Array.isArray(proofs.approvals) ||
         !Array.isArray(proofs.source_ids) || proofs.source_ids.length !== 1 || proofs.source_ids[0] !== approval.source_id) fail("approval_receipt_authority_unavailable");
     const matching = proofs.approvals.filter(proof => proof.id === id && proof.content_hash === approval.content_hash);
-    current = hasProgramTextSourceAccess({ ...approval.validation.proposal.source, admin_review_status: "review_later", text_source_approvals: matching },
+    const [source] = await attachProgramTextCanonicalUrlAdmissions(db,
+      [{ ...approval.validation.proposal.source, admin_review_status: "review_later", text_source_approvals: matching }], { epoch });
+    current = hasProgramTextSourceAccess(source,
       { cohort: approval.cohort_key, epoch });
     if (current) current = await dbValue(db.rpc("program_text_source_is_approved", { p_source_id: approval.source_id })) === true;
   }

@@ -1,4 +1,9 @@
+import { SMART_GUIDE_KB_SOURCE_PROFILES, SMART_GUIDE_AUTHORITY_PROFILES } from "../../scripts/lib/program-text-smart-guide-profiles.mjs";
 import { parseProgramTextChangeDetails } from "../../scripts/lib/program-change-contract.mjs";
+
+type PublisherProfile = Readonly<{ id: string; shared_award_id: string; url: string; title: string; page_type: string; version: string }>;
+const smartGuideProfiles = SMART_GUIDE_KB_SOURCE_PROFILES as readonly PublisherProfile[];
+const smartAuthorityProfiles = SMART_GUIDE_AUTHORITY_PROFILES as readonly PublisherProfile[];
 
 type TextEvent = {
   id: string;
@@ -60,12 +65,18 @@ function validReference(value: unknown, event: TextEvent) {
       !exact(artifacts, ["raw", "text", "metadata"])) return false;
   const pdf = String(ref.acquisition).startsWith("pdf_"), publisher = ref.acquisition === "publisher_json";
   const prefix = `program-text/sources/${source.id}/${ref.capture_id}/`;
-  const publisherUrl = source.id === "58aefec0-0d42-4b7b-9887-60d25940b3d0" ? "https://www.smartscholarship.org/smart" :
-    source.id === "c33cc2f4-2cbd-458c-b630-537eb3d50f72" ? "https://www.smartscholarship.org/smart/en?id=smart_eligibility" : null;
-  if (publisher && (!publisherUrl || source.url !== publisherUrl || ref.final_url !== publisherUrl ||
-      source.page_type !== (source.id === "58aefec0-0d42-4b7b-9887-60d25940b3d0" ? "homepage" : "eligibility") ||
-      source.shared_award_id !== "d7d4d117-f312-456f-a75c-3dbd5d372c99" ||
-      extractor.name !== "smart-publisher-json" || extractor.version !== "smart-publisher-json-v1")) return false;
+  // Reuse the finite, import-free source identities already reviewed for
+  // collection. This admits no arbitrary publisher host, query or source row.
+  const guideProfile = smartGuideProfiles.find(profile => profile.id === source.id);
+  const publisherProfile = guideProfile || smartAuthorityProfiles.find(profile => profile.id === source.id);
+  if (publisher && (!publisherProfile || source.url !== publisherProfile.url || ref.final_url !== publisherProfile.url ||
+      source.shared_award_id !== publisherProfile.shared_award_id || source.page_type !== publisherProfile.page_type ||
+      guideProfile && source.title !== guideProfile.title ||
+      extractor.name !== "smart-publisher-json" || extractor.version !== publisherProfile.version)) return false;
+  // Reserved publisher tags cannot lend authority to an ordinary HTML/PDF
+  // reference. New finite guide identities require their reviewed model.
+  if (!publisher && (guideProfile || extractor.name === "smart-publisher-json" ||
+      extractor.version === "smart-publisher-json-v1" || extractor.version === "smart-publisher-json-kb-v1")) return false;
   for (const role of ["raw", "text", "metadata"] as const) {
     const artifact = object(artifacts[role]);
     const name = role === "raw" ? publisher ? "original.json" : pdf ? "original.pdf" : "original.html" : role === "text" ? "text.txt" : "metadata.json";

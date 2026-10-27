@@ -3,6 +3,7 @@ import { programTextReference } from "./program-text-storage.mjs";
 import { programTextDeterministicNoChange, validatedProgramTextDeterministicProvenance, PROGRAM_TEXT_UNPAID_NULL_FIELDS } from "./program-text-deterministic-no-change.mjs";
 import { attachProgramTextSourceApprovals, hasProgramTextSourceAccess } from "./program-text-source-access.mjs";
 import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
+import { validateProgramTextCollectionFailureRequest } from "./program-text-collection-quality.mjs";
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value !== null && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -55,6 +56,10 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
     async readState(sourceId) {
       const row = await result(supabase.from("shared_award_sources").select("text_monitoring_state").eq("id", sourceId).single(), "read state");
       return row.text_monitoring_state;
+    },
+    async recordCollectionFailure(request) {
+      validateProgramTextCollectionFailureRequest(request);
+      return result(supabase.rpc("record_program_text_collection_failure", { p_request: request }), "collection failure journal");
     },
     async compareAndSetState({ source_id, expected_state, next_state }) {
       return result(supabase.rpc("set_program_text_source_state", { p_source_id: source_id,

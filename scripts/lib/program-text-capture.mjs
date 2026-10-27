@@ -11,7 +11,7 @@ import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, programTextPublicDrivePdfIdentit
   isProgramTextPublicDrivePdfTransition, isProgramTextPublicDrivePdfContentType,
   hasProgramTextPublicDrivePdfEnvelope } from "./program-text-public-drive-pdf.mjs";
 
-import { buildProgramTextCapture, programTextCaptureLimits, programTextCaptureInternals, programTextPublisherJsonSourceProfile } from "./program-text-capture-contract.mjs";
+import { buildProgramTextCapture, programTextCaptureLimits, programTextCaptureInternals, programTextPublisherJsonSourceProfile, isProgramTextSmartGuideSource } from "./program-text-capture-contract.mjs";
 export { PROGRAM_TEXT_CAPTURE_SCHEMA, PROGRAM_TEXT_CAPTURE_PROFILE, programTextCaptureLimits,
   buildProgramTextCapture, validateProgramTextCapture, blocksFromHtmlDocument } from "./program-text-capture-contract.mjs";
 const { hash, fail, utf8, publicUrl, sourceIdentity, isAcquisition, htmlProjection, htmlCompleteness,
@@ -59,6 +59,7 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
   pythonPath, executablePath, timeoutMs = programTextCaptureLimits.processTimeoutMs, allowedFinalUrls = [], pdf_transport = "http", publisher_json_profile,
   ocrOptions = {}, adapters = {} } = {}) {
   sourceIdentity(source);
+  if (isProgramTextSmartGuideSource(source) && (acquisition !== "publisher_json" || !programTextPublisherJsonSourceProfile(source))) fail("invalid_publisher_json_mode");
   if (!isAcquisition(acquisition) || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120_000 ||
       !Array.isArray(allowedFinalUrls) || allowedFinalUrls.length > 20) fail("invalid_capture_options");
   if (!["http", "browser"].includes(pdf_transport) || pdf_transport === "browser" && acquisition !== "pdf_text") fail("invalid_pdf_transport");

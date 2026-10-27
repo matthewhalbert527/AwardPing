@@ -29,7 +29,7 @@ const priorKbSources = {
 };
 function fixture(id) {
   const spec = current.smartPublisherSources[id], { observation } = syntheticPublisherJsonObservation("home");
-  const source = { id, shared_award_id: spec.shared_award_id, url: spec.url, title: "Synthetic article only", page_type: spec.page_type };
+  const source = { id, shared_award_id: spec.shared_award_id, url: spec.url, title: spec.title ?? "Synthetic article only", page_type: spec.page_type };
   observation.source_id = id; observation.source_url = spec.url;
   observation.navigation.url = spec.url; observation.navigation.final_url = spec.url;
   observation.response.request_page_id = spec.request_page_id;
@@ -38,8 +38,14 @@ function fixture(id) {
   observation.response.raw_sha256 = sha(observation.raw_json); observation.response.decoded_bytes = Buffer.byteLength(observation.raw_json);
   return { source, observation };
 }
-test("only three fixed KB sources and one exact alias route extend the two unchanged public transport profiles", () => {
-  assert.equal(Object.keys(current.smartPublisherSources).length, 6); assert.equal(kbIds.length, 3);
+test("reviewed guide identities extend the unchanged six public transport profiles", () => {
+  const guideIds = ["bfd3e15c-3905-4db6-ac2c-e0a5b1637872", "b29da726-dc73-4de6-a67b-1f536a58771e",
+    "87111fbf-0b03-43e1-bb6f-0f23359617d7", "b4ad8c95-9410-4ceb-9fc4-0e077f34f612", "e6b62753-2830-420b-b6f3-6af6f6ec704e",
+    "f7d55da4-9abb-4024-a423-d930573fb50f", "2f1c3cc1-7309-481c-9c6b-4c5cba1f648f", "c3299a3b-f98f-4b65-abe1-c50dba35539d",
+    "32728eb4-99f3-4a2f-a349-d8ab5f73271d", "bbe47dba-a910-4379-ba16-bc634ea4850c", "a66df6fc-6fab-4e8c-8cdd-19fcd48e6015",
+    "5f92d7f3-5b5d-41b1-97ec-16aa0e56be8d"];
+  assert.equal(Object.keys(current.smartPublisherSources).length, 18); assert.equal(kbIds.length, 15);
+  assert.deepEqual(kbIds.filter(id => !Object.hasOwn(priorKbSources, id)).sort(), guideIds.sort());
   for (const [id, profile] of Object.entries(originalSources)) assert.deepEqual(current.smartPublisherSources[id], profile);
   assert.equal(current.scraplingPublisherJsonProfile, "smart-page-v1");
   assert.equal(current.scraplingPublisherJsonObservationSchema, "awardping.scrapling-publisher-json-observation.v1");
@@ -125,6 +131,8 @@ test("all five prior source entries, accepted DTOs and metadata are unchanged", 
 test("new pure contract adds no acquisition or runtime capability", () => {
   const code = readFileSync(new URL("./program-text-publisher-json.mjs", import.meta.url), "utf8");
   const imports = [...code.matchAll(/from\s+["']([^"']+)["']/g)].map(m => m[1]);
-  assert.deepEqual(imports, ["node:crypto"]);
+  assert.deepEqual(imports, ["node:crypto", "./program-text-smart-guide-profiles.mjs"]);
+  const profiles = readFileSync(new URL("./program-text-smart-guide-profiles.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(profiles, /\b(?:import|fetch|eval|exec|spawn|readFile|writeFile|WebSocket)\s*(?:\(|[{"'])/);
   assert.doesNotMatch(code, /\b(?:fetch|eval|exec|spawn|readFile|writeFile|WebSocket)\s*\(/);
 });

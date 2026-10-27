@@ -84,7 +84,10 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
     `, 120000);
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(result.stdout);
-    expect(value.files).toHaveLength(30);
+    expect(value.files).toHaveLength(35);
+    expect(value.files).toContain("scripts\\lib\\program-text-canonical-url-admission.mjs");
+    for (const relative of ["scripts\\lib\\program-text-collection-quality.mjs", "scripts\\lib\\program-text-smart-guide-profiles.mjs",
+      "scripts\\lib\\program-text-smart-guide-reviewed-model.mjs", "scripts\\lib\\program-text-smart-body-link.mjs"]) expect(value.files).toContain(relative);
     for (const relative of ["scripts\\lib\\program-text-capture-contract.mjs", "scripts\\lib\\program-text-artifacts.mjs",
       "scripts\\lib\\program-text-publisher-json.mjs", "scripts\\lib\\program-text-smart-publisher-json.mjs",
       "scripts\\lib\\program-text-smart-kb-publisher-json.mjs", "scripts\\lib\\program-text-smart-kb-reviewed-model.mjs",

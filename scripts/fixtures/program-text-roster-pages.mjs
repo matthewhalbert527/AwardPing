@@ -11,8 +11,8 @@ export function emptyVariationBatchFixture() {
 export function rosterPageFixture(manifest, sources) {
   const roles = manifest.map(role => ({ scope_key: "legacy_common", ...role })).sort((a, b) =>
     compare([a.cohort_key, a.scope_key, a.source_role], [b.cohort_key, b.scope_key, b.source_role]));
-  const ordered = [...sources].sort((a, b) => compare(a.id, b.id));
-  const identities = ordered.map(source => Object.fromEntries(Object.entries(source).filter(([key]) => key !== "text_monitoring_state")));
+  const ordered = sources.map(source => ({ text_collection_quality: null, ...source })).sort((a, b) => compare(a.id, b.id));
+  const identities = ordered.map(source => Object.fromEntries(Object.entries(source).filter(([key]) => !["text_monitoring_state", "text_collection_quality"].includes(key))));
   const seal = createHash("sha256").update(JSON.stringify({ roles, sources: identities })).digest("hex");
   return params => {
     const all = params.p_kind === "roles" ? roles : params.p_kind === "sources" ? ordered : [];

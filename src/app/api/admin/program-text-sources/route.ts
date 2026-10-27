@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser, isSiteAdminEmail } from "@/lib/auth";
 import { validateSameOriginAdminMutation } from "@/lib/admin-request-security";
-import { approveProgramTextSource, loadProgramTextSourcePending, prepareProgramTextSource, revokeProgramTextSource } from "@/lib/program-text-source-approval.server";
+import { approveProgramTextSource, loadProgramTextSourcePending, prepareProgramTextSource, revokeProgramTextSource,
+  inspectProgramTextPappgCanonical, prepareProgramTextPappgCanonical } from "@/lib/program-text-source-approval.server";
 
 export const runtime = "nodejs";
 const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
@@ -29,6 +30,10 @@ async function body(request: Request) {
 export async function GET(request: Request) {
   const auth = await authorize(); if (auth.error) return auth.error;
   const query = new URL(request.url).searchParams;
+  if ([...query.keys()].length === 1 && query.getAll("inspection").length === 1 && query.get("inspection") === "pappg") {
+    try { return reply(await inspectProgramTextPappgCanonical()); }
+    catch { return reply({ error: "The preserved PAPPG catalogue could not be confirmed." }, 409); }
+  }
   if ([...query.keys()].some(key => key !== "id") || query.getAll("id").length !== 1 || !uuid(query.get("id"))) return reply({ error: "Choose one pending source." }, 400);
   try { return reply(await loadProgramTextSourcePending(query.get("id")!)); }
   catch { return reply({ error: "The pending source or its saved proof could not be confirmed." }, 409); }
@@ -44,6 +49,8 @@ export async function POST(request: Request) {
   try {
     let result: unknown;
     if (value.action === "prepare" && exact(value, ["action", "proposal"]) && object(value.proposal)) result = await prepareProgramTextSource(value.proposal, auth.actor!);
+    else if (value.action === "prepare_pappg_canonical" && exact(value, ["action", "proposal", "catalogue_disposition"]) && object(value.proposal) && object(value.catalogue_disposition))
+      result = await prepareProgramTextPappgCanonical(value.proposal, value.catalogue_disposition, auth.actor!);
     else if (value.action === "approve" && exact(value, ["action", "id", "expected_hash"]) && uuid(value.id) && hash(value.expected_hash)) result = await approveProgramTextSource(value.id, value.expected_hash, auth.actor!);
     else if (value.action === "revoke" && exact(value, ["action", "id", "expected_hash", "reason"]) && uuid(value.id) && hash(value.expected_hash) && typeof value.reason === "string" && value.reason.trim().length >= 20 && value.reason.length <= 2000) result = await revokeProgramTextSource(value.id, value.expected_hash, value.reason, auth.actor!);
     else return reply({ error: "Invalid or incomplete source operation." }, 400);

@@ -12,6 +12,8 @@ import { findProgramTextBrowserExecutable } from "./lib/program-text-browser.mjs
 import { isKnownProgramTextHtmlShellReference, isKnownProgramTextFooterOnlyPdfReference } from "./lib/program-text-capture-contract.mjs";
 import { programTextDeterministicNoChange } from "./lib/program-text-deterministic-no-change.mjs";
 import { hasProgramTextSourceAccess } from "./lib/program-text-source-access.mjs";
+import { assertCurrentCanonicalUrlAdmission } from "./lib/program-text-canonical-url-admission.mjs";
+import { validateProgramTextCollectionQuality, hasUnclearedProgramTextCollectionFailure } from "./lib/program-text-collection-quality.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
@@ -108,6 +110,10 @@ export async function loadProgramTextSources(supabase, { epoch } = {}) {
     throw new Error("Required source identities are incomplete");
   }
   const map = new Map(sources.map(source => [source.id, source]));
+  for (const source of sources) {
+    try { validateProgramTextCollectionQuality(source.text_collection_quality, source); }
+    catch { throw new Error("Required collection quality data is missing or invalid"); }
+  }
   return { manifest, roster_seal: identity.roster_seal, sources: sources.map(source => ({ ...source,
     cohorts: [...new Set(rolesById.get(source.id).map(role => role.cohort_key))],
     manifest_bound: rolesById.get(source.id).every(role => hasProgramTextSourceAccess(source, { cohort: role.cohort_key, epoch }) && role.manifest_status === "reviewed_text" &&
@@ -124,7 +130,7 @@ export function programTextCoverage({ manifest, sources }, epoch, factReviews = 
     const complete = ids.filter(id => {
       const source = byId.get(id), state = source?.text_monitoring_state;
       try {
-        if (!hasProgramTextSourceAccess(source, { cohort, epoch }) || !source.manifest_bound || state?.schema !== "awardping.program-text-state.v1" ||
+        if (!hasProgramTextSourceAccess(source, { cohort, epoch }) || !source.manifest_bound || hasUnclearedProgramTextCollectionFailure(source, epoch) || state?.schema !== "awardping.program-text-state.v1" ||
             state.epoch !== epoch || state.status !== "baseline_ready" || !Number.isInteger(state.successful_checks) || state.successful_checks < 2 ||
             state.successful_checks > 2147483647 || !Number.isFinite(Date.parse(state.first_captured_at)) ||
             !Number.isFinite(Date.parse(state.last_checked_at)) || Date.parse(state.first_captured_at) >= Date.parse(state.last_checked_at)) return false;
@@ -247,11 +253,15 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     for (const source of selected) {
       if (!hasProgramTextSourceAccess(source, { epoch: config.epoch }) || !source.manifest_bound) { report.results.push({ source_id: source.id, status: "held", reason: "source_not_approved" }); continue; }
       const override = config.sources?.[source.id] || {};
-      if (override.source_url && override.source_url !== source.url || override.shared_award_id && override.shared_award_id !== source.shared_award_id) {
+      if (override.source_url && override.source_url !== source.url || override.shared_award_id && override.shared_award_id !== source.shared_award_id ||
+          (override.source_title !== undefined || override.page_type !== undefined) && (override.source_title !== source.title || override.page_type !== source.page_type)) {
         report.results.push({ source_id: source.id, status: "held", reason: "source_configuration_changed" }); continue;
       }
       const domain = new URL(source.url).hostname, wait = (lastDomain.get(domain) || 0) + args.delay - Date.now();
       if (wait > 0) await new Promise(done => setTimeout(done, wait));
+      // Recheck the finite current-roster identity after any domain delay.
+      try { await assertCurrentCanonicalUrlAdmission(supabase, source, { epoch: config.epoch }); }
+      catch { report.results.push({ source_id: source.id, status: "held", reason: "canonical_url_admission_changed" }); continue; }
       const outcome = await monitorProgramTextSource({ source, epoch: config.epoch, callbacks,
         packetLimits: { max_blocks_per_packet: 6 }, captureOptions: { pythonPath,
           executablePath: findProgramTextBrowserExecutable(env),
@@ -261,9 +271,15 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
           allowedFinalUrls: override.allowed_final_urls || [], ocrOptions: { popplerDirectory: env.AWARDPING_POPPLER_DIRECTORY,
             tempRoot: env.AWARDPING_OCR_TEMP_ROOT } } });
       lastDomain.set(domain, Date.now());
+      if (outcome.state) source.text_monitoring_state = outcome.state;
+      if (outcome.collection_failure_recorded === true) source.text_collection_quality = outcome.collection_failure.failure;
+      else if (outcome.collection_failure_recorded === false) source.text_collection_quality = undefined;
       report.results.push({ source_id: source.id, cohorts: source.cohorts, status: outcome.status, reason: outcome.reason || null,
-        reasons: outcome.reasons || [], candidate_id: outcome.candidate_id || null, initial_coverage: outcome.initial_coverage === true });
+        reasons: outcome.reasons || [], candidate_id: outcome.candidate_id || null, initial_coverage: outcome.initial_coverage === true,
+        ...(Object.hasOwn(outcome, "collection_failure_recorded") ? { collection_failure_recorded: outcome.collection_failure_recorded,
+          collection_failure_journal_reason: outcome.collection_failure_journal_reason || null } : {}) });
     }
+    report.coverage = programTextCoverage(roster, config.epoch, factBatch.data, variationBatch.data.awards);
     return report;
   } finally { client?.destroy(); await closeSupabaseServiceTransport(); }
 }

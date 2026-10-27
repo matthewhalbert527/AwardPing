@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { load } from "cheerio";
 import { SMART_KB_REVIEWED_MODEL as MODEL } from "./program-text-smart-kb-reviewed-model.mjs";
+import { SMART_GUIDE_KB_SOURCE_PROFILES } from "./program-text-smart-guide-profiles.mjs";
+import { SMART_GUIDE_REVIEWED_MODEL as GUIDE_MODEL } from "./program-text-smart-guide-reviewed-model.mjs";
+export { SMART_GUIDE_KB_SOURCE_PROFILES };
 
 // Pure finite projection of the COMPLETE initial publisher response. It never
 // evaluates site code or decides transport completeness, source/fact approval,
@@ -78,7 +81,7 @@ function reviewedModel(document, profile) {
     for (const [key, v] of Object.entries(x)) if (key !== "user") walk(v, pointer + "/" + pointerKey(key));
   }
   walk(document.result, "/result");
-  const rule = MODEL.profiles[profile.key];
+  const rule = GUIDE_MODEL.profiles[profile.key] ?? MODEL.profiles[profile.key];
   check(equal(rows.map(r => ({ pointer: r.pointer, id: r.widget.sys_id })), rule.graph), "widget_graph");
   for (const row of rows) {
     const w = row.widget, expected = MODEL.widgets[w.sys_id];
@@ -94,11 +97,13 @@ function reviewedModel(document, profile) {
 /** The whole article is publisher text; shared status fields are separately
  * labelled publisher_data and MUST NOT become quotations or AI comparisons. */
 export function projectSmartKbPublisherJson(raw, { source } = {}) {
-  const profile = SMART_KB_PUBLISHER_SOURCE_PROFILES.find(p => p.id === source?.id);
-  check(profile && source.shared_award_id === profile.shared_award_id && source.url === profile.url && source.page_type === profile.page_type, "source_identity");
+  const profile = [...SMART_KB_PUBLISHER_SOURCE_PROFILES, ...SMART_GUIDE_KB_SOURCE_PROFILES].find(p => p.id === source?.id);
+  const guide = !!profile?.title, markup = guide ? GUIDE_MODEL.markup[profile.key] : MODEL;
+  check(profile && source.shared_award_id === profile.shared_award_id && source.url === profile.url && source.page_type === profile.page_type && (!guide || source.title === profile.title), "source_identity");
   const parsed = parseOriginal(raw), document = parsed.document, result = document?.result;
   check(plain(document) && equal(Object.keys(document), ["result"]) && plain(result), "result_shape");
   const rows = reviewedModel(document, profile), article = getAt(document, ARTICLE)?.data, page = result.page;
+  check(!guide || article.short_description === profile.publisher_article_title, "article_title_identity");
   check(page.id === profile.page_id && page.sys_id === profile.page_sys_id && page.public === true && page.draft === false && page.internal === false, "page_identity");
   check(result.user.logged_in === false && result.user.can_debug === false && result.user.can_debug_admin === false, "anonymous_required");
   const header = result.theme.header.data;
@@ -112,9 +117,9 @@ export function projectSmartKbPublisherJson(raw, { source } = {}) {
   const allNodes = $("*").toArray();
   check(allNodes.length > 0 && allNodes.length <= 5000, "article_markup_size");
   for (const el of allNodes) {
-    check(MODEL.tags.includes(el.name) && el.sourceCodeLocation?.startTag, "unreviewed_article_markup");
+    check(markup.tags.includes(el.name) && el.sourceCodeLocation?.startTag, "unreviewed_article_markup");
     for (const [key, value] of Object.entries(el.attribs || {})) {
-      const allowed = MODEL.attributes[el.name + ":" + key];
+      const allowed = markup.attributes[el.name + ":" + key];
       check(allowed && (key === "href" || allowed.includes(value)), "unreviewed_article_attribute");
       check(textValue(value, 10000), "invalid_article_attribute");
     }
@@ -122,7 +127,7 @@ export function projectSmartKbPublisherJson(raw, { source } = {}) {
   // Literal tooltip values are not discarded arbitrary metadata. The reviewed
   // finite anchor sequence must remain exact; changed/new/moved titles hold.
   const titleSignature = $("a").toArray().flatMap((el, ordinal) => Object.hasOwn(el.attribs, "title") ? [{ ordinal, title: el.attribs.title }] : []);
-  check(hash(JSON.stringify(titleSignature)) === MODEL.profiles[profile.key].article_title_attributes_sha256, "unreviewed_article_title_attributes");
+  check(hash(JSON.stringify(titleSignature)) === (GUIDE_MODEL.profiles[profile.key] ?? MODEL.profiles[profile.key]).article_title_attributes_sha256, "unreviewed_article_title_attributes");
   const blocks = [], blockSources = [], fields = [], source_links = [], exclusions = [];
   let text = "", current = [], supports = [], heading = article.short_description, kind = "paragraph";
   function flush(blockKind = kind) {
@@ -134,7 +139,7 @@ export function projectSmartKbPublisherJson(raw, { source } = {}) {
     blocks.push({ id, text: value, start_utf16, end_utf16: text.length, heading, page: null, kind: blockKind, context: { schema: SCHEMA, representation: "publisher_text", verbatim: true, sources: unique } });
     blockSources.push({ id, sources: unique });
   }
-  const breakTags = new Set(["div", "p", "li", "ul", "h2"]);
+  const breakTags = new Set(guide ? ["div", "section", "p", "li", "ul", "ol", "h2", "h3", "br"] : ["div", "p", "li", "ul", "h2"]);
   const nodeText = node => node.type === "text" ? node.data : (node.children || []).map(nodeText).join("");
   function render(node, depth = 0) {
     check(depth <= 64, "html_depth");
@@ -144,9 +149,9 @@ export function projectSmartKbPublisherJson(raw, { source } = {}) {
       check(location && textValue(node.data), "unbound_article_text"); current.push(node.data);
       supports.push({ pointer: ARTICLE + "/data/text", operation: "html_text", decoded_start_utf16: location.startOffset, decoded_end_utf16: location.endOffset }); return;
     }
-    check(node.type === "tag" && MODEL.tags.includes(node.name), "unreviewed_article_node");
+    check(node.type === "tag" && markup.tags.includes(node.name), "unreviewed_article_node");
     if (breakTags.has(node.name)) flush();
-    const previousKind = kind; if (node.name === "h2") kind = "heading"; else if (node.name === "li") kind = "li";
+    const previousKind = kind; if (node.name === "h2" || guide && node.name === "h3") kind = "heading"; else if (node.name === "li") kind = "li";
     if (node.name === "a" && Object.hasOwn(node.attribs, "href")) {
       const raw_href = node.attribs.href; let url;
       try { url = new URL(raw_href, new URL(profile.expected_base_href, profile.url)); } catch { fail("invalid_source_link"); }

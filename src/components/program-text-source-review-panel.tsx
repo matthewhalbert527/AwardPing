@@ -5,7 +5,7 @@ const API = "/api/admin/program-text-sources";
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 type Pending = { id: string; content_hash: string; source: { id: string; url: string; title: string }; proof: unknown;
-  proposal: unknown; provider_link: unknown; target_text: string | null; url_alias_boundary?: unknown; approved?: boolean; current?: boolean };
+  proposal: unknown; provider_link: unknown; target_text: string | null; url_alias_boundary?: unknown; catalogue_disposition?: unknown; approved?: boolean; current?: boolean };
 async function request(url: string, body?: unknown) {
   const response = await fetch(url, body === undefined ? { cache: "no-store", credentials: "same-origin" } : {
     method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
@@ -22,6 +22,7 @@ export function ProgramTextSourceReviewPanel() {
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
+  const [catalogueInspection, setCatalogueInspection] = useState<unknown>(null);
   const inFlight = useRef(false);
   async function act(label: string, action: () => Promise<void>) {
     if (inFlight.current) return;
@@ -45,7 +46,9 @@ export function ProgramTextSourceReviewPanel() {
     await act("Preparing one private source", async () => {
       const proposal: unknown = JSON.parse(editor);
       if (!object(proposal)) throw new Error("Enter one reviewed source proposal.");
-      const value = await request(API, { action: "prepare", proposal });
+      const finite = Object.keys(proposal).length === 2 && object(proposal.proposal) && object(proposal.catalogue_disposition);
+      const value = await request(API, finite ? { action: "prepare_pappg_canonical", proposal: proposal.proposal, catalogue_disposition: proposal.catalogue_disposition }
+        : { action: "prepare", proposal });
       if (!object(value) || !value.ok || !object(value.result) || !uuid(value.result.id)) throw new Error("The pending source was not confirmed. Check its status before trying again.");
       setPendingId(value.result.id); setPending(null); setChecked(false);
       setNotice("The pending source is saved privately. Its guarded PC capture must finish before text-only approval.");
@@ -68,6 +71,13 @@ export function ProgramTextSourceReviewPanel() {
     <details className="rounded-md border p-3"><summary className="cursor-pointer text-sm font-semibold">Prepare a reviewed source proposal</summary>
       <label className="mt-3 block text-sm font-semibold" htmlFor="program-text-source-proposal">Source identity, provider-link proof and exact roster version</label>
       <textarea id="program-text-source-proposal" className="mt-1 min-h-48 w-full font-mono text-xs" maxLength={256 * 1024} value={editor} disabled={Boolean(busy)} onChange={event => setEditor(event.target.value)} />
+      <details className="mt-3"><summary className="cursor-pointer text-sm font-semibold">NSF PAPPG catalogue disposition</summary>
+        <p className="my-2 text-sm">This finite operation preserves nine separately owned records and admits only the selected NSF source to the current 25-award text roster. It provides no handoff or alias permission.</p>
+        <button type="button" className="button-secondary" disabled={Boolean(busy)} onClick={() => act("Checking preserved PAPPG records", async () => {
+          setCatalogueInspection(await request(`${API}?inspection=pappg`));
+        })}>Inspect preserved records</button>
+        {catalogueInspection ? <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(catalogueInspection, null, 2)}</pre> : null}
+      </details>
       <button type="button" className="button-secondary mt-3" disabled={Boolean(busy)} onClick={prepare}>Prepare pending text source</button>
     </details>
     <div className="mt-4 flex flex-wrap items-end gap-3"><label className="min-w-0 flex-1 text-sm font-semibold">Pending source ID<input className="mt-1 w-full" value={pendingId} maxLength={36} disabled={Boolean(busy)} onChange={event => { setPendingId(event.target.value); setPending(null); setChecked(false); }} /></label>
@@ -77,6 +87,9 @@ export function ProgramTextSourceReviewPanel() {
       {pending.approved ? <p className="text-sm font-semibold">{pending.current ? "Recorded approval · current collection authority" : "Historical approval · collection authority needs review"}</p> : null}
       <details><summary className="cursor-pointer text-sm font-semibold">Official provider link and proposed collection roles</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify({ provider_link: pending.provider_link, proposal: pending.proposal, retained_related_records: pending.url_alias_boundary ?? [] }, null, 2)}</pre></details>
       {Array.isArray(pending.url_alias_boundary) && pending.url_alias_boundary.length ? <p className="text-sm">{pending.url_alias_boundary.length} related records keep their separate histories. This approval applies only to the selected source.</p> : null}
+      {pending.catalogue_disposition ? <details><summary className="cursor-pointer text-sm font-semibold">Separate PAPPG catalogue disposition and currentness</summary>
+        <p className="my-2 text-sm">The preserved records retain their original owners and histories. Only this NSF record can enter the current 25-award roster for the reserved URL. Revocation or boundary drift holds collection; it never reopens an older record.</p>
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(pending.catalogue_disposition, null, 2)}</pre></details> : null}
       {pending.target_text ? <details><summary className="cursor-pointer text-sm font-semibold">Complete saved target text</summary><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words text-sm">{pending.target_text}</pre></details> : <p className="text-sm font-semibold">The private guarded capture has not finished. Approval remains unavailable.</p>}
       <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={checked} disabled={Boolean(busy) || pending.approved || !pending.proof || !pending.target_text} onChange={event => setChecked(event.target.checked)} />I reviewed the provider link, exact source identity and complete target text. This source belongs to the award and covers the proposed collection role.</label>
       <button type="button" className="button-primary" disabled={Boolean(busy) || pending.approved || !checked || !pending.proof || !pending.target_text} onClick={approve}>Approve text collection only</button>

@@ -281,7 +281,7 @@ export async function captureScraplingPublisherJson(source, { pythonPath, execut
   const spec = smartPublisherSources[source?.id];
   const expectedType = spec?.page_type ?? (spec?.request_page_id === null ? "homepage" : "eligibility");
   if (!spec || source.url !== spec.url || source.shared_award_id !== (spec.shared_award_id ?? smartPublisherOwner) ||
-      source.page_type !== expectedType) fail("publisher_json_source_identity");
+      (source.page_type !== expectedType || spec.title && source.title !== spec.title)) fail("publisher_json_source_identity");
   publicUrl(source.url);
   if (publisherJsonProfile !== scraplingPublisherJsonProfile || !pythonPath || !executablePath ||
       !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000) fail("invalid_publisher_json_runtime_options");
@@ -376,7 +376,8 @@ function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, tim
     });
     child.stdin.end(JSON.stringify({ url: source.url, source_id: source.id, proxy_url: proxyUrl, executable_path: executablePath || "",
       ...(captureProfile !== scraplingCaptureProfile ? { capture_profile: captureProfile } : {}),
-      ...(publisherJsonProfile ? { publisher_json_profile: publisherJsonProfile, shared_award_id: source.shared_award_id } : {}),
+      ...(publisherJsonProfile ? { publisher_json_profile: publisherJsonProfile, shared_award_id: source.shared_award_id,
+        ...(smartPublisherSources[source.id]?.title ? { source_title: source.title, source_page_type: source.page_type } : {}) } : {}),
       ...(browserDiagnostics ? { diagnostic_mode: "browser-transport-v1" } : {}) }));
   });
 }

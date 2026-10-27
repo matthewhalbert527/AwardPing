@@ -20,9 +20,11 @@
       "scripts/lib/program-text-deterministic-no-change.mjs",
       "scripts/lib/program-text-review.mjs",
       "scripts/lib/program-text-monitor.mjs",
+      "scripts/lib/program-text-collection-quality.mjs",
       "scripts/lib/program-text-repository.mjs",
       "scripts/program-text-worker.mjs",
       "scripts/lib/program-text-source-access.mjs",
+      "scripts/lib/program-text-canonical-url-admission.mjs",
       "scripts/lib/program-text-public-drive-pdf.mjs",
       "scripts/lib/program-text-public-drive-transport.mjs",
       "scripts/lib/program-text-capture-contract.mjs",
@@ -32,6 +34,9 @@
       "scripts/lib/program-text-smart-publisher-json.mjs",
       "scripts/lib/program-text-smart-kb-publisher-json.mjs",
       "scripts/lib/program-text-smart-kb-reviewed-model.mjs",
+      "scripts/lib/program-text-smart-guide-profiles.mjs",
+      "scripts/lib/program-text-smart-guide-reviewed-model.mjs",
+      "scripts/lib/program-text-smart-body-link.mjs",
       "scripts/lib/program-text-source-raw-anchor.mjs",
       "scripts/lib/scrapling-capture.mjs",
       "scripts/scrapling/collector.py",
@@ -43,7 +48,7 @@
       "src/lib/source-ai-review-status.ts",
       "src/lib/source-url-policy.ts"
     ],
-    "hash": "a2ce523dcf7c1d835d1f6c3c9c14a27181b03f69316d36bac6c2d548ab5b69f0"
+    "hash": "c61fd516fa8363d98844b325a6826714071823b6a2fd3a941c7854844d96011e"
   },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",

@@ -73,22 +73,126 @@
     "d4509d97-da9b-4e12-bbe9-45129e6ce1c1": {
       "source_url": "https://www.nsfgrfp.org/",
       "shared_award_id": "d955a846-cee1-4c01-932e-e3cb7215f3fb",
-      "allowed_final_urls": ["https://www.nsf.gov/funding/initiatives/grfp"]
+      "allowed_final_urls": [
+        "https://www.nsf.gov/funding/initiatives/grfp"
+      ]
     },
     "7ede724f-49dc-4a10-917d-5ea4253cf7c4": {
       "source_url": "https://www.nsfgrfp.org/applicants/applicant-eligibility.html",
       "shared_award_id": "d955a846-cee1-4c01-932e-e3cb7215f3fb",
-      "allowed_final_urls": ["https://www.nsf.gov/funding/initiatives/grfp/eligibility"]
+      "allowed_final_urls": [
+        "https://www.nsf.gov/funding/initiatives/grfp/eligibility"
+      ]
     },
     "5deaf1de-b8ad-4524-83b3-2b37e9f48cb4": {
       "source_url": "https://www.nsfgrfp.org/applicants/faqs.html",
       "shared_award_id": "d955a846-cee1-4c01-932e-e3cb7215f3fb",
-      "allowed_final_urls": ["https://www.nsf.gov/funding/initiatives/grfp/applicants/faq"]
+      "allowed_final_urls": [
+        "https://www.nsf.gov/funding/initiatives/grfp/applicants/faq"
+      ]
     },
     "ad02cb73-9817-4870-a0ba-8b44f334116a": {
       "source_url": "https://www.nsfgrfp.org/applicants/statements.html",
       "shared_award_id": "d955a846-cee1-4c01-932e-e3cb7215f3fb",
-      "allowed_final_urls": ["https://www.nsf.gov/funding/initiatives/grfp/how-to-apply"]
+      "allowed_final_urls": [
+        "https://www.nsf.gov/funding/initiatives/grfp/how-to-apply"
+      ]
+    },
+    "bfd3e15c-3905-4db6-ac2c-e0a5b1637872": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=071d5154db068300b67330ca7c961968",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "SMART Scholarship Award Details FAQ",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "b29da726-dc73-4de6-a67b-1f536a58771e": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=33b85cb7db754300b67330ca7c961911",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "SMART",
+      "page_type": "homepage",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "87111fbf-0b03-43e1-bb6f-0f23359617d7": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=3ee85c60db8a8300ecc734cc7c9619dc",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "Application Requirements: Academic Background",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "b4ad8c95-9410-4ceb-9fc4-0e077f34f612": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=5b3bd0e0db8a8300ecc734cc7c961930",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "Application Requirements: References",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "e6b62753-2830-420b-b6f3-6af6f6ec704e": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=61a7fa06db1ac3006bb8f4b40f961980",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "DoW SMART Post Graduate Employment FAQ",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "f7d55da4-9abb-4024-a423-d930573fb50f": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=78291c60db8a8300ecc734cc7c9619df",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "Application Requirements: Proposed Award",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "2f1c3cc1-7309-481c-9c6b-4c5cba1f648f": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=9ddbd6e91bced4906b6a0e9ee54bcb74",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "Application Requirements: Letter of Support",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "c3299a3b-f98f-4b65-abe1-c50dba35539d": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=b25b50e0db8a8300ecc734cc7c9619f1",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "Application Requirements: School Transcripts",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "32728eb4-99f3-4a2f-a349-d8ab5f73271d": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=c6cd2a0edbd6c3006bb8f4b40f961952",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "DoW Summer Internship & Mentor FAQ",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "bbe47dba-a910-4379-ba16-bc634ea4850c": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=cd881c60db8a8300ecc734cc7c96190f",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "Application Requirements: About Me",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "a66df6fc-6fab-4e8c-8cdd-19fcd48e6015": {
+      "source_url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=fca954a0db8a8300ecc734cc7c961903",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "Application Requirements: Personal Statement",
+      "page_type": "requirements",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
+    },
+    "5f92d7f3-5b5d-41b1-97ec-16aa0e56be8d": {
+      "source_url": "https://www.smartscholarship.org/smart/en?id=kb_article&sys_id=30d91073dbb54300b67330ca7c96197c",
+      "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+      "source_title": "CLEARANCE PROCESS",
+      "page_type": "faq",
+      "acquisition": "publisher_json",
+      "publisher_json_profile": "smart-page-v1"
     }
   }
 }

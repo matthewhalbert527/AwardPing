@@ -1,4 +1,4 @@
-import { projectSmartKbPublisherJson, SMART_KB_PUBLISHER_SOURCE_PROFILES } from "./program-text-smart-kb-publisher-json.mjs";
+import { projectSmartKbPublisherJson, SMART_KB_PUBLISHER_SOURCE_PROFILES, SMART_GUIDE_KB_SOURCE_PROFILES } from "./program-text-smart-kb-publisher-json.mjs";
 import { createHash } from "node:crypto";
 import { load } from "cheerio";
 
@@ -1366,7 +1366,7 @@ function modelWidgets(document, profile) {
 /** Project only the reviewed programme-rule model. Whole original JSON remains
  * the caller's private raw evidence. This does NOT assert HTML/WS completeness. */
 export function projectSmartPublisherJson(raw, { source } = {}) {
-  if (SMART_KB_PUBLISHER_SOURCE_PROFILES.some(profile => profile.id === source?.id)) return projectSmartKbPublisherJson(raw, { source });
+  if ([...SMART_KB_PUBLISHER_SOURCE_PROFILES, ...SMART_GUIDE_KB_SOURCE_PROFILES].some(profile => profile.id === source?.id)) return projectSmartKbPublisherJson(raw, { source });
   const profile = SMART_PUBLISHER_JSON_SOURCE_PROFILES.find(p => source?.id === p.id);
   check(profile && source.shared_award_id === profile.shared_award_id && source.url === profile.url, "source_identity");
   if (profile.id === "92eebc07-7392-4136-ba13-d9cd5455c8f9") check(source.page_type === "homepage", "source_identity");

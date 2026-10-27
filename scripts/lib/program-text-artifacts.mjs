@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { validateProgramTextCapture, programTextPublisherJsonSourceProfile, isProgramTextPublisherJsonExtractor } from "./program-text-capture-contract.mjs";
+import { validateProgramTextCapture, programTextPublisherJsonSourceProfile, isProgramTextPublisherJsonExtractor, isProgramTextSmartGuideSource } from "./program-text-capture-contract.mjs";
 import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetadata,
   isProgramTextPublicDrivePdfContentType } from "./program-text-public-drive-pdf.mjs";
 import { publisherJsonOriginalLimit } from "./program-text-publisher-json.mjs";
@@ -65,6 +65,7 @@ export function validateProgramTextReference(ref) {
       !keys(ref.artifacts, ["metadata", "raw", "text"])) fail("invalid_reference");
   const prefix = `program-text/sources/${ref.source.id}/${ref.capture_id}/`;
   const publisher = ref.acquisition === "publisher_json";
+  if (isProgramTextSmartGuideSource(ref.source) && (!publisher || !programTextPublisherJsonSourceProfile(ref.source))) fail("invalid_publisher_json_reference");
   if (!publisher && isProgramTextPublisherJsonExtractor(ref.extractor)) fail("invalid_publisher_json_reference");
   const profile = publisher ? programTextPublisherJsonSourceProfile(ref.source) : null;
   if (publisher && (!profile || ref.final_url !== ref.source.url ||

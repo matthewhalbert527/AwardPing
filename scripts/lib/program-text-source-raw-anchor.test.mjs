@@ -11,11 +11,11 @@ const epoch = 'ec349339-ff62-4d2e-a610-8c361b4044ec', other = '50000000-0000-400
 const authorityURL = 'https://www.nsf.gov/funding/opportunities/grfp-nsf-graduate-research-fellowship-program/nsf26-526/solicitation';
 const destinations = ['https://www.nsf.gov/policies/document/graduate-research-fellowship-program-grfp-administrative', 'https://www.nsf.gov/policies/pappg'];
 const paragraph = 'This synthetic complete programme text supports fixture-only applicant guidance and funding conditions.';
-function fixture({ destination = destinations[1], html, v1 = false } = {}) {
+function fixture({ destination = destinations[1], html, v1 = false, target_id = targetId } = {}) {
   const href = destination === destinations[0] ? destination : '/policies/pappg';
   html ??= '<!doctype html><html><head><title>NSF</title></head><body><main><p>Incorporated programme policy</p><a href="' + href + '">Current guide</a></main></body></html>';
   const providerSource = { id: authorityId, shared_award_id: owner, url: authorityURL, title: 'NSF GRFP — NSF 26-526 Solicitation', page_type: 'other' };
-  const source = { id: targetId, shared_award_id: owner, url: destination, title: 'NSF governing guide fixture', page_type: 'other' };
+  const source = { id: target_id, shared_award_id: owner, url: destination, title: 'NSF governing guide fixture', page_type: 'other' };
   const make = (s, text, raw, blocks) => buildProgramTextCapture({ source: s, acquisition: 'http_html', raw_bytes: Buffer.from(raw), content_type: 'text/html; charset=UTF-8',
     text, blocks, extractor: { name: 'fixture', version: '1' }, captured_at: '2026-10-27T05:00:00.000Z' });
   const providerText = v1 ? paragraph + '\n\n' + href : paragraph;
@@ -28,7 +28,7 @@ function fixture({ destination = destinations[1], html, v1 = false } = {}) {
     expected_canonical_shared_award_id: owner, registration_scope: { kind: 'legacy_roles' },
     source: { ...source, create: false, expected_member_kind: 'canonical', expected_admin_review_status: 'review_later', expected_text_monitoring_state: {} },
     authority_ref: programTextReference(provider), ...(v1 ? { link_block_id: 'literal-link' } : { link_proof: { kind: 'retained_raw_html_anchor.v1', anchor_start_utf16: html.indexOf('<a '), target_page_url: destination } }),
-    roles: [{ source_role: 'current_documents', expected_revision: epoch, expected_source_ids: [authorityId], next_source_ids: [authorityId, targetId] }] };
+    roles: [{ source_role: 'current_documents', expected_revision: epoch, expected_source_ids: [authorityId], next_source_ids: [authorityId, target_id] }] };
   const request = { ...pending, schema: 'awardping.program-text-source-approval-request.' + (v1 ? 'v1' : 'v2'), target_ref: programTextReference(target) };
   return { pending, request, provider, target, reads, context: { epoch, loadCapture: async ref => { reads.push(ref); return captures.get(ref.capture_id); } } };
 }
@@ -101,7 +101,9 @@ test('v2 supports the existing draft-inventory scope with empty legacy roles', a
   assert.equal((await validateProgramTextSourcePending(f.pending, f.context)).schema, 'awardping.program-text-source-pending-proof.v2');
 });
 test('the normal final operation recomputes and compares stored raw proof before the one approval RPC', async () => {
-  const f = fixture(), p = await validateProgramTextSourcePending(f.pending, f.context), v = await validateProgramTextSourceApproval(f.request, f.context);
+  // Final PAPPG admission is restricted to this physical source; raw proof validation stays general.
+  const operationTargetId = 'de868fe8-54ba-4fa0-8210-b27c8f182112';
+  const f = fixture({ target_id: operationTargetId }), p = await validateProgramTextSourcePending(f.pending, f.context), v = await validateProgramTextSourceApproval(f.request, f.context);
   const hash = 'a'.repeat(64), calls = []; let committed = null;
   const descriptor = { schema: 'awardping.program-text-source-pending-capture.v1', id, epoch, content_hash: hash,
     source: { admin_review_status: 'review_later', text_monitoring_state: {} }, proof: { reference: f.request.target_ref, content_hash: 'b'.repeat(64) } };
@@ -109,12 +111,15 @@ test('the normal final operation recomputes and compares stored raw proof before
     single: async () => ({ data: table === 'program_text_source_pending_requests' ? { validation: p, content_hash: hash } : { document: v.source_text[1], content_hash: 'b'.repeat(64) } }) }; return query; },
     rpc: async (name, params) => { calls.push({ name, params });
       if (name === 'get_program_text_source_pending_capture') return { data: descriptor };
-      if (name === 'approve_program_text_source') { committed = { id, source_id: targetId, cohort_key: 'nsf_grfp', epoch, content_hash: 'c'.repeat(64), validation: params.p_validation, role_receipts: [] }; return { data: { id, content_hash: committed.content_hash } }; }
-      if (name === 'get_program_text_source_approvals') return { data: { schema: 'awardping.program-text-source-approval-page.v1', epoch, source_ids: [targetId], approvals: [{ schema: 'awardping.program-text-source-approval.v1', id, source_id: targetId, shared_award_id: owner, source_url: f.pending.source.url, cohort_key: 'nsf_grfp', epoch, content_hash: committed.content_hash, current: true }] } };
+      if (name === 'approve_program_text_source') { committed = { id, source_id: operationTargetId, cohort_key: 'nsf_grfp', epoch, content_hash: 'c'.repeat(64), validation: params.p_validation, role_receipts: [] }; return { data: { id, content_hash: committed.content_hash } }; }
+      if (name === 'get_program_text_source_approvals') return { data: { schema: 'awardping.program-text-source-approval-page.v1', epoch, source_ids: [operationTargetId], approvals: [{ schema: 'awardping.program-text-source-approval.v1', id, source_id: operationTargetId, shared_award_id: owner, source_url: f.pending.source.url, cohort_key: 'nsf_grfp', epoch, content_hash: committed.content_hash, current: true }] } };
+      if (name === 'get_program_text_canonical_url_admissions') return { data: { schema: 'awardping.program-text-canonical-url-admission-page.v1', epoch, source_ids: [operationTargetId], admissions: [{ schema: 'awardping.program-text-canonical-url-admission.v1', source_id: operationTargetId, shared_award_id: owner, source_url: f.pending.source.url, cohort_key: 'nsf_grfp', epoch, selected_source_id: operationTargetId, revision: other, content_hash: 'd'.repeat(64), current: true }] } };
       if (name === 'program_text_source_is_approved') return { data: true }; throw Error(name);
     } };
   const result = await approveProgramTextSourceOperation(db, id, hash, actor, f.context);
-  assert.equal(result.approved, true); assert.deepEqual(calls.map(c => c.name), ['get_program_text_source_pending_capture', 'approve_program_text_source', 'get_program_text_source_approvals', 'program_text_source_is_approved']);
+  assert.equal(result.approved, true); assert.equal(result.current, true);
+  assert.deepEqual(calls.map(c => c.name), ['get_program_text_source_pending_capture', 'approve_program_text_source', 'get_program_text_source_approvals', 'get_program_text_canonical_url_admissions', 'program_text_source_is_approved']);
+  assert.deepEqual(calls[3].params, { p_source_ids: [operationTargetId], p_epoch: epoch });
   assert.equal(calls[1].params.p_proposal.schema, 'awardping.program-text-source-approval-request.v2');
   assert.deepEqual(calls[1].params.p_validation.provider_link, p.provider_link);
   committed = null; calls.length = 0; p.provider_link.anchor.literal_href = '/fabricated';

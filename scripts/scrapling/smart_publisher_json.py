@@ -35,6 +35,94 @@ ARTICLE_SYS_IDS = {
     "2562f7c2-4709-4d63-ac25-c4638733a981": "b8fb18e0db8a8300ecc734cc7c9619d7",
     "39685b8a-3ad9-41c5-834b-b2aaafb2b0e5": "0383c5d6db2a03006bb8f4b40f961956",
 }
+GUIDE_SOURCE_IDENTITIES = {
+    "bfd3e15c-3905-4db6-ac2c-e0a5b1637872": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=071d5154db068300b67330ca7c961968",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "SMART Scholarship Award Details FAQ",
+        "page_type": "requirements",
+        "article_sys_id": "071d5154db068300b67330ca7c961968"
+    },
+    "b29da726-dc73-4de6-a67b-1f536a58771e": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=33b85cb7db754300b67330ca7c961911",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "SMART",
+        "page_type": "homepage",
+        "article_sys_id": "33b85cb7db754300b67330ca7c961911"
+    },
+    "87111fbf-0b03-43e1-bb6f-0f23359617d7": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=3ee85c60db8a8300ecc734cc7c9619dc",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "Application Requirements: Academic Background",
+        "page_type": "requirements",
+        "article_sys_id": "3ee85c60db8a8300ecc734cc7c9619dc"
+    },
+    "b4ad8c95-9410-4ceb-9fc4-0e077f34f612": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=5b3bd0e0db8a8300ecc734cc7c961930",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "Application Requirements: References",
+        "page_type": "requirements",
+        "article_sys_id": "5b3bd0e0db8a8300ecc734cc7c961930"
+    },
+    "e6b62753-2830-420b-b6f3-6af6f6ec704e": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=61a7fa06db1ac3006bb8f4b40f961980",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "DoW SMART Post Graduate Employment FAQ",
+        "page_type": "requirements",
+        "article_sys_id": "61a7fa06db1ac3006bb8f4b40f961980"
+    },
+    "f7d55da4-9abb-4024-a423-d930573fb50f": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=78291c60db8a8300ecc734cc7c9619df",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "Application Requirements: Proposed Award",
+        "page_type": "requirements",
+        "article_sys_id": "78291c60db8a8300ecc734cc7c9619df"
+    },
+    "2f1c3cc1-7309-481c-9c6b-4c5cba1f648f": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=9ddbd6e91bced4906b6a0e9ee54bcb74",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "Application Requirements: Letter of Support",
+        "page_type": "requirements",
+        "article_sys_id": "9ddbd6e91bced4906b6a0e9ee54bcb74"
+    },
+    "c3299a3b-f98f-4b65-abe1-c50dba35539d": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=b25b50e0db8a8300ecc734cc7c9619f1",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "Application Requirements: School Transcripts",
+        "page_type": "requirements",
+        "article_sys_id": "b25b50e0db8a8300ecc734cc7c9619f1"
+    },
+    "32728eb4-99f3-4a2f-a349-d8ab5f73271d": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=c6cd2a0edbd6c3006bb8f4b40f961952",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "DoW Summer Internship & Mentor FAQ",
+        "page_type": "requirements",
+        "article_sys_id": "c6cd2a0edbd6c3006bb8f4b40f961952"
+    },
+    "bbe47dba-a910-4379-ba16-bc634ea4850c": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=cd881c60db8a8300ecc734cc7c96190f",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "Application Requirements: About Me",
+        "page_type": "requirements",
+        "article_sys_id": "cd881c60db8a8300ecc734cc7c96190f"
+    },
+    "a66df6fc-6fab-4e8c-8cdd-19fcd48e6015": {
+        "url": "https://www.smartscholarship.org/smart?id=kb_article&sys_id=fca954a0db8a8300ecc734cc7c961903",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "Application Requirements: Personal Statement",
+        "page_type": "requirements",
+        "article_sys_id": "fca954a0db8a8300ecc734cc7c961903"
+    },
+    "5f92d7f3-5b5d-41b1-97ec-16aa0e56be8d": {
+        "url": "https://www.smartscholarship.org/smart/en?id=kb_article&sys_id=30d91073dbb54300b67330ca7c96197c",
+        "owner": "d7d4d117-f312-456f-a75c-3dbd5d372c99",
+        "title": "CLEARANCE PROCESS",
+        "page_type": "faq",
+        "article_sys_id": "30d91073dbb54300b67330ca7c96197c"
+    }
+}
+SOURCES.update({key: (row["url"], "kb_article") for key, row in GUIDE_SOURCE_IDENTITIES.items()})
+ARTICLE_SYS_IDS.update({key: row["article_sys_id"] for key, row in GUIDE_SOURCE_IDENTITIES.items()})
 BODY_LIMIT = 512 * 1024
 MAIN_LIMIT = 5 * 1024 * 1024
 DURATION = 45
@@ -71,7 +159,13 @@ def strict_json(value):
         raise PublisherJsonError("publisher_json_invalid_json") from None
 
 
-def source_profile(source_id, url, owner):
+def source_profile(source_id, url, owner, source_title=None, source_page_type=None):
+    guide = GUIDE_SOURCE_IDENTITIES.get(source_id)
+    if guide:
+        if owner != guide["owner"] or source_title != guide["title"] or source_page_type != guide["page_type"]:
+            raise PublisherJsonError("publisher_json_source_identity")
+    elif source_title is not None or source_page_type is not None:
+        raise PublisherJsonError("publisher_json_source_identity")
     if owner != SOURCE_OWNERS.get(source_id, OWNER) or source_id not in SOURCES or SOURCES[source_id][0] != url:
         raise PublisherJsonError("publisher_json_source_identity")
     return SOURCES[source_id]
@@ -144,8 +238,8 @@ def boot_portal_id(html):
 
 
 class SmartPublisherJson:
-    def __init__(self, source_id, url, owner, now=time.monotonic):
-        _, self.request_page_id = source_profile(source_id, url, owner)
+    def __init__(self, source_id, url, owner, now=time.monotonic, source_title=None, source_page_type=None):
+        _, self.request_page_id = source_profile(source_id, url, owner, source_title, source_page_type)
         self.source_id, self.url = source_id, url
         self.now, self.started = now, now()
         self.frame_id, self.failure = None, None

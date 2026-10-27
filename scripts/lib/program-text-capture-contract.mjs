@@ -3,7 +3,7 @@ import { normalizePublicHttpUrl } from "./public-network-safety.mjs";
 import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetadata,
   isProgramTextPublicDrivePdfContentType, hasProgramTextPublicDrivePdfEnvelope } from "./program-text-public-drive-pdf.mjs";
 import { projectSmartPublisherJson, PROJECTOR_VERSION, SMART_PUBLISHER_JSON_SOURCE_PROFILES } from "./program-text-smart-publisher-json.mjs";
-import { SMART_KB_PUBLISHER_SOURCE_PROFILES, SMART_KB_PROJECTOR_VERSION } from "./program-text-smart-kb-publisher-json.mjs";
+import { SMART_KB_PUBLISHER_SOURCE_PROFILES, SMART_GUIDE_KB_SOURCE_PROFILES, SMART_KB_PROJECTOR_VERSION } from "./program-text-smart-kb-publisher-json.mjs";
 import { restorePublisherJsonObservation, publisherJsonOriginalLimit } from "./program-text-publisher-json.mjs";
 
 // Pure retained-evidence contract. No browser, extraction engine, OCR bridge,
@@ -29,12 +29,14 @@ const sha = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
  * The original two profile objects and all retained serializations stay intact. */
 export function programTextPublisherJsonSourceProfile(source) {
   if (!plain(source)) return null;
-  const profile = [...SMART_PUBLISHER_JSON_SOURCE_PROFILES, ...SMART_KB_PUBLISHER_SOURCE_PROFILES].find(item => item.id === source.id);
+  const profile = [...SMART_PUBLISHER_JSON_SOURCE_PROFILES, ...SMART_KB_PUBLISHER_SOURCE_PROFILES, ...SMART_GUIDE_KB_SOURCE_PROFILES].find(item => item.id === source.id);
   if (!profile) return null;
   const page_type = profile.page_type ?? (profile.key === "home" ? "homepage" : "eligibility");
-  if (profile.shared_award_id !== source.shared_award_id || profile.url !== source.url || page_type !== source.page_type) return null;
+  if (profile.shared_award_id !== source.shared_award_id || profile.url !== source.url || page_type !== source.page_type || profile.title !== undefined && profile.title !== source.title) return null;
   return { ...profile, page_type, version: profile.version ?? PROJECTOR_VERSION };
 }
+
+export const isProgramTextSmartGuideSource = source => SMART_GUIDE_KB_SOURCE_PROFILES.some(p => p.id === source?.id);
 
 /** Reserved publisher tags cannot masquerade as ordinary HTML/PDF evidence. */
 export function isProgramTextPublisherJsonExtractor(extractor) {
@@ -114,6 +116,7 @@ export function validateProgramTextCapture(capture, { source } = {}) {
   if (!plain(capture.extractor) || Object.keys(capture.extractor).sort().join() !== "name,version" ||
       !scalarText(capture.extractor.name, 160) || !capture.extractor.name || !scalarText(capture.extractor.version, 160) || !capture.extractor.version) fail("invalid_extractor");
   const raw = capture.raw_source, isPdf = capture.acquisition.startsWith("pdf_"), isPublisher = capture.acquisition === "publisher_json";
+  if (isProgramTextSmartGuideSource(identity) && (!isPublisher || !programTextPublisherJsonSourceProfile(identity))) fail("invalid_publisher_json_provenance");
   if (!isPublisher && isProgramTextPublisherJsonExtractor(capture.extractor)) fail("invalid_publisher_json_provenance");
   if (!isPublisher && Object.hasOwn(capture, "publisher_json")) fail("unexpected_publisher_json_provenance");
   const publicDrive = capture.extractor.version === PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION;

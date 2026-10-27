@@ -26,6 +26,7 @@ vi.mock("./lib/program-text-browser.mjs", async original => ({ ...await original
 
 import { runProgramTextWorker } from "./program-text-worker.mjs";
 import { rosterPageFixture, emptyVariationBatchFixture } from "./fixtures/program-text-roster-pages.mjs";
+import { SMART_GUIDE_KB_SOURCE_PROFILES } from "./lib/program-text-smart-guide-profiles.mjs";
 
 const nativeFs = await vi.importActual("node:fs");
 const actualConfig = JSON.parse(nativeFs.readFileSync(new URL("../config/program-text-monitoring.json", import.meta.url), "utf8"));
@@ -67,6 +68,8 @@ const smartReviewed = [
     url: "https://www.smartscholarship.org/smart/en", page_type: "homepage" },
 ];
 const smartSourceRows = () => smartReviewed.map(profile => ({ ...profile, admin_review_status: "open" }));
+const smartGuides = SMART_GUIDE_KB_SOURCE_PROFILES.map(profile => Object.fromEntries(
+  ["id", "shared_award_id", "url", "title", "page_type"].map(key => [key, profile[key]])));
 
 beforeEach(() => {
   shared.config = structuredClone(actualConfig); shared.sources = sourceRows(); shared.cohort = "noaa_hollings"; shared.calls = []; shared.destroyed = 0;
@@ -76,15 +79,17 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("reviewed source-bound browser acquisition configuration", () => {
-  it("opts only the six reviewed SMART identities into explicit publisher JSON collection", async () => {
+  it("preserves the six SMART identities and uses explicit reviewed modes for the twelve guides", async () => {
     expect(Object.entries(actualConfig.sources).filter(([, value]) => value.acquisition === "publisher_json").map(([id]) => id).sort())
-      .toEqual(smartReviewed.map(profile => profile.id).sort());
+      .toEqual([...smartReviewed, ...smartGuides].map(profile => profile.id).sort());
     for (const profile of smartReviewed) expect(actualConfig.sources[profile.id]).toEqual({ source_url: profile.url, shared_award_id: profile.shared_award_id,
       acquisition: "publisher_json", publisher_json_profile: "smart-page-v1" });
-    shared.sources = smartSourceRows(); shared.cohort = "smart";
+    for (const profile of smartGuides) expect(actualConfig.sources[profile.id]).toEqual({ source_url: profile.url, shared_award_id: profile.shared_award_id,
+      source_title: profile.title, page_type: profile.page_type, acquisition: "publisher_json", publisher_json_profile: "smart-page-v1" });
+    shared.sources = [...smartSourceRows(), ...smartGuides.map(profile => ({ ...profile, admin_review_status: "open" }))]; shared.cohort = "smart";
     await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);
-    expect(shared.calls).toHaveLength(6);
-    for (const profile of smartReviewed) {
+    expect(shared.calls).toHaveLength(18);
+    for (const profile of [...smartReviewed, ...smartGuides]) {
       const call = shared.calls.find(value => value.source.id === profile.id);
       expect(call.source).toMatchObject(profile);
       expect(call.captureOptions).toMatchObject({ acquisition: "publisher_json", publisher_json_profile: "smart-page-v1" });

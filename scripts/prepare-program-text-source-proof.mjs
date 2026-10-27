@@ -74,8 +74,9 @@ export function validateProgramTextSourcePendingDescriptor(value, { pendingId, e
 
 function acquisitionOptions(config, source) {
   const override = config.sources?.[source.id] || {};
-  if (!plain(override) || Object.keys(override).some(key => !["source_url", "shared_award_id", "acquisition", "pdf_transport", "allowed_final_urls", "publisher_json_profile"].includes(key)) ||
-      Object.keys(override).length && (override.source_url !== source.url || override.shared_award_id !== source.shared_award_id)) fail("source_configuration_changed");
+  if (!plain(override) || Object.keys(override).some(key => !["source_url", "shared_award_id", "source_title", "page_type", "acquisition", "pdf_transport", "allowed_final_urls", "publisher_json_profile"].includes(key)) ||
+      Object.keys(override).length && (override.source_url !== source.url || override.shared_award_id !== source.shared_award_id) ||
+      (override.source_title !== undefined || override.page_type !== undefined) && (override.source_title !== source.title || override.page_type !== source.page_type)) fail("source_configuration_changed");
   const acquisition = override.acquisition || (source.page_type === "pdf" || /\.pdf(?:\?|$)/i.test(source.url) ? "pdf_text" : "http_html");
   const transport = override.pdf_transport || "http";
   // OCR needs a separately verified reading-order process; never use it as a fallback.

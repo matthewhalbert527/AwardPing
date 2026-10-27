@@ -6,6 +6,8 @@ import { programTextRawAnchorLinkDisplay } from "../../scripts/lib/program-text-
 import { loadProgramTextCapture } from "../../scripts/lib/program-text-artifacts.mjs";
 import { prepareProgramTextSourceOperation, approveProgramTextSourceOperation, revokeProgramTextSourceOperation,
   loadProgramTextSourcePendingBundle, loadProgramTextSourceApprovalReceipt } from "../../scripts/lib/program-text-source-approval.mjs";
+import { inspectProgramTextPappgCanonicalOperation, prepareProgramTextPappgCanonicalOperation,
+  loadProgramTextPappgCanonicalDisposition } from "../../scripts/lib/program-text-pappg-canonical-operations.mjs";
 
 function context() {
   const client = createR2Client(), bucket = getR2Bucket();
@@ -15,6 +17,10 @@ function context() {
 /** Call only after the normal administrator and same-origin mutation checks. */
 export const prepareProgramTextSource = (proposal: unknown, actor: string) =>
   prepareProgramTextSourceOperation(createSupabaseAdminClient(), proposal, actor, context());
+export const inspectProgramTextPappgCanonical = () =>
+  inspectProgramTextPappgCanonicalOperation(createSupabaseAdminClient(), { epoch: monitoring.epoch });
+export const prepareProgramTextPappgCanonical = (proposal: unknown, disposition: unknown, actor: string) =>
+  prepareProgramTextPappgCanonicalOperation(createSupabaseAdminClient(), proposal, disposition, actor, context());
 export const approveProgramTextSource = async (id: string, expectedHash: string, actor: string) => {
   const receipt = await approveProgramTextSourceOperation(createSupabaseAdminClient(), id, expectedHash, actor, context());
   return { ...receipt, provider_link: programTextRawAnchorLinkDisplay(receipt.provider_link) };
@@ -24,8 +30,10 @@ export const revokeProgramTextSource = (id: string, expectedHash: string, reason
 export async function loadProgramTextSourcePending(id: string) {
   const db = createSupabaseAdminClient();
   const approved = await loadProgramTextSourceApprovalReceipt(db, id, { epoch: monitoring.epoch });
-  if (approved) return { status: "approved_record", ...approved, source: approved.proposal.source, provider_link: programTextRawAnchorLinkDisplay(approved.provider_link) };
+  if (approved) return { status: "approved_record", ...approved, source: approved.proposal.source, provider_link: programTextRawAnchorLinkDisplay(approved.provider_link),
+    catalogue_disposition: await loadProgramTextPappgCanonicalDisposition(db, id, { epoch: monitoring.epoch, source: approved.proposal.source }) };
   const { descriptor, pending, proof } = await loadProgramTextSourcePendingBundle(db, id);
   return { ...descriptor, approved: false, current: false, already_approved: false, proposal: pending.validation.proposal, provider_link: programTextRawAnchorLinkDisplay(pending.validation.provider_link),
-    target_text: proof?.document.text ?? null, url_alias_boundary: pending.url_alias_boundary ?? [] };
+    target_text: proof?.document.text ?? null, url_alias_boundary: pending.url_alias_boundary ?? [],
+    catalogue_disposition: await loadProgramTextPappgCanonicalDisposition(db, id, { epoch: monitoring.epoch, source: descriptor.source }) };
 }

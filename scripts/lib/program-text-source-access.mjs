@@ -1,4 +1,5 @@
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value) && !/^0{8}(?:-0{4}){3}-0{12}$/.test(value);
+import { hasProgramTextCanonicalUrlAdmission, attachProgramTextCanonicalUrlAdmissions } from "./program-text-canonical-url-admission.mjs";
 const schema = "awardping.program-text-source-approval.v1";
 const keys = ["schema", "id", "source_id", "shared_award_id", "source_url", "cohort_key", "epoch", "content_hash", "current"];
 const valid = proof => proof && typeof proof === "object" && !Array.isArray(proof) && Object.keys(proof).length === keys.length &&
@@ -9,6 +10,7 @@ const valid = proof => proof && typeof proof === "object" && !Array.isArray(proo
 /** Text-only DTO admission. Every mutation still rechecks database authority. */
 export function hasProgramTextSourceAccess(source, { cohort, epoch } = {}) {
   if (!source) return false;
+  if (!hasProgramTextCanonicalUrlAdmission(source, { cohort, epoch })) return false;
   if (source.admin_review_status === "open") return true;
   if (source.admin_review_status !== "review_later" || !uuid(epoch) || !Array.isArray(source.text_source_approvals)) return false;
   return source.text_source_approvals.some(proof => valid(proof) && proof.source_id === source.id &&
@@ -38,5 +40,6 @@ export async function attachProgramTextSourceApprovals(supabase, sources, { epoc
       proofs.get(proof.source_id).push(proof);
     }
   }
-  return sources.map(source => ({ ...source, text_source_approvals: proofs.get(source.id) || [] }));
+  return attachProgramTextCanonicalUrlAdmissions(supabase,
+    sources.map(source => ({ ...source, text_source_approvals: proofs.get(source.id) || [] })), { epoch });
 }

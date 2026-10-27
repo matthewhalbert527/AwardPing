@@ -19,11 +19,11 @@ const response = (value: unknown) => ({ ok: true, json: async () => value });
 beforeEach(() => { hooks.values = []; hooks.refs = []; hooks.cursor = 0; hooks.refCursor = 0;
   send = vi.fn(); vi.stubGlobal("fetch", send); });
 afterEach(() => { vi.unstubAllGlobals(); });
-async function load(approved = false, current = false) {
+async function load(approved = false, current = false, extra:Record<string,unknown> = {}) {
   const input = nodes(render()).find(node => node.type === "input" && node.props.type !== "checkbox")!;
   input.props.onChange!({ target: { value: id, checked: false } });
   send.mockResolvedValueOnce(response({ id, content_hash: "a".repeat(64), source: { id, url: "https://provider.example/rules", title: "Rules" },
-    proof: { capture_id: id }, target_text: "Complete saved rules", proposal: {}, provider_link: {}, approved, current }));
+    proof: { capture_id: id }, target_text: "Complete saved rules", proposal: {}, provider_link: {}, approved, current, ...extra }));
   await button(render(), "Load retained source proof").props.onClick!();
 }
 describe("text source approval status", () => {
@@ -51,5 +51,41 @@ describe("text source approval status", () => {
     await button(render(), "Approve text collection only").props.onClick!();
     expect(text(render())).toContain("Reload its stored status");
     expect(text(render())).not.toContain("Source approval is current.");
+  });
+});
+
+describe("finite PAPPG catalogue workflow",()=>{
+  const disposition={schema:"awardping.program-text-pappg-canonical-disposition.v1",context_hash:"b".repeat(64),
+    context:{preserved_records:[{id:"19204933-2b56-42ac-96ee-b54213a2785a",owner_id:"c9b26239-8177-445b-ab39-473bc0c14d8f",history:"retained"}]},
+    reason:"Explicitly reviewed finite PAPPG catalogue disposition with preserved ownership and history."};
+  it("inspects preserved records only after an explicit click, using a private read",async()=>{
+    const tree=render();expect(send).not.toHaveBeenCalled();expect(text(tree)).toContain("no handoff or alias permission");
+    send.mockResolvedValueOnce(response({schema:"awardping.program-text-pappg-canonical-inspection.v1",context:disposition.context}));
+    await button(tree,"Inspect preserved records").props.onClick!();
+    expect(send).toHaveBeenCalledExactlyOnceWith("/api/admin/program-text-sources?inspection=pappg",{cache:"no-store",credentials:"same-origin"});
+    expect(text(render())).toContain("c9b26239-8177-445b-ab39-473bc0c14d8f");
+    expect(send.mock.calls.every(call=>call[1]?.method!=="POST")).toBe(true);
+  });
+  it("uses the finite prepare action only for the exact two-part JSON envelope",async()=>{
+    const proposal={id,source:{id:"de868fe8-54ba-4fa0-8210-b27c8f182112",url:"https://www.nsf.gov/policies/pappg"}};
+    const editor=nodes(render()).find(node=>node.type==="textarea")!;
+    editor.props.onChange!({target:{value:JSON.stringify({proposal,catalogue_disposition:disposition}),checked:false}});
+    send.mockResolvedValueOnce(response({ok:true,result:{id}}));await button(render(),"Prepare pending text source").props.onClick!();
+    expect(send).toHaveBeenCalledTimes(1);expect(JSON.parse(send.mock.calls[0][1].body)).toEqual({action:"prepare_pappg_canonical",proposal,catalogue_disposition:disposition});
+    expect(send.mock.calls[0][1].credentials).toBe("same-origin");expect(JSON.parse(send.mock.calls[0][1].body)).not.toHaveProperty("actor");
+    expect(text(render())).toContain("guarded PC capture must finish");
+  });
+  it("keeps ordinary JSON proposals on the existing preparation action",async()=>{
+    const proposal={id,source:{id,url:"https://provider.example/rules"}};
+    nodes(render()).find(node=>node.type==="textarea")!.props.onChange!({target:{value:JSON.stringify(proposal),checked:false}});
+    send.mockResolvedValueOnce(response({ok:true,result:{id}}));await button(render(),"Prepare pending text source").props.onClick!();
+    expect(JSON.parse(send.mock.calls[0][1].body)).toEqual({action:"prepare",proposal});
+  });
+  it("labels preserved foreign ownership/history separately and never approves on load or render",async()=>{
+    await load(false,false,{url_alias_boundary:[],catalogue_disposition:disposition});const tree=render(),visible=text(tree);
+    expect(visible).toContain("Separate PAPPG catalogue disposition and currentness");expect(visible).toContain("original owners and histories");
+    expect(visible).toContain("never reopens an older record");expect(visible).toContain("c9b26239-8177-445b-ab39-473bc0c14d8f");
+    expect(visible).not.toContain("9 related records");expect(button(tree,"Approve text collection only").props.disabled).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);render();expect(send).toHaveBeenCalledTimes(1);
   });
 });

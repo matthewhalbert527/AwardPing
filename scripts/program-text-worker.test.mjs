@@ -5,7 +5,7 @@ import { programTextReference } from "./lib/program-text-storage.mjs";
 import { rosterPageFixture } from "./fixtures/program-text-roster-pages.mjs";
 
 const sourceId = "11111111-1111-4111-8111-111111111111", ownerId = "22222222-2222-4222-8222-222222222222", epoch = "33333333-3333-4333-8333-333333333333";
-const source = { id: sourceId, shared_award_id: ownerId, url: "https://example.org/award", admin_review_status: "open" };
+const source = { id: sourceId, shared_award_id: ownerId, url: "https://example.org/award", admin_review_status: "open", text_collection_quality: null };
 const role = (extra = {}) => ({ cohort_key: "example", source_role: "eligibility", source_ids: [sourceId], manifest_status: "reviewed_text", revision: epoch,
   evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: { [sourceId]: { source_url: source.url, shared_award_id: ownerId } } }, ...extra });
 function client(outcomes) {
