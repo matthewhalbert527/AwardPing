@@ -10,14 +10,22 @@ export const PROGRAM_TEXT_UNPAID_NULL_FIELDS = Object.freeze(["model", "gemini_b
 function sameProtectedEmail(previous, current) {
   if (previous.kind !== "source_link" || current.kind !== "source_link" || previous.context?.source_attribute !== "href") return false;
   const decode = text => {
-    const match = /^\/cdn-cgi\/l\/email-protection#([0-9a-fA-F]{6,512})$/u.exec(text);
+    const match = /^\/cdn-cgi\/l\/email-protection#([0-9a-fA-F]{6,8194})$/u.exec(text);
     if (!match || match[1].length % 2) return null;
     const encoded = Buffer.from(match[1], "hex"), bytes = Buffer.from([...encoded.subarray(1)].map(byte => byte ^ encoded[0]));
+    if (!bytes.every(byte => byte >= 33 && byte <= 126)) return null;
     const address = bytes.toString("ascii"), local = address.split("@")[0];
-    // Byte checks precede ASCII conversion, which otherwise discards high bits.
-    return bytes.length <= 254 && local.length <= 64 && !local.startsWith(".") && !local.endsWith(".") && !local.includes("..") &&
-      bytes.every(byte => byte >= 33 && byte <= 126) &&
-      /^[A-Za-z0-9.!#$%&'*+\-/=?^_`{|}~]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/u.test(address) ? bytes : null;
+    if (bytes.length <= 254 && local.length <= 64 && !local.startsWith(".") && !local.endsWith(".") && !local.includes("..") &&
+      /^[A-Za-z0-9.!#$%&'*+\-/=?^_`{|}~]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/u.test(address)) return bytes;
+    // A publisher's email-share action can have no recipient. Keep the entire
+    // subject/body bytes, including literal HTML entities, for exact equality.
+    if (previous.context.link_text !== "Email this Page" || previous.context.heading_path?.at(-1)?.text !== "Share this page") return null;
+    const share = /^\?subject=([^&]+)(?:&|&#0*38;|&#[xX]0*26;)body=(.+)$/u.exec(address);
+    if (!share || /%(?![A-Fa-f0-9]{2})/u.test(address)) return null;
+    try {
+      const subject = decodeURIComponent(share[1]), body = decodeURIComponent(share[2]);
+      return subject.length && body.length && !/\p{Cc}/u.test(subject + body) ? bytes : null;
+    } catch { return null; }
   };
   const before = decode(previous.text), after = decode(current.text);
   return before !== null && after !== null && before.equals(after);

@@ -56,9 +56,54 @@ function reseal(row) {
   row.prompt_payload.packet_plan = buildProgramTextReviewPackets(comparison);
 }
 function encoded(address, key = 19) { return "/cdn-cgi/l/email-protection#" + Buffer.from([key, ...[...Buffer.from(address)].map(byte => byte ^ key)]).toString("hex"); }
+const shareLink = (payload, key) => email(encoded(payload, key), "Award > Share this page", {
+  context: { source_attribute: "href", link_text: "Email this Page", list_path: ["Email this Page"],
+    heading_path: [{ text: "Award", level: 1 }, { text: "Share this page", level: 2 }] },
+});
 
 afterEach(() => { vi.unstubAllGlobals(); });
 describe("fresh unpaid complete deterministic no-change proofs", () => {
+  it.each(["&", "&#038;", "&#x26;"])("locally proves identical email-share payloads using %s without changing the comparison or captures", separator => {
+    const payload = `?subject=Award%20guidance${separator}body=Award%20details&mdash;%20https%3A%2F%2Fexample.org%2Faward`;
+    const f = fixture([shareLink(payload, 0x37), shareLink(payload, 0x4a)], [noise[1]]), before = JSON.stringify(f);
+    expect(f.row.prompt_payload.comparison.status).toBe("review_required");
+    expect(programTextDeterministicNoChange(f.row)).toMatchObject({ status: "ready", validation: { status: "no_program_change", changes: [] },
+      provenance: { generated_by_gemini: false, new_provider_calls: 0, spend_mutations: 0 } });
+    expect(JSON.stringify(f)).toBe(before);
+  });
+  it("does not close real subject, body or recipient changes", () => {
+    const payload = "?subject=Award&body=Current%20requirements";
+    for (const changed of ["?subject=New%20award&body=Current%20requirements", "?subject=Award&body=New%20requirements",
+      "new@example.org?subject=Award&body=Current%20requirements"]) {
+      expect(programTextDeterministicNoChange(fixture([shareLink(payload, 0x37), shareLink(changed, 0x4a)]).row)).toBeNull();
+    }
+  });
+  it("requires the exact share action, heading, attribute and lowercase path", () => {
+    const payload = "?subject=Award&body=Current%20requirements";
+    for (const change of [block => { block.context.link_text = "Apply"; }, block => { block.context.heading_path.at(-1).text = "Application"; },
+      block => { block.context.source_attribute = "action"; }, block => { block.text = block.text.replace("/cdn-cgi/", "/CDN-CGI/"); }]) {
+      const pair = [shareLink(payload, 0x37), shareLink(payload, 0x4a)]; change(pair[1]);
+      expect(programTextDeterministicNoChange(fixture(pair).row)).toBeNull();
+    }
+    const pair = [shareLink(payload, 0x37), shareLink(payload, 0x4a)];
+    pair.forEach(block => { block.context.link_text = "Apply"; });
+    expect(programTextDeterministicNoChange(fixture(pair).row)).toBeNull();
+  });
+  it("holds malformed or oversized share payloads and genuine adjacent rule changes", () => {
+    for (const payload of ["?subject=Award&body=", "?subject=%ZZ&body=Award", "?subject=%C3%28&body=Award",
+      "?subject=%00&body=Award", "?subject=Award&body=Line%0ABreak",
+      "?subject=Award&body=Line\nBreak", "?subject=Award&body=" + "x".repeat(4096)]) {
+      expect(programTextDeterministicNoChange(fixture([shareLink(payload, 0x37), shareLink(payload, 0x4a)]).row)).toBeNull();
+    }
+    const payload = "?subject=Award&body=Current%20requirements";
+    expect(programTextDeterministicNoChange(fixture([shareLink(payload, 0x37), shareLink(payload, 0x4a)],
+      [[{ text: "Deadline: October 1, 2027", kind: "p" }, { text: "Deadline: October 2, 2027", kind: "p" }]]).row)).toBeNull();
+  });
+  it("never uses the share rule for an already submitted comparison", () => {
+    const payload = "?subject=Award&body=Current%20requirements", f = fixture([shareLink(payload, 0x37), shareLink(payload, 0x4a)]);
+    f.row.status = "submitted"; f.row.submitted_at = "2026-10-24T12:00:02.000Z";
+    expect(programTextDeterministicNoChange(f.row)).toBeNull();
+  });
   it.each(noise.map((pair, index) => [index + 1, pair]))("accepts exact real noise block %i without changing inputs", (_, pair) => {
     const { row } = fixture(pair), before = structuredClone(row), result = programTextDeterministicNoChange(row);
     expect(result).toMatchObject({ status: "ready", validation: { status: "no_program_change", changes: [] },
