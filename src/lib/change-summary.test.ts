@@ -15,6 +15,85 @@ import {
   isUsefulChangeSummary,
 } from "@/lib/change-summary";
 
+describe("complete legacy fact sides with shorter stored labels", () => {
+  // Public programme wording only. No event/source IDs, accounts, captured
+  // metadata, database export, credentials or personal information belong here.
+  const unavailable = "A complete concise summary is unavailable. Review the official source.";
+  const legacyDetails = () => {
+    const facts = [
+      { fact: "Applicant eligibility", before: "2026 Eligibility Requirements", after: "2027 Eligibility Requirements",
+        removed_text: "2026 Eligibility Requirements To qualify, a student must:",
+        added_text: "2027 Eligibility Requirements To qualify, a student must:", visual_evidence: null },
+      { fact: "Applicant-facing award information",
+        before: "Be a college junior pursuing a bachelor’s degree during the 2025-2026 academic year.",
+        after: "Be a college junior pursuing a bachelor’s degree during the 2026-2027 academic year.",
+        removed_text: "Be a college junior pursuing a bachelor’s degree during the 2025-2026 academic year.",
+        added_text: "Be a college junior pursuing a bachelor’s degree during the 2026-2027 academic year.", visual_evidence: null },
+      { fact: "Application instructions", before: "expects to receive a bachelor’s degree between December 2026 and August 2027.",
+        after: "expects to receive a bachelor’s degree between December 2027 and August 2028.",
+        removed_text: "“Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2026 and August 2027.",
+        added_text: "“Junior” means a student who is currently enrolled at the time of application, plans to continue full-time undergraduate study in the following term, and expects to receive a bachelor’s degree between December 2027 and August 2028.", visual_evidence: null },
+    ];
+    return {
+      reader_summary: "The eligibility cycle, academic year and graduation window changed.",
+      generation_status: "generated", is_alert_worthy: true, confidence: "high", quality_flags: [], change_type: "eligibility",
+      before: facts[0].removed_text, after: facts[0].added_text,
+      changed_facts: facts, changed_award_facts: structuredClone(facts),
+      structured_diff: { removed_text: facts.map(fact => fact.removed_text), added_text: facts.map(fact => fact.added_text) },
+    };
+  };
+  it("keeps all three complete fact pairs and their qualifications useful without mutating the records", () => {
+    const value = legacyDetails(), before = JSON.stringify(value);
+    const result = changeSummaryPresentation(value.reader_summary, undefined, undefined, value);
+    expect(result.condensed).toBe(true); expect(result.paragraphs).toHaveLength(3); expect(result.text.length).toBeLessThanOrEqual(1200);
+    for (const record of value.changed_facts) {
+      expect(result.text).toContain(record.removed_text); expect(result.text).toContain(record.added_text);
+    }
+    expect(result.paragraphs[2]).toContain("currently enrolled at the time of application");
+    expect(result.paragraphs[2]).toContain("plans to continue full-time undergraduate study in the following term");
+    expect(result.paragraphs[2]).toContain("December 2026 and August 2027");
+    expect(result.paragraphs[2]).toContain("December 2027 and August 2028");
+    expect(isUsefulChangeSummary(value.reader_summary, value)).toBe(true);
+    expect(isUsefulChangeForAward({ summary: value.reader_summary, change_details: value,
+      awardName: "Example Scholarship", sourceTitle: "Eligibility Requirements", sourceUrl: "https://example.edu/eligibility" })).toBe(true);
+    expect(JSON.stringify(value)).toBe(before);
+  });
+  it.each(["shorter complete alias", "unrelated label", "ambiguous label", "duplicate directional witness",
+    "wrong direction", "missing full witness", "contradictory record", "missing record", "conflicting aliases", "oversized complete sides"])(
+    "rejects %s instead of dropping or repairing a fact", kind => {
+      const value = legacyDetails(), records = value.changed_facts;
+      if (kind === "shorter complete alias") records[0].removed_text = "2026 Eligibility";
+      if (kind === "unrelated label") records[0].before = "2025 Eligibility Requirements";
+      if (kind === "ambiguous label") {
+        records[0].removed_text += ` ${records[0].before}`;
+        value.structured_diff.removed_text[0] = records[0].removed_text;
+      }
+      if (kind === "duplicate directional witness") value.structured_diff.removed_text.push(records[0].removed_text);
+      if (kind === "wrong direction") {
+        const removed = value.structured_diff.removed_text;
+        value.structured_diff.removed_text = value.structured_diff.added_text; value.structured_diff.added_text = removed;
+      }
+      if (kind === "missing full witness") value.structured_diff.removed_text[0] = records[0].before;
+      if (kind === "contradictory record") records[0].added_text = records[0].removed_text;
+      if (kind === "missing record") records.push(null as unknown as typeof records[number]);
+      if (kind === "oversized complete sides") {
+        records[2].removed_text += " Additional original condition.".repeat(30);
+        records[2].added_text += " Additional revised condition.".repeat(30);
+        value.structured_diff.removed_text[2] = records[2].removed_text;
+        value.structured_diff.added_text[2] = records[2].added_text;
+      }
+      value.changed_award_facts = structuredClone(records);
+      if (kind === "conflicting aliases") value.changed_award_facts[2].added_text = "An unrelated condition.";
+      const before = JSON.stringify(value);
+      expect(changeSummaryPresentation(value.reader_summary, undefined, undefined, value)).toMatchObject({
+        text: unavailable, paragraphs: [unavailable], condensed: false,
+      });
+      expect(isUsefulChangeSummary(value.reader_summary, value)).toBe(false);
+      expect(JSON.stringify(value)).toBe(before);
+    },
+  );
+});
+
 describe("complete bounded public fact presentation, not repaired summary prefixes", () => {
   const unavailable = "A complete concise summary is unavailable. Review the official source.";
   const fixtureBytes = readFileSync(new URL("../../scripts/fixtures/scrapling-accuracy/yenching-complete-retained-pair-20261018.json", import.meta.url));

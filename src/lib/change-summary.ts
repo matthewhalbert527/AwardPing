@@ -295,11 +295,29 @@ function completePublicFactParagraphs(original: Record<string, unknown>): string
   for (const record of records) {
     if (!record || typeof record !== "object" || Array.isArray(record) || Object.keys(record).length !== publicFactFields.length ||
       publicFactFields.some(field => !Object.hasOwn(record, field)) || !validText(record.fact) || record.visual_evidence !== null ||
-      [record.before, record.after, record.added_text, record.removed_text].some(value => value !== null && !validText(value)) ||
-      (record.before !== null && record.removed_text !== null && record.before !== record.removed_text) ||
-      (record.after !== null && record.added_text !== null && record.after !== record.added_text)) return null;
-    const before: string | null = record.before ?? record.removed_text;
-    const after: string | null = record.after ?? record.added_text;
+      [record.before, record.after, record.added_text, record.removed_text].some(value => value !== null && !validText(value))) return null;
+    // Older stored facts may label a short excerpt and retain its complete
+    // changed sentence on the same record. Keep the longer original side,
+    // including every qualification; never assemble a pair from diff rows.
+    const completeSide = (label: string | null, complete: string | null) => {
+      if (label !== null && complete !== null && label !== complete) {
+        const offset = complete.indexOf(label);
+        if (offset < 0 || complete.indexOf(label, offset + 1) >= 0) return undefined;
+      }
+      return complete ?? label;
+    };
+    const before = completeSide(record.before, record.removed_text);
+    const after = completeSide(record.after, record.added_text);
+    if (before === undefined || after === undefined) return null;
+    const expandedAlias = before !== (record.before ?? record.removed_text) || after !== (record.after ?? record.added_text);
+    // New compatibility cases must have one unambiguous complete directional
+    // witness. Existing equal-side records keep their original behavior.
+    const uniqueDirectionalWitness = (text: string | null, rows: string[]) => !text || rows.reduce((count, row) => {
+      let offset = 0, found = 0, index: number;
+      while ((index = row.indexOf(text, offset)) >= 0) { found++; offset = index + 1; }
+      return count + found;
+    }, 0) === 1;
+    if (expandedAlias && (!uniqueDirectionalWitness(before, removed) || !uniqueDirectionalWitness(after, added))) return null;
     // Keep each existing public record's sides together; never assemble a new
     // pair from diff rows. Array positions are not semantic pairing or new
     // publication authority. Upstream event/review gates remain unchanged.
