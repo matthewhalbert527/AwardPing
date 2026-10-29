@@ -211,13 +211,19 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
   let client;
   try {
     const roster = await loadProgramTextSources(supabase, { epoch: config.epoch });
-    const factBatch = await supabase.rpc("get_program_text_fact_review_batch");
-    if (factBatch.error || !Array.isArray(factBatch.data) || factBatch.data.length > 25) throw new Error("Current factual approvals are unavailable");
-    const variationBatch = await supabase.rpc("get_program_variation_admin_batch");
-    if (variationBatch.error || variationBatch.data?.schema !== "awardping.program-variation-admin-batch.v1" ||
-        !Array.isArray(variationBatch.data.awards) || variationBatch.data.awards.length !== 25 ||
-        variationBatch.data.awards.some(row => !/^[a-z0-9_-]{1,80}$/.test(row?.cohort_key || "")) ||
-        new Set(variationBatch.data.awards.map(row => row.cohort_key)).size !== 25) throw new Error("Current variation approval coverage is unavailable");
+    // Historical exhaustive detail approvals are reporting data, never a dependency
+    // of collecting approved sources or reviewing their real programme changes.
+    let factReviews = [], variationReviews = [];
+    if (!["collect", "review"].includes(args.mode)) {
+      const factBatch = await supabase.rpc("get_program_text_fact_review_batch");
+      if (factBatch.error || !Array.isArray(factBatch.data) || factBatch.data.length > 25) throw new Error("Current factual approvals are unavailable");
+      const variationBatch = await supabase.rpc("get_program_variation_admin_batch");
+      if (variationBatch.error || variationBatch.data?.schema !== "awardping.program-variation-admin-batch.v1" ||
+          !Array.isArray(variationBatch.data.awards) || variationBatch.data.awards.length !== 25 ||
+          variationBatch.data.awards.some(row => !/^[a-z0-9_-]{1,80}$/.test(row?.cohort_key || "")) ||
+          new Set(variationBatch.data.awards.map(row => row.cohort_key)).size !== 25) throw new Error("Current variation approval coverage is unavailable");
+      factReviews = factBatch.data; variationReviews = variationBatch.data.awards;
+    }
     const scopedSources = roster.sources.filter((source, index) => index % args.shardCount === args.shardIndex &&
       (!args["source-id"] || source.id === args["source-id"]) && (!args.cohort || source.cohorts.includes(args.cohort)));
     // Review --limit caps candidates below, not the source roster they may come
@@ -225,7 +231,7 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     const selected = args.mode === "review" ? scopedSources : scopedSources.slice(0, args.limit);
     if (args["source-id"] && selected.length !== 1) throw new Error("The requested source is not in this shard's required roster");
     const report = { schema: "awardping.program-text-run.v1", mode: args.mode, epoch: config.epoch, apply: args.apply,
-      selected_sources: selected.length, roster_seal: roster.roster_seal, checked_at: new Date().toISOString(), coverage: programTextCoverage(roster, config.epoch, factBatch.data, variationBatch.data.awards), results: [] };
+      selected_sources: selected.length, roster_seal: roster.roster_seal, checked_at: new Date().toISOString(), coverage: programTextCoverage(roster, config.epoch, factReviews, variationReviews), results: [] };
     if (!args.apply || ["plan", "report", "new_page_review", "legacy_hold"].includes(args.mode)) return report;
     const bucket = env.R2_BUCKET, endpoint = env.R2_ENDPOINT || (env.R2_ACCOUNT_ID ? `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null);
     if (!bucket || !endpoint || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY) throw new Error("Private raw/text retention is not configured");
@@ -279,7 +285,7 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
         ...(Object.hasOwn(outcome, "collection_failure_recorded") ? { collection_failure_recorded: outcome.collection_failure_recorded,
           collection_failure_journal_reason: outcome.collection_failure_journal_reason || null } : {}) });
     }
-    report.coverage = programTextCoverage(roster, config.epoch, factBatch.data, variationBatch.data.awards);
+    report.coverage = programTextCoverage(roster, config.epoch, factReviews, variationReviews);
     return report;
   } finally { client?.destroy(); await closeSupabaseServiceTransport(); }
 }

@@ -218,6 +218,9 @@ export async function finalizeProgramTextReview({ source, epoch, candidate, resp
   if (validation.status !== "accepted") return held("unexpected_review_validation");
   try {
     const publication = await callbacks.publishProgramChange({ source, epoch, candidate, validation, expected_state: state });
+    if (publication?.published === false && publication?.review_required === true && publication.review_id === candidate.id) {
+      return { status: "awaiting_admin_review", creates_update: false, validation, review_id: publication.review_id };
+    }
     if (publication?.published !== true || !uuid(publication.event_id)) return held("publication_unconfirmed", { validation });
     return { status: "published", event_id: publication.event_id, validation, publication };
   } catch { return held("publication_failed", { validation }); }

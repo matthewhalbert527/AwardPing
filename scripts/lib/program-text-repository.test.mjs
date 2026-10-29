@@ -28,7 +28,7 @@ function fake(outcomes = []) {
     const call = { table, operation: "select", filters: [] }; calls.push(call);
     const query = {
       select(columns) { call.select = columns; return query; }, eq(...args) { call.filters.push(["eq", ...args]); return query; },
-      in(...args) { call.filters.push(["in", ...args]); return query; }, order(value) { call.order = value; return query; }, limit(value) { call.limit = value; return query; },
+      in(...args) { call.filters.push(["in", ...args]); return query; }, is(...args) { call.filters.push(["is", ...args]); return query; }, order(value) { call.order = value; return query; }, limit(value) { call.limit = value; return query; },
       insert(payload) { call.operation = "insert"; call.payload = payload; return query; }, update(payload) { call.operation = "update"; call.payload = payload; return query; },
       single() { call.single = true; return query; }, then(yes, no) { if (!outcomes.length) return Promise.reject(new Error("Missing fake database response")).then(yes, no); return Promise.resolve(outcomes.shift()).then(yes, no); },
     }; return query;
@@ -79,6 +79,7 @@ describe("program text repository state and queue", () => {
     expect(db.calls[0].filters).toContainEqual(["in", "shared_award_source_id", [source.id]]);
     expect(db.calls[0].filters).toContainEqual(["eq", "worker_metadata->>epoch", epoch]);
     expect(db.calls[0].filters).toContainEqual(["eq", "candidate_scope", "program_text_change"]);
+    expect(db.calls[0].filters).toContainEqual(["is", "worker_metadata->>admin_alert_review_id", null]);
   });
   it("never scans the global queue for an empty or omitted scope", async () => {
     const db = fake(); expect(await repo(db).listCandidates(["pending"])).toEqual([]);

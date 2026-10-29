@@ -38,7 +38,6 @@ import { describeTimestamp, formatCentralDate } from "@/lib/time-zone";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { AwardDateValue } from "@/components/award-date-value";
-import { PublicAwardVariationPicker } from "@/components/public-award-variation-picker";
 
 type PublicAwardWorkspaceProps = {
   data: PublicAwardPageData;
@@ -317,10 +316,6 @@ export function PublicAwardWorkspace({
         ref={panelRef}
         tabIndex={-1}
       >
-        {data.variations && data.variations.total > 0 && (selected.kind === "overview" || selected.kind === "application") ? <PublicAwardVariationPicker
-          key={`${data.variations.inventory_id}:${data.variations.selected_scope_key}`}
-          cohort={data.variations.cohort_key} path={data.canonicalPath} initial={data.variations}
-          navigation={{ section: selected.kind === "application" ? "applying" : "overview" }} /> : null}
         {currentness && (selected.kind === "overview" || selected.kind === "application") && (
           <div className="public-award-currentness" role="note">
             <strong>{currentness.title}</strong>

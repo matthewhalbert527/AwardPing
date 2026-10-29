@@ -13,11 +13,11 @@ function database(rows, mutate = () => {}) {
   return { calls, from() {
     const call = { filters: [], orders: [] }; calls.push(call);
     const q = { select: columns => { call.columns = columns; return q; }, eq: (key, value) => { call.filters.push(["eq", key, value]); return q; },
-      in: (key, values) => { call.filters.push(["in", key, values]); return q; }, order: key => { call.orders.push(key); return q; },
+      in: (key, values) => { call.filters.push(["in", key, values]); return q; }, is: (key, value) => { call.filters.push(["is", key, value]); return q; }, order: key => { call.orders.push(key); return q; },
       limit: limit => { call.limit = limit; return q; }, then(yes, no) {
         let selected = rows.filter(row => call.filters.every(([op, key, value]) => {
-          const actual = key === "worker_metadata->>epoch" ? row.worker_metadata.epoch : row[key];
-          return op === "eq" ? actual === value : value.includes(actual);
+          const actual = key.startsWith("worker_metadata->>") ? row.worker_metadata[key.split("->>")[1]] : row[key];
+          return op === "is" ? (actual ?? null) === value : op === "eq" ? actual === value : value.includes(actual);
         })).sort((a, b) => a.database_order - b.database_order || a.id.localeCompare(b.id));
         const count = selected.length; selected = selected.slice(0, call.limit);
         if (call.columns !== "*") selected = selected.map(({ id, created_at, shared_award_source_id }) => ({ id, created_at, shared_award_source_id }));
@@ -48,7 +48,7 @@ describe("large approved-source candidate scope remains bounded", () => {
   it.each([
     row => { row.shared_award_source_id = sourceId(9999); }, row => { row.worker_metadata.epoch = candidateId(99); },
     row => { row.status = "failed"; }, row => { row.candidate_scope = "content_change"; },
-    row => { row.created_at = "2026-10-26T17:00:00.123457Z"; },
+    row => { row.created_at = "2026-10-26T17:00:00.123457Z"; }, row => { row.worker_metadata.admin_alert_review_id = candidateId(1); },
   ])("rejects changed full-row identity, failed provider scope or epoch %#", async mutate => {
     const db = database([candidate(1, 0, "2026-10-26T17:00:00.123456Z", 0)], (page, call) => { if (call.columns === "*") mutate(page[0]); });
     await expect(repository(db).listCandidates(["pending"], 1, { source_ids: sources, epoch })).rejects.toThrow("identity changed");
@@ -73,5 +73,18 @@ describe("large approved-source candidate scope remains bounded", () => {
     expect(db.calls).toHaveLength(1); expect(db.calls[0].columns).toBe("*");
     await expect(repository(db).listCandidates(["pending"], 101, { source_ids: sources, epoch })).rejects.toThrow("bounded");
     expect(db.calls).toHaveLength(1);
+  });
+  it.each([1, 100, 701])("waiting human reviews cannot starve later review work across%i source IDs", async sourceCount => {
+    const rows = Array.from({ length: 101 }, (_, n) => ({ ...candidate(n + 1, n % sourceCount, "2026-10-26T17:00:00.000000Z", n),
+      status: "succeeded", worker_metadata: { epoch, admin_alert_review_id: candidateId(n + 1) } }));
+    rows.push(candidate(102, 0, "2026-10-26T17:00:01.000000Z", 102));
+    const db = database(rows), found = await repository(db).listCandidates(["pending", "submitted", "succeeded"], 1,
+      { source_ids: sources.slice(0, sourceCount), epoch });
+    expect(found.map(row => row.id)).toEqual([candidateId(102)]);
+    expect(db.calls.every(call => call.filters.some(([op,key,value]) => op === "is" && key === "worker_metadata->>admin_alert_review_id" && value === null))).toBe(true);
+  });
+  it("rejects a small-scope response that ignores the human-review exclusion", async () => {
+    const db = database([candidate(1, 0, "2026-10-26T17:00:00.000000Z", 0)], page => { page[0].worker_metadata.admin_alert_review_id = candidateId(1); });
+    await expect(repository(db).listCandidates(["succeeded", "pending"], 1, { source_ids: [sources[0]], epoch })).rejects.toThrow("Invalid selected");
   });
 });

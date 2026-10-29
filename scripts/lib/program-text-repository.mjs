@@ -182,9 +182,14 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
     },
     async listCandidates(statuses, limit = 20, { source_ids, epoch } = {}) {
       if (!Array.isArray(source_ids) || !source_ids.length || !epoch) return [];
-      if (source_ids.length <= 100) return result(supabase.from(table).select("*").eq("candidate_scope", "program_text_change")
+      if (source_ids.length <= 100) {
+        const found = await result(supabase.from(table).select("*").eq("candidate_scope", "program_text_change")
         .in("shared_award_source_id", source_ids).eq("worker_metadata->>epoch", epoch)
+        .is("worker_metadata->>admin_alert_review_id", null)
         .in("status", statuses).order("created_at").limit(limit), "list text reviews");
+        if (!Array.isArray(found) || found.some(row => row.worker_metadata?.admin_alert_review_id != null)) throw new Error("Invalid selected text reviews");
+        return found;
+      }
       if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !uuid(epoch) || !source_ids.every(uuid) ||
           new Set(source_ids).size !== source_ids.length) throw new Error("Invalid bounded text review scope");
       const metadata = new Map();
@@ -192,6 +197,7 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
         const ids = source_ids.slice(start, start + 100);
         const { data: page, count, error } = await supabase.from(table).select("id,created_at,shared_award_source_id", { count: "exact" }).eq("candidate_scope", "program_text_change")
           .in("shared_award_source_id", ids).eq("worker_metadata->>epoch", epoch)
+          .is("worker_metadata->>admin_alert_review_id", null)
           .in("status", statuses).order("created_at").order("id").limit(limit);
         if (error) throw new Error(`Program text repository: list bounded text review metadata failed (${error.code || "database"})`);
         if (!Number.isSafeInteger(count) || count < 0 || !Array.isArray(page) || page.length !== Math.min(limit, count)) throw new Error("Incomplete bounded text review metadata");
@@ -206,13 +212,14 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
       if (!chosen.length) return [];
       const found = await result(supabase.from(table).select("*").eq("candidate_scope", "program_text_change")
         .in("id", chosen.map(row => row.id)).eq("worker_metadata->>epoch", epoch)
+        .is("worker_metadata->>admin_alert_review_id", null)
         .in("status", statuses).order("created_at").order("id").limit(limit), "read selected text reviews");
       const seen = new Set();
       if (!Array.isArray(found) || found.length > chosen.length) throw new Error("Invalid selected text reviews");
       for (const row of found) {
         const original = metadata.get(row?.id);
         if (!original || !chosen.some(chosenRow => chosenRow.id === row.id) || seen.has(row.id) || row.candidate_scope !== "program_text_change" ||
-            row.worker_metadata?.epoch !== epoch || !statuses.includes(row.status) || row.shared_award_source_id !== original.shared_award_source_id ||
+            row.worker_metadata?.epoch !== epoch || row.worker_metadata?.admin_alert_review_id != null || !statuses.includes(row.status) || row.shared_award_source_id !== original.shared_award_source_id ||
             candidateMicros(row.created_at) !== candidateMicros(original.created_at)) throw new Error("Selected text review identity changed");
         seen.add(row.id);
       }

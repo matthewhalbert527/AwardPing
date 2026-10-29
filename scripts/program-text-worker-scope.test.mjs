@@ -57,13 +57,14 @@ function database(sets, { approved = true } = {}) {
     const call = { table, filters: [] }; calls.push(call);
     const query = { select(columns) { call.select = columns; return query; }, order() { return query; }, limit() { return query; }, single() { call.single = true; return query; },
       eq(key, value) { call.filters.push(["eq", key, value]); return query; }, in(key, value) { call.filters.push(["in", key, value]); return query; },
+      is(key, value) { call.filters.push(["is", key, value]); return query; },
       then(yes, no) {
         let values = table === "program_text_source_roster" ? sets.map(set => set.role)
           : table === "shared_award_sources" ? sets.map(set => set.source)
             : table === "shared_awards" ? sets.map(set => ({ id: set.source.shared_award_id, name: "Example Award", status: "active" })) : sets.map(set => set.candidate);
         for (const [method, key, value] of call.filters) values = values.filter(row => {
-          const actual = key === "worker_metadata->>epoch" ? row.worker_metadata?.epoch : row[key];
-          return method === "in" ? value.includes(actual) : actual === value;
+          const actual = key.startsWith("worker_metadata->>") ? row.worker_metadata?.[key.split("->>")[1]] : row[key];
+          return method === "is" ? (actual ?? null) === value : method === "in" ? value.includes(actual) : actual === value;
         });
         return Promise.resolve({ data: call.single ? values[0] : values }).then(yes, no);
       } }; return query;
@@ -98,7 +99,7 @@ describe("CLI source scope before any provider submission", () => {
     const report = await runProgramTextWorker(["--mode=review", "--apply=true", "--pilot=true", `--source-id=${current.source.id}`]);
     expect(shared.provider).toEqual([]);
     expect(report.results).toEqual([{ candidate_id: current.candidate.id, status: "held", reason: "review_state_or_transport_failed" }]);
-    expect(shared.db.calls.filter(call => call.rpc && !["get_program_text_worker_roster_page", "get_program_variation_admin_batch"].includes(call.rpc))).toEqual([{ rpc: "get_program_text_fact_review_batch", params: undefined }, { rpc: "program_text_source_is_approved", params: { p_source_id: current.source.id } }]);
+    expect(shared.db.calls.filter(call => call.rpc && call.rpc !== "get_program_text_worker_roster_page")).toEqual([{ rpc: "program_text_source_is_approved", params: { p_source_id: current.source.id } }]);
   });
   it("an empty cohort never scans the global review queue", async () => {
     shared.config.enabled = true; shared.db = database([rowSet(1)]);
@@ -116,5 +117,18 @@ describe("CLI source scope before any provider submission", () => {
     const report = await runProgramTextWorker(["--mode=collect", "--apply=true", "--pilot=true", `--source-id=${current.source.id}`, "--domain-delay-ms=0"]);
     expect(shared.captureCalls).toEqual([current.source.id]); expect(shared.provider).toEqual([]);
     expect(report.results[0]).toMatchObject({ status: "baseline_ready", initial_coverage: true });
+  });
+  it.each(["collect", "review"])("%s remains available when historical detail-review reports are unavailable", async mode => {
+    const current = rowSet(1); shared.db = database([current]);
+    const originalRpc = shared.db.rpc.bind(shared.db);
+    shared.db.rpc = (name, params) => {
+      if (["get_program_text_fact_review_batch", "get_program_variation_admin_batch"].includes(name)) throw Error("Obsolete detail report unavailable");
+      return originalRpc(name, params);
+    };
+    const report = await runProgramTextWorker([`--mode=${mode}`, "--apply=true", "--pilot=true", `--source-id=${current.source.id}`, "--domain-delay-ms=0"]);
+    expect(report.results).toHaveLength(1);
+    expect(report.results[0].status).toBe(mode === "collect" ? "baseline_ready" : "submitted");
+    expect(shared.db.calls.some(call => ["get_program_text_fact_review_batch", "get_program_variation_admin_batch"].includes(call.rpc))).toBe(false);
+    expect(report.coverage[0].factual_review_complete).toBe(false);
   });
 });

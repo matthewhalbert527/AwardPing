@@ -193,6 +193,11 @@ export type ManualQuarantineBacklogAgeBucket =
 export type Database = {
   public: {
     Tables: {
+      program_text_alert_reviews: {
+        Row: { id: string; content_hash: string; candidate_signature: string; details: Json; localization: Json;
+          status: "pending" | "approved" | "dismissed"; created_at: string; reviewed_at: string | null; reviewed_by: string | null; event_id: string | null };
+        Insert: never; Update: never; Relationships: [];
+      };
       program_text_source_roster: {
         Row: { cohort_key: string; source_role: string; source_ids: string[]; manifest_status: string; evidence: Json; revision: string; reviewed_by: string; reviewed_at: string };
         Insert: never; Update: never; Relationships: [];
@@ -3739,6 +3744,10 @@ export type Database = {
       };
       publish_program_text_event: {
         Args: { p_candidate_id: string; p_details: Json; p_localization: Json };
+        Returns: Json;
+      };
+      decide_program_text_alert: {
+        Args: { p_id: string; p_expected_hash: string; p_action: "approve" | "dismiss"; p_actor: string };
         Returns: Json;
       };
       record_shared_award_regression_audit: {

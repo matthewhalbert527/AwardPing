@@ -130,7 +130,7 @@ export default async function AdminSourceIntakePage({
           </p>
         </div>
         <Link className="button-secondary" href="/dashboard/admin/issues">
-          Admin workflows
+          Review alerts
         </Link>
       </div>
 

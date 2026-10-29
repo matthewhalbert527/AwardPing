@@ -194,4 +194,12 @@ describe("program text review finalization", () => {
     expect((await finalize(h, responses(h.work, "program_change"))).reason).toBe("publication_unconfirmed");
     expect(h.callbacks.compareAndSetState).not.toHaveBeenCalled();
   });
+  it("waits for an explicit admin decision without publishing or advancing the baseline", async () => {
+    const h = await pending();
+    h.callbacks.publishProgramChange.mockResolvedValue({ published: false, review_required: true, review_id: candidateId });
+    const result = await finalize(h, responses(h.work, "program_change"));
+    expect(result).toMatchObject({ status: "awaiting_admin_review", creates_update: false, review_id: candidateId });
+    expect(h.callbacks.compareAndSetState).not.toHaveBeenCalled();
+    expect(h.state.baseline_ref.capture_id).toBe(capture().capture_id);
+  });
 });

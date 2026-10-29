@@ -286,7 +286,7 @@ describe("admin source-intake bounded server award search", () => {
     expect(form.find("button[type='submit']").text()).toBe("Search awards");
     // The Next Link mock marks client navigation, so this detects a future
     // native-anchor-to-Link regression that identical SSR <a> markup would miss.
-    expect($("a[data-client-navigation='true']").text()).toBe("Admin workflows");
+    expect($("a[data-client-navigation='true']").text()).toBe("Review alerts");
   });
 
   it.each([REQUEST_ID, "invalid-request"])("uses full navigation to reset recent requests for %s", async request => {
