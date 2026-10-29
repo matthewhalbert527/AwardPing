@@ -3,8 +3,9 @@ import "server-only";
 import { z } from "zod";
 import type { Database, Json } from "@/lib/database.types";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { applyProgramFactPublication, applyProgramVariationPublication } from "@/lib/program-fact-publication";
-import { loadPublishedVariationBatch } from "@/lib/program-variation-review.server";
+import { loadProgramTextAlertSourceBindings } from "@/lib/program-text-alert-sources.server";
+import { loadProgramBasicFacts } from "@/lib/program-basic-facts.server";
+import textMonitoring from "../../config/program-text-monitoring.json";
 import {
   stage1CohortIdentityHash,
   stage1CohortIdentityMismatch,
@@ -59,6 +60,9 @@ export type Stage1PublicationEntry = {
   textFactReview?: { id: string; reviewedAt: string; current: boolean; releaseRevision: string;
     variationInventoryId?: string; variationInventoryRevision?: string; variationCount?: number };
   approvedTextSourceBindings?: Record<string, { url: string; shared_award_id: string }>;
+  approvedTextAlertSourceBindings?: Record<string, { url: string; shared_award_id: string; epoch: string }>;
+  basicFactSnapshot?: { id: string; kind: "automated_source_verified_basics"; verifiedAt: string; current: boolean };
+  basicFactsUnavailable?: boolean;
 };
 
 export type Stage1PublicationIndex = {
@@ -71,6 +75,7 @@ export type Stage1PublicationIndex = {
   verifiedEntries: Stage1PublicationEntry[];
   verifiedCanonicalAwardIds: string[];
   verifiedMemberAwardIds: string[];
+  textAlertSourcesAvailable?: boolean;
 };
 
 type Stage1PublicationInput = {
@@ -486,14 +491,10 @@ export async function loadStage1PublicationIndex(): Promise<Stage1PublicationInd
     now: evaluatedAt,
   });
   if (!index.available) return index;
-  try {
-    const variations = await loadPublishedVariationBatch();
-    if (variations) return applyProgramVariationPublication(index, variations);
-  } catch { return buildUnavailableIndex("Approved variation release could not be checked."); }
-  const factsResult = await admin.rpc("get_program_text_fact_publication");
-  if (factsResult.error) return buildUnavailableIndex("Approved program-fact release could not be checked.");
-  try { return applyProgramFactPublication(index, factsResult.data); }
-  catch { return buildUnavailableIndex("Approved program-fact release failed its whole-batch identity check."); }
+  // The retired complete-facts/route approvals remain private history. Normal
+  // public reads use accepted identity + individually source-verified basics.
+  const basics = await loadProgramBasicFacts(admin, index);
+  return loadProgramTextAlertSourceBindings(admin, basics, textMonitoring.epoch);
 }
 
 export async function getStage1PublicationEntryForAward(

@@ -173,9 +173,9 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
       official_homepage: publication.registry.official_homepage,
       summary: null,
       public_facts: publication.publishedFacts,
-      public_facts_generated_at: publication.textFactReview?.reviewedAt || publication.registry.last_verified_at,
-      completeSnapshot: Boolean(publication.textFactReview),
-      hasApplicationRoutes: (publication.textFactReview?.variationCount || 0) > 0,
+      public_facts_generated_at: publication.basicFactSnapshot?.verifiedAt || (publication.basicFactsUnavailable ? null : publication.textFactReview?.reviewedAt || publication.registry.last_verified_at),
+      completeSnapshot: Boolean(publication.basicFactSnapshot || publication.basicFactsUnavailable || publication.textFactReview),
+      hasApplicationRoutes: !publication.basicFactSnapshot && !publication.basicFactsUnavailable && (publication.textFactReview?.variationCount || 0) > 0,
     }),
   );
   const [eligibleEvents, firstPublishedCaptureDates] = await Promise.all([

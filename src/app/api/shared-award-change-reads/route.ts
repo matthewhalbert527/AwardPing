@@ -7,6 +7,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
 import { markSharedChangesRead } from "@/lib/update-read-state";
 import { isSameOriginMutationRequest } from "@/lib/same-origin-mutation";
+import { loadProgramTextAlertApprovals } from "@/lib/program-text-alert-sources.server";
 
 export const runtime = "nodejs";
 
@@ -71,6 +72,12 @@ export async function POST(request: Request) {
   }
 
   const sourceById = new Map((sources || []).map((source) => [source.id, source]));
+  const textAlertApprovals = await loadProgramTextAlertApprovals(admin, events.filter(event => {
+    const publication = publicationIndex.entryByMemberAwardId.get(event.shared_award_id);
+    const source = event.shared_award_source_id ? sourceById.get(event.shared_award_source_id) : null;
+    return Boolean(source && publication?.approvedTextAlertSourceBindings?.[source.id] &&
+      (!publication.allowedSourceIdSet.has(source.id) || source.admin_review_status !== "open" && !publication.textFactReview?.variationInventoryId));
+  }).map(event => event.id));
   const publicEvents = events.filter((event) => {
     const publication = publicationIndex.entryByMemberAwardId.get(
       event.shared_award_id,
@@ -89,6 +96,7 @@ export async function POST(request: Request) {
       source,
       publication,
       evidence: evidenceByEventId.get(event.id) || null,
+      textAlertApproval: textAlertApprovals.get(event.id),
     });
   });
 

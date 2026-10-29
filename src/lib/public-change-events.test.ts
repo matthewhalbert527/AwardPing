@@ -84,6 +84,30 @@ describe("loadEligiblePublicChangeEvents", () => {
     expect(admin.changeInFilters.some(filter => filter.column === "shared_award_source_id")).toBe(false);
     expect(mocks.isPublicChangeEvent).toHaveBeenCalledTimes(1);
   });
+  it("loads independently bound alert sources without widening the public facts/source-card whitelist", async () => {
+    const index = publicationIndex(), entry = index.entryByMemberAwardId.get(memberAwardId)!;
+    entry.approvedTextAlertSourceBindings = { [invalidSourceId]: { shared_award_id: memberAwardId, url: "https://example.edu/new-alert-source", epoch: canonicalAwardId } };
+    const event = eventRow("2026-07-16T17:00:00.000Z", 3, invalidSourceId), source = { ...sourceRow(), id: invalidSourceId, url: "https://example.edu/new-alert-source" };
+    const admin = fakeAdmin([[event]], [source], { approvals: [{ id: event.visual_review_candidate_id, event_id: event.id, content_hash: "a".repeat(64), status: "approved" }] });
+    const result = await loadEligiblePublicChangeEvents({ admin: admin.client, publicationIndex: index, limit: 1, pageSize: 2 });
+    expect(result.map(item => item.event.id)).toEqual([event.id]);
+    expect(admin.changeInFilters).toContainEqual({ column: "shared_award_source_id", values: [allowedSourceId, invalidSourceId] });
+    expect(entry.allowedSourceIdSet.has(invalidSourceId)).toBe(false); expect(entry.textFactReview).toBeUndefined();
+    expect(mocks.isPublicChangeEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.isPublicChangeEvent).toHaveBeenCalledWith(expect.objectContaining({ textAlertApproval: { eventId: event.id, candidateId: event.visual_review_candidate_id, contentHash: "a".repeat(64) } }));
+  });
+  it("keeps a large independent monitoring roster out of GET URLs while rejecting unbound events", async () => {
+    const index = publicationIndex(), entry = index.entryByMemberAwardId.get(memberAwardId)!;
+    entry.approvedTextAlertSourceBindings = Object.fromEntries(Array.from({ length: 121 }, (_, n) =>
+      [`40000000-0000-4000-8000-${String(n).padStart(12, "0")}`, { shared_award_id: memberAwardId, url: "https://example.edu/monitored", epoch: canonicalAwardId }]));
+    const monitoredId = Object.keys(entry.approvedTextAlertSourceBindings)[0];
+    const wrong = eventRow("2026-07-16T18:00:00.000Z", 4, invalidSourceId), valid = eventRow("2026-07-16T17:00:00.000Z", 3, monitoredId);
+    const admin = fakeAdmin([[wrong, valid]], [{ ...sourceRow(), id: monitoredId }], { approvals: [{ id: valid.visual_review_candidate_id, event_id: valid.id, content_hash: "a".repeat(64), status: "approved" }] });
+    const result = await loadEligiblePublicChangeEvents({ admin: admin.client, publicationIndex: index, limit: 1, pageSize: 2 });
+    expect(result.map(item => item.event.id)).toEqual([valid.id]);
+    expect(admin.changeInFilters.some(filter => filter.column === "shared_award_source_id")).toBe(false);
+    expect(mocks.isPublicChangeEvent).toHaveBeenCalledTimes(1); expect(entry.textFactReview).toBeUndefined();
+  });
 
   it("fails closed when the scan cap is crossed before enough eligible rows exist", async () => {
     const firstPage = [
@@ -476,7 +500,7 @@ function sourceRow() {
 function fakeAdmin(
   changePages: PublicChangeEventRow[][],
   sourceRows: unknown[],
-  options: { releaseEpoch?: string } = {},
+  options: { releaseEpoch?: string; approvals?: unknown[] } = {},
 ) {
   let changePageCalls = 0;
   const cursorFilters: string[] = [];
@@ -501,6 +525,9 @@ function fakeAdmin(
       }
       if (table === "shared_award_sources") {
         return fluentBuilder(() => ({ data: sourceRows, error: null }));
+      }
+      if (table === "program_text_alert_reviews") {
+        return fluentBuilder(() => ({ data: options.approvals || [], error: null }));
       }
       if (table === "stage1_publication_release_state") {
         return fluentBuilder(() => ({

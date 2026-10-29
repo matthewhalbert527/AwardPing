@@ -682,8 +682,8 @@ function OverviewPanel({
       <div className="public-award-section-heading">
         <h2 id={headingId}>Overview</h2>
         {overview && <p className="public-award-section-description">{overview}</p>}
-        {data.factsReviewedAt && <p className="public-award-review-date">Details reviewed {formatDate(data.factsReviewedAt)}. Recorded changes are shown separately below.</p>}
-        {data.factsNeedReview && <p role="status" className="public-award-date-notice">The last approved details are shown. An official-source change or collection issue needs review; check the official source before applying.</p>}
+        {data.factsReviewedAt && <p className="public-award-review-date">Details checked {formatDate(data.factsReviewedAt)}. Recorded changes are shown separately below.</p>}
+        {data.factsNeedReview && <p role="status" className="public-award-date-notice">Some award details are being checked. Use the official website for the latest requirements.</p>}
       </div>
       <dl className="public-award-deadlines">
         <div>

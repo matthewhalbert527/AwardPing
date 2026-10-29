@@ -216,9 +216,9 @@ async function loadPublicAwardPageData(
   options: PublicAwardPageOptions = {},
 ): Promise<PublicAwardPageData | null> {
   const admin = createSupabaseAdminClient();
-  const variations = publication.textFactReview?.variationInventoryId
+  const variations = !publication.basicFactSnapshot && !publication.basicFactsUnavailable && publication.textFactReview?.variationInventoryId
     ? await loadPublishedVariationContext(publication.registry.cohort_key, { scopeKey: options.variantId || undefined }) : null;
-  if (publication.textFactReview?.variationInventoryId && (!variations ||
+  if (!publication.basicFactSnapshot && !publication.basicFactsUnavailable && publication.textFactReview?.variationInventoryId && (!variations ||
       variations.inventory_id !== publication.textFactReview.variationInventoryId || variations.revision !== publication.textFactReview.variationInventoryRevision ||
       variations.source_ids.some(id => !publication.allowedSourceIdSet.has(id) ||
         variations.source_bindings[id]?.url !== publication.approvedTextSourceBindings?.[id]?.url ||
@@ -304,7 +304,7 @@ async function loadPublicAwardPageData(
     summary: award.summary,
     publicFacts: variations?.public_facts || award.public_facts,
     sources: officialSources,
-    completeSnapshot: Boolean(publication.textFactReview),
+    completeSnapshot: Boolean(publication.basicFactSnapshot || publication.basicFactsUnavailable || publication.textFactReview),
   });
   const canonicalPath = canonicalAwardPath(award.slug, award.name, award.id);
   const publicSources = withUniqueAwardSourceSlugs(officialSources).map((source) => ({
@@ -312,11 +312,12 @@ async function loadPublicAwardPageData(
     sourceSlug: source.sourceSlug,
     publicPath: canonicalPath,
     title: readableSourceTitle(source.display_title || source.title, source.url),
-    description: compactSourceDescription(source.page_description),
+    description: publication.basicFactSnapshot || publication.basicFactsUnavailable ? null : compactSourceDescription(source.page_description),
     url: source.url,
     pageType: source.page_type,
     lastCheckedAt: source.last_checked_at,
-    facts: publicAwardFactsFromAward(variations ? { publicFacts: {}, completeSnapshot: true } : { sources: [source] }),
+    facts: publicAwardFactsFromAward(variations || publication.basicFactSnapshot || publication.basicFactsUnavailable
+      ? { publicFacts: {}, completeSnapshot: true } : { sources: [source] }),
   }));
   const limitedChanges = officialChanges;
   const unreadChangeIds = options.userId
@@ -336,8 +337,8 @@ async function loadPublicAwardPageData(
     facts,
     metaDescription: publicAwardMetaDescription(award.name, facts),
     officialHomepage: publication.registry.official_homepage,
-    factsReviewedAt: variations?.reviewed_at || publication.textFactReview?.reviewedAt || publication.registry.last_verified_at,
-    factsNeedReview: variations ? !variations.current : publication.textFactReview ? !publication.textFactReview.current : undefined,
+    factsReviewedAt: publication.basicFactSnapshot?.verifiedAt || (publication.basicFactsUnavailable ? undefined : variations?.reviewed_at || publication.textFactReview?.reviewedAt || publication.registry.last_verified_at),
+    factsNeedReview: publication.basicFactsUnavailable ? true : publication.basicFactSnapshot ? !publication.basicFactSnapshot.current : variations ? !variations.current : publication.textFactReview ? !publication.textFactReview.current : undefined,
     ...(variations ? { variations: { ...variations, cohort_key: publication.registry.cohort_key } } : {}),
     presentationAsOf: new Date().toISOString(),
     lastCheckedAt: latestCheckedAt(officialSources),
@@ -419,7 +420,7 @@ function canonicalAwardFromPublication(
     official_homepage: publication.registry.official_homepage,
     summary: null,
     public_facts: publication.publishedFacts,
-    public_facts_generated_at: publication.textFactReview?.reviewedAt || publication.registry.last_verified_at,
+    public_facts_generated_at: publication.basicFactSnapshot?.verifiedAt || (publication.basicFactsUnavailable ? null : publication.textFactReview?.reviewedAt || publication.registry.last_verified_at),
     updated_at:
       publication.registry.last_verified_at || publication.registry.updated_at,
   };

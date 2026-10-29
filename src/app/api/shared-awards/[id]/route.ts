@@ -49,7 +49,7 @@ export async function GET(_request: Request, { params }: Props) {
     return NextResponse.json({ error: "Shared award was not found." }, { status: 404 });
   }
   let variations: PublishedVariationContext | null = null;
-  if (publication.textFactReview?.variationInventoryId) {
+  if (!publication.basicFactSnapshot && !publication.basicFactsUnavailable && publication.textFactReview?.variationInventoryId) {
     try {
       variations = await loadPublishedVariationContext(publication.registry.cohort_key);
       if (!variations || variations.inventory_id !== publication.textFactReview.variationInventoryId ||
@@ -145,7 +145,7 @@ export async function GET(_request: Request, { params }: Props) {
     return NextResponse.json({ error: "Shared award was not found." }, { status: 404 });
   }
   const changes = eligibleEvents.map((entry) => entry.event);
-  const facts = publicAwardFactsFromAward({ publicFacts: variations?.public_facts || publication.publishedFacts, completeSnapshot: Boolean(publication.textFactReview) });
+  const facts = publicAwardFactsFromAward({ publicFacts: variations?.public_facts || publication.publishedFacts, completeSnapshot: Boolean(publication.basicFactSnapshot || publication.basicFactsUnavailable || publication.textFactReview) });
   return NextResponse.json({
     award: {
       id: publication.canonicalAwardId,
@@ -156,7 +156,7 @@ export async function GET(_request: Request, { params }: Props) {
       changeCount: changes.length,
       tracked: Boolean(officeAwards?.length),
       detailsLoaded: true,
-      hasApplicationRoutes: Boolean(publication.textFactReview?.variationCount),
+      hasApplicationRoutes: !publication.basicFactSnapshot && !publication.basicFactsUnavailable && Boolean(publication.textFactReview?.variationCount),
       sources: sources.map((source) => ({
         id: source.id,
         url: source.url,

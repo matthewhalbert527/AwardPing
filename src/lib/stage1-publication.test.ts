@@ -7,6 +7,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 
 import {
   buildStage1PublicationIndex,
+  loadStage1PublicationIndex,
   isStage1SourceIdentityExcluded,
   isEffectivelyVerifiedRegistryRow,
   stage1AwardCount,
@@ -21,11 +22,37 @@ import {
   stage1CohortIdentityHash,
   stage1CohortIdentityVersion,
 } from "@/lib/stage1-cohort-identity";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import textMonitoring from "../../config/program-text-monitoring.json";
 
 const now = new Date("2026-07-16T20:00:00.000Z");
 const releaseEpoch = "11111111-1111-4111-8111-111111111111";
 
 describe("Stage 1 publication gate", () => {
+  it("loads identity, basic snapshots and alert authority without retired full-fact or manual-route RPCs", async () => {
+    const fixture = activatedCohortFixture();
+    const snapshot = { schema_version: 3, cohort_identity_version: stage1CohortIdentityVersion, cohort_identity_hash: stage1CohortIdentityHash,
+      evaluated_at: now.toISOString(), release: { release_key: "stage1-national-25", release_state: "verified_beta", release_epoch: releaseEpoch,
+        policy_version: stage1PublicationPolicyVersion, cohort_identity_version: stage1CohortIdentityVersion, cohort_identity_hash: stage1CohortIdentityHash,
+        activated_at: fixture.release.activatedAt, effectively_released: true, effective_reason: "verified", ready_cohort_count: 25 },
+      cohorts: fixture.registryRows.map((registry, n) => { const sourceId = `70000000-0000-4000-8000-${String(n + 1).padStart(12, "0")}`;
+        return { registry: { ...registry, fact_ledger_batch_id: registry.fact_ledger_batch_id ?? null }, effectively_verified: true, effective_reason: "verified", cohort_ready: true,
+          cohort_readiness_reason: "verified", evaluated_at: now.toISOString(), members: fixture.memberRows.filter(row => row.cohort_key === registry.cohort_key),
+          identity_rules: [], allowed_source_ids: [sourceId], reviewed_homepage: { source_id: sourceId, url: registry.official_homepage },
+          published_facts: { overview: `Accepted ${registry.canonical_name} overview.` } };
+      }) };
+    const rpc = vi.fn(async (name: string) => {
+      if (name === "get_stage1_publication_snapshot") return { data: snapshot, error: null };
+      if (name === "get_program_basic_facts") return { data: [], error: null };
+      if (name === "get_program_text_public_alert_source_bindings") return { data: { schema: "awardping.program-text-public-alert-sources.v1", epoch: textMonitoring.epoch, source_count: 0, bindings: [] }, error: null };
+      throw Error("Retired complete-fact and application-route workflows must not run here.");
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({ rpc } as unknown as ReturnType<typeof createSupabaseAdminClient>);
+    const index = await loadStage1PublicationIndex();
+    expect(index.available).toBe(true); expect(index.verifiedEntries).toHaveLength(25);
+    expect(rpc.mock.calls.map(([name]) => name)).toEqual(["get_stage1_publication_snapshot", "get_program_basic_facts", "get_program_text_public_alert_source_bindings"]);
+    expect(index.entries[0].publishedFacts).toEqual(snapshot.cohorts[0].published_facts);
+  });
   it("publishes all 25 only under one fresh authoritative release epoch", () => {
     const fixture = activatedCohortFixture();
     fixture.memberRows.push(memberRow(1, "alias-1", "alias"));

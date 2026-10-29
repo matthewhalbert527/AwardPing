@@ -1,4 +1,5 @@
 import "server-only";
+import { loadProgramTextAlertApprovals, programTextAlertSourceIds } from "@/lib/program-text-alert-sources.server";
 
 import { dedupeChangeSummaries } from "@/lib/change-summary";
 import type { Database } from "@/lib/database.types";
@@ -132,7 +133,7 @@ export async function loadEligiblePublicChangeEvents({
     ),
   ];
   const selectedAllowedSourceIds = [
-    ...new Set(selectedPublications.flatMap((entry) => entry.allowedSourceIds)),
+    ...new Set(selectedPublications.flatMap((entry) => [...entry.allowedSourceIds, ...programTextAlertSourceIds(entry)])),
   ];
   if (!selectedAllowedSourceIds.length) return [];
 
@@ -155,7 +156,7 @@ export async function loadEligiblePublicChangeEvents({
       .limit(requestedPageSize);
     // Large provider inventories are filtered by the same exact allowlist
     // below. Keeping thousands of UUIDs in a GET URL can truncate the request.
-    if (selectedAllowedSourceIds.length <= 100 || !selectedPublications.some(entry => entry.textFactReview?.variationInventoryId)) {
+    if (selectedAllowedSourceIds.length <= 100) {
       query = query.in("shared_award_source_id", selectedAllowedSourceIds);
     }
     if (selectedEventIds) query = query.in("id", selectedEventIds);
@@ -183,7 +184,8 @@ export async function loadEligiblePublicChangeEvents({
         return Boolean(
           publication?.effectivelyVerified &&
           event.shared_award_source_id &&
-          publication.allowedSourceIdSet.has(event.shared_award_source_id),
+          (publication.allowedSourceIdSet.has(event.shared_award_source_id) ||
+            Boolean(publication.approvedTextAlertSourceBindings?.[event.shared_award_source_id])),
         );
       });
       const missingSourceIds = [
@@ -205,6 +207,12 @@ export async function loadEligiblePublicChangeEvents({
         admin,
         evidenceCandidates.map((event) => event.id),
       );
+      const textAlertApprovals = await loadProgramTextAlertApprovals(admin, evidenceCandidates.filter(event => {
+        const publication = publicationIndex.entryByMemberAwardId.get(event.shared_award_id);
+        const source = event.shared_award_source_id ? sourceById.get(event.shared_award_source_id) : null;
+        return Boolean(source && publication?.approvedTextAlertSourceBindings?.[source.id] &&
+          (!publication.allowedSourceIdSet.has(source.id) || source.admin_review_status !== "open" && !publication.textFactReview?.variationInventoryId));
+      }).map(event => event.id));
 
       for (const event of evidenceCandidates) {
         const publication = publicationIndex.entryByMemberAwardId.get(
@@ -228,6 +236,7 @@ export async function loadEligiblePublicChangeEvents({
             source,
             publication,
             evidence,
+            textAlertApproval: textAlertApprovals.get(event.id),
           })
         ) {
           continue;

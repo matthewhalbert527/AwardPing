@@ -62,6 +62,44 @@ function syntheticSmartPublisherEvent() {
   return f;
 }
 
+describe("independently approved text alert sources", () => {
+  function alertFixture() {
+    const f = fixture(); f.source.admin_review_status = "review_later";
+    f.publication.allowedSourceIds = []; f.publication.allowedSourceIdSet = new Set();
+    f.publication.approvedTextAlertSourceBindings = { [sourceId]: { url: f.source.url, shared_award_id: awardId,
+      epoch: String(record(f.evidence.localization).epoch) } };
+    return { ...f, textAlertApproval: { eventId: f.event.id, candidateId: f.event.visual_review_candidate_id, contentHash: "a".repeat(64) } };
+  }
+  it("allows an owner-approved text change without a manual variation inventory or legacy source whitelist", () => {
+    const f = alertFixture(); expect(f.publication.textFactReview).toBeUndefined(); expect(isPublicChangeEvent(f)).toBe(true);
+    expect(f.publication.publishedFacts).toEqual({}); expect(f.publication.allowedSourceIdSet.size).toBe(0);
+  });
+  it.each([
+    (f: ReturnType<typeof alertFixture>) => { f.publication.approvedTextAlertSourceBindings = {}; },
+    (f: ReturnType<typeof alertFixture>) => { f.textAlertApproval.eventId = sourceId; },
+    (f: ReturnType<typeof alertFixture>) => { f.textAlertApproval.candidateId = sourceId; },
+    (f: ReturnType<typeof alertFixture>) => { f.textAlertApproval.contentHash = "invalid"; },
+    (f: ReturnType<typeof alertFixture>) => { f.publication.approvedTextAlertSourceBindings![sourceId].url += "/stale"; },
+    (f: ReturnType<typeof alertFixture>) => { f.publication.approvedTextAlertSourceBindings![sourceId].shared_award_id = sourceId; },
+    (f: ReturnType<typeof alertFixture>) => { f.publication.approvedTextAlertSourceBindings![sourceId].epoch = sourceId; },
+    (f: ReturnType<typeof alertFixture>) => { f.source.admin_review_status = "closed"; },
+    (f: ReturnType<typeof alertFixture>) => { f.evidence.evidence_status = "unavailable_exact_text_missing"; },
+    (f: ReturnType<typeof alertFixture>) => { f.evidence.change_event_id = sourceId; },
+    (f: ReturnType<typeof alertFixture>) => { f.publication.effectivelyVerified = false; },
+    (f: ReturnType<typeof alertFixture>) => { Object.assign(f.event, { suppressed_at: "2026-10-11T13:00:00Z" }); },
+    (f: ReturnType<typeof alertFixture>) => { f.publication.sourceIdentityRules = [{ url_pattern: "example\\.edu", title_pattern: null }] as typeof f.publication.sourceIdentityRules; },
+  ])("retains current epoch, ownership, proof, suppression and identity checks %#", mutate => {
+    const f = alertFixture(); mutate(f); expect(isPublicChangeEvent(f)).toBe(false);
+  });
+  it("does not let an extra text source publish through visual or absent evidence", () => {
+    const f = alertFixture(); f.evidence.evidence_schema_version = "visual-event-evidence-v2";
+    expect(isPublicChangeEvent(f)).toBe(false);
+  });
+  it("does not expose an old automatic text event through new source authority alone", () => {
+    const f = alertFixture(); expect(isPublicChangeEvent({ ...f, textAlertApproval: undefined })).toBe(false);
+  });
+});
+
 describe("publisher JSON public text boundary", () => {
   it("allows bound programme prose from the finite reviewed publisher profile", () => {
     const f = syntheticSmartPublisherEvent();

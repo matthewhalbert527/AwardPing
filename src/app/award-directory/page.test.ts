@@ -50,6 +50,7 @@ vi.mock("@/components/site-header", () => ({
 }));
 
 import AwardDirectoryPage from "@/app/award-directory/page";
+import { emptyBasicAwardFacts } from "@/lib/program-basic-facts.server";
 
 const AWARD_ID = "10000000-0000-4000-8000-000000000001";
 const ALIAS_ID = "10000000-0000-4000-8000-000000000002";
@@ -184,6 +185,25 @@ describe("award directory page", () => {
     mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex());
     mocks.loadEligiblePublicChangeEvents.mockResolvedValue([]);
     mocks.loadFirstPublishedCaptureDates.mockResolvedValue(new Map([[AWARD_ID, FIRST_CAPTURE]]));
+  });
+  it("renders new basic details while keeping first coverage separate from the snapshot verification date", async () => {
+    const index = publicationIndex(), entry = index.verifiedEntries[0];
+    entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027", overview: "Current official basic details.", deadline: "January 31, 2027" };
+    entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-28T12:00:00.000Z" };
+    mocks.loadStage1PublicationIndex.mockResolvedValue(index);
+    const html = await renderDirectory();
+    expect(html).toContain("January 31, 2027"); expect(html).not.toContain("January 31, 2026");
+    expect(lastUpdate(html)).toEqual({ value: "August 20, 2026", dateTime: FIRST_CAPTURE });
+    expect(html).not.toContain("October 28, 2026"); expect(html).not.toContain("Application routes");
+  });
+  it.each(["stale", "unavailable"])("keeps a %s basic snapshot card visible without reviving old fields or inventing updates", async kind => {
+    const index = publicationIndex(), entry = index.verifiedEntries[0]; entry.publishedFacts = emptyBasicAwardFacts();
+    if (kind === "stale") entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: false, verifiedAt: "2026-10-28T12:00:00.000Z" };
+    else entry.basicFactsUnavailable = true;
+    mocks.loadStage1PublicationIndex.mockResolvedValue(index);
+    const html = await renderDirectory();
+    expect(html).toContain("Example Fellowship"); expect(html).not.toContain("January 31, 2026"); expect(html).not.toContain("January 31, 2027");
+    expect(lastUpdate(html).dateTime).toBe(FIRST_CAPTURE);
   });
 
   it("shows the first published capture as Last update when there are no public events", async () => {

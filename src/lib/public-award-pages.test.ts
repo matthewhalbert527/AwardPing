@@ -58,6 +58,7 @@ import {
 } from "@/lib/public-award-pages";
 import type { EligiblePublicChangeEvent } from "@/lib/public-change-events";
 import type { Stage1PublicationEntry, Stage1PublicationIndex } from "@/lib/stage1-publication";
+import { emptyBasicAwardFacts } from "@/lib/program-basic-facts.server";
 
 const AWARD_ID = "10000000-0000-4000-8000-000000000001";
 const SOURCE_HOME = "30000000-0000-4000-8000-000000000001";
@@ -212,6 +213,47 @@ describe("public award page deep links", () => {
     expect(data?.presentationAsOf).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(Number.isFinite(Date.parse(data?.presentationAsOf || ""))).toBe(true);
     expect(data).not.toHaveProperty("factsGeneratedAt");
+  });
+  it("renders source-backed basic details without complete-program approval or application routes", async () => {
+    const entry = publication(); entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027", overview: "Current source-backed award information.",
+      deadline: "January 31, 2027", tenure: ["Two years"], application_urls: ["https://example.edu/apply"] };
+    entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-28T12:00:00.000Z" };
+    mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex(entry));
+    const data = await getPublicAwardPageBySlug("example-fellowship");
+    expect(data?.facts.deadline).toBe("January 31, 2027"); expect(data?.facts.tenure).toEqual(["Two years"]);
+    expect(data?.facts.applicationUrls).toEqual(["https://example.edu/apply"]); expect(data?.factsReviewedAt).toBe(entry.basicFactSnapshot.verifiedAt);
+    expect(data?.factsNeedReview).toBe(false); expect(data?.variations).toBeUndefined(); expect(entry.textFactReview).toBeUndefined();
+    const markup = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data: data! }));
+    expect(markup).toContain("January 31, 2027"); expect(markup).toContain("Details checked");
+    expect(markup).not.toContain("application route"); expect(markup).not.toContain("The last approved details are shown");
+  });
+  it.each(["stale", "unavailable"])("keeps the award and real changes visible while %s basic fields stay blank", async kind => {
+    const entry = publication(); entry.publishedFacts = emptyBasicAwardFacts();
+    if (kind === "stale") entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: false, verifiedAt: "2026-10-28T12:00:00.000Z" };
+    else entry.basicFactsUnavailable = true;
+    mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex(entry));
+    const data = await getPublicAwardPageBySlug("example-fellowship");
+    expect(data?.facts.deadline).toBeNull(); expect(data?.facts.overview).toBeNull(); expect(data?.factsNeedReview).toBe(true);
+    expect(data?.changes.length).toBeGreaterThan(0); expect(data?.officialHomepage).toBe("https://example.edu/fellowship");
+    const markup = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data: data! }));
+    expect(markup).toContain("Some award details are being checked."); expect(markup).not.toContain("The last approved details are shown");
+  });
+  it.each(["current", "stale", "unavailable"])("does not revive old source-card facts or descriptions under %s basic information", async kind => {
+    const entry = publication(); entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027",
+      ...(kind === "current" ? { overview: "Current 2027 basic information.", deadline: "January 31, 2027" } : {}) };
+    if (kind === "unavailable") entry.basicFactsUnavailable = true;
+    else entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: kind === "current", verifiedAt: "2026-10-28T12:00:00.000Z" };
+    mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex(entry));
+    const source = mocks.sourceRows[1] as Record<string, unknown>;
+    source.page_description = "Applications close January 31, 2026. The old award amount was $999,999.";
+    source.page_metadata = { baseline_facts: { overview: "Old 2026 application guidance.", deadline: "January 31, 2026", award_amounts: ["$999,999"], eligibility: ["Old unsupported criteria."] } };
+    const data = await getPublicAwardPageBySlug("example-fellowship"), card = data?.sources.find(row => row.id === SOURCE_APPLY);
+    expect(card?.url).toBe("https://example.edu/fellowship/apply"); expect(card?.title).toBe("Application Instructions");
+    expect(card?.description).toBeNull(); expect(card?.facts.deadline).toBeNull(); expect(card?.facts.awardAmount).toBeNull(); expect(card?.facts.eligibility).toEqual([]);
+    expect(data?.facts.deadline).toBe(kind === "current" ? "January 31, 2027" : null);
+    const markup = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data: data!, initialSourceId: SOURCE_APPLY }));
+    expect(markup).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
+    expect(markup).not.toContain("January 31, 2026"); expect(markup).not.toContain("$999,999"); expect(markup).not.toContain("Old unsupported criteria");
   });
 
   it("keeps an unverified award out of public data loading", async () => {
