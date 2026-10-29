@@ -4,6 +4,7 @@ import { validateProgramTextCapture, programTextPublisherJsonSourceProfile, isPr
 import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetadata,
   isProgramTextPublicDrivePdfContentType } from "./program-text-public-drive-pdf.mjs";
 import { publisherJsonOriginalLimit } from "./program-text-publisher-json.mjs";
+import { isReviewedVisiblePdfExtractor, reviewedVisiblePdfReferenceMatches } from "./program-text-reviewed-pdf.mjs";
 
 export const PROGRAM_TEXT_REFERENCE_SCHEMA = "awardping.program-text-reference.v1";
 const sha = value => createHash("sha256").update(value).digest("hex");
@@ -84,6 +85,7 @@ export function validateProgramTextReference(ref) {
         a.byte_length < 1 || a.byte_length > limit || !typeValid) fail("invalid_artifact_binding");
   }
   if (ref.artifacts.text.sha256 !== ref.text_sha256) fail("text_hash_mismatch");
+  if (isReviewedVisiblePdfExtractor(ref.extractor) && !reviewedVisiblePdfReferenceMatches(ref)) fail("invalid_reviewed_pdf_reference");
   return ref;
 }
 

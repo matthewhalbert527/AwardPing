@@ -30,6 +30,9 @@
       "scripts/lib/program-text-capture-contract.mjs",
       "scripts/lib/program-text-capture.mjs",
       "scripts/lib/program-text-artifacts.mjs",
+      "scripts/lib/program-text-reviewed-pdf.mjs",
+      "scripts/lib/program-text-reviewed-pdf-transition.mjs",
+      "scripts/lib/fixtures/khs-2027-reviewed-visible-pdf.mjs",
       "scripts/lib/program-text-publisher-json.mjs",
       "scripts/lib/program-text-smart-publisher-json.mjs",
       "scripts/lib/program-text-smart-kb-publisher-json.mjs",
@@ -48,7 +51,7 @@
       "src/lib/source-ai-review-status.ts",
       "src/lib/source-url-policy.ts"
     ],
-    "hash": "48252c3a20399e1b32dd4209e962472c2ca1d2ddc860f723cac056b4f2b9194e"
+    "hash": "0cc649bd851c0f50e0305ef56acb74094712008eeb9e4adc2301e7c4df9bac42"
   },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",

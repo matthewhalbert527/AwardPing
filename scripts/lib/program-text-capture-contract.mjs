@@ -5,6 +5,7 @@ import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, isProgramTextPublicDrivePdfMetad
 import { projectSmartPublisherJson, PROJECTOR_VERSION, SMART_PUBLISHER_JSON_SOURCE_PROFILES } from "./program-text-smart-publisher-json.mjs";
 import { SMART_KB_PUBLISHER_SOURCE_PROFILES, SMART_GUIDE_KB_SOURCE_PROFILES, SMART_KB_PROJECTOR_VERSION } from "./program-text-smart-kb-publisher-json.mjs";
 import { restorePublisherJsonObservation, publisherJsonOriginalLimit } from "./program-text-publisher-json.mjs";
+import { isReviewedVisiblePdfExtractor, isReviewedVisiblePdfSourceId, validateReviewedVisiblePdfCapture } from "./program-text-reviewed-pdf.mjs";
 
 // Pure retained-evidence contract. No browser, extraction engine, OCR bridge,
 // local file retention, process launch or source fetching is imported here.
@@ -70,6 +71,7 @@ function fingerprint(capture) {
   // Old capture identities remain byte-compatible. Only the new acquisition
   // binds its additional transport and deterministic projection provenance.
   if (capture.acquisition === "publisher_json") values.push(capture.publisher_json);
+  if (Object.hasOwn(capture, "reviewed_pdf")) values.push(capture.reviewed_pdf);
   return hash(JSON.stringify(canonical(values)));
 }
 function scalarText(value, max = 10_000) { return typeof value === "string" && value.length <= max; }
@@ -105,7 +107,7 @@ export function isKnownProgramTextFooterOnlyPdfReference(ref) {
 /** Validate a complete observation, not source approval or a factual conclusion. */
 export function validateProgramTextCapture(capture, { source } = {}) {
   const allowed = new Set(["schema", "capture_profile", "capture_id", "source", "final_url", "captured_at", "acquisition",
-    "extractor", "raw_source", "text", "text_sha256", "blocks", "completeness", "publisher_json"]);
+    "extractor", "raw_source", "text", "text_sha256", "blocks", "completeness", "publisher_json", "reviewed_pdf"]);
   if (!plain(capture) || Object.keys(capture).some(key => !allowed.has(key)) || capture.schema !== PROGRAM_TEXT_CAPTURE_SCHEMA ||
       capture.capture_profile !== PROGRAM_TEXT_CAPTURE_PROFILE || !modes.has(capture.acquisition)) fail("invalid_contract");
   const identity = sourceIdentity(capture.source);
@@ -119,6 +121,8 @@ export function validateProgramTextCapture(capture, { source } = {}) {
   if (isProgramTextSmartGuideSource(identity) && (!isPublisher || !programTextPublisherJsonSourceProfile(identity))) fail("invalid_publisher_json_provenance");
   if (!isPublisher && isProgramTextPublisherJsonExtractor(capture.extractor)) fail("invalid_publisher_json_provenance");
   if (!isPublisher && Object.hasOwn(capture, "publisher_json")) fail("unexpected_publisher_json_provenance");
+  const isReviewedPdf = isReviewedVisiblePdfExtractor(capture.extractor);
+  if (!isReviewedPdf && Object.hasOwn(capture, "reviewed_pdf")) fail("unexpected_reviewed_pdf_provenance");
   const publicDrive = capture.extractor.version === PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION;
   if (publicDrive && !isProgramTextPublicDrivePdfMetadata(capture)) fail("invalid_public_drive_pdf_provenance");
   if (!plain(raw) || Object.keys(raw).sort().join() !== "byte_length,bytes,content_type,sha256" || !Buffer.isBuffer(raw.bytes) ||
@@ -190,6 +194,12 @@ export function validateProgramTextCapture(capture, { source } = {}) {
   if (complete.status === "complete" && isKnownProgramTextFooterOnlyPdfReference({
     acquisition: capture.acquisition, text_length: capture.text.length, text_sha256: capture.text_sha256,
   })) fail("pdf_footer_only_text");
+  // The reviewed image-only source must never masquerade as a new native/OCR
+  // success, or inherit a review after the published PDF bytes change. Historical
+  // incomplete observations remain readable; the existing footer guard above
+  // retains its original meaning and failure code.
+  if (isReviewedVisiblePdfSourceId(identity) && complete.status === "complete" && !isReviewedPdf) fail("reviewed_pdf_provenance_required");
+  if (isReviewedPdf) validateReviewedVisiblePdfCapture(capture);
   if (capture.capture_id !== fingerprint(capture)) fail("capture_identity_mismatch");
   // Source-link attributes are useful evidence, but a URL cannot turn a page
   // containing only loading/skip controls into complete applicant information.
@@ -200,14 +210,15 @@ export function validateProgramTextCapture(capture, { source } = {}) {
 
 /** Adapter boundary: bytes and extraction are retained together; no screenshot slot. */
 export function buildProgramTextCapture({ source, final_url = source?.url, captured_at = new Date().toISOString(), acquisition,
-  extractor, raw_bytes, content_type, text, blocks, publisher_json, completeness = { status: "complete", reasons: [] } } = {}) {
+  extractor, raw_bytes, content_type, text, blocks, publisher_json, reviewed_pdf, completeness = { status: "complete", reasons: [] } } = {}) {
   if (!Buffer.isBuffer(raw_bytes)) fail("raw_bytes_required");
   const capture = { schema: PROGRAM_TEXT_CAPTURE_SCHEMA, capture_profile: PROGRAM_TEXT_CAPTURE_PROFILE,
     source: sourceIdentity(source), final_url, captured_at: new Date(captured_at).toISOString(), acquisition,
     extractor: structuredClone(extractor), raw_source: { bytes: Buffer.from(raw_bytes), content_type,
       sha256: hash(raw_bytes), byte_length: raw_bytes.length }, text, text_sha256: hash(typeof text === "string" ? text : ""),
     blocks: structuredClone(blocks), completeness: structuredClone(completeness),
-    ...(publisher_json === undefined ? {} : { publisher_json: structuredClone(publisher_json) }) };
+    ...(publisher_json === undefined ? {} : { publisher_json: structuredClone(publisher_json) }),
+    ...(reviewed_pdf === undefined ? {} : { reviewed_pdf: structuredClone(reviewed_pdf) }) };
   capture.capture_id = fingerprint(capture);
   return validateProgramTextCapture(capture, { source });
 }

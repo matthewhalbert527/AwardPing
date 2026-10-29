@@ -7,6 +7,7 @@ import { projectSmartPublisherJson } from "./program-text-smart-publisher-json.m
 import { extractProgramTextPdfOcr } from "./program-text-ocr.mjs";
 import { fetchProgramTextBrowserPdf } from "./program-text-browser.mjs";
 import { fetchProgramTextPublicDrivePdf } from "./program-text-public-drive-transport.mjs";
+import { isReviewedVisiblePdfSourceId, reviewedVisiblePdfProfile, projectReviewedVisiblePdf } from "./program-text-reviewed-pdf.mjs";
 import { PROGRAM_TEXT_PUBLIC_DRIVE_PDF_VERSION, programTextPublicDrivePdfIdentity,
   isProgramTextPublicDrivePdfTransition, isProgramTextPublicDrivePdfContentType,
   hasProgramTextPublicDrivePdfEnvelope } from "./program-text-public-drive-pdf.mjs";
@@ -59,6 +60,8 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
   pythonPath, executablePath, timeoutMs = programTextCaptureLimits.processTimeoutMs, allowedFinalUrls = [], pdf_transport = "http", publisher_json_profile,
   ocrOptions = {}, adapters = {} } = {}) {
   sourceIdentity(source);
+  const reviewedPdfProfile = reviewedVisiblePdfProfile(source);
+  if (isReviewedVisiblePdfSourceId(source) && (!reviewedPdfProfile || acquisition !== "pdf_text")) fail("invalid_reviewed_pdf_mode_or_identity");
   if (isProgramTextSmartGuideSource(source) && (acquisition !== "publisher_json" || !programTextPublisherJsonSourceProfile(source))) fail("invalid_publisher_json_mode");
   if (!isAcquisition(acquisition) || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120_000 ||
       !Array.isArray(allowedFinalUrls) || allowedFinalUrls.length > 20) fail("invalid_capture_options");
@@ -121,6 +124,18 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
   }
   if (publicDrive ? !isProgramTextPublicDrivePdfContentType(fetched.contentType) || !hasProgramTextPublicDrivePdfEnvelope(raw) :
       !/^application\/pdf(?:;|$)/i.test(fetched.contentType || "") || !raw.subarray(0, 1024).includes(Buffer.from("%PDF-"))) fail("invalid_pdf");
+  if (reviewedPdfProfile) {
+    // New bytes are still an observation worth retaining, but cannot inherit a
+    // prior visible-transcription review or be accepted through a footer-only
+    // fallback. The ordinary quality lane retains this original and its hold.
+    const reviewed = raw.length === reviewedPdfProfile.raw.byte_length && hash(raw) === reviewedPdfProfile.raw.sha256;
+    const projected = reviewed ? projectReviewedVisiblePdf(raw, { source, final_url: fetched.finalUrl }) :
+      { text: "", blocks: [], completeness: { status: "incomplete", reasons: ["reviewed_pdf_original_not_reviewed"] } };
+    const capture = buildProgramTextCapture({ source, final_url: fetched.finalUrl, captured_at, acquisition,
+      extractor: reviewed ? reviewedPdfProfile.extractor : { name: "unreviewed-pdf-original", version: "program-text-v1/exact-reviewed-pdf" },
+      raw_bytes: raw, content_type: fetched.contentType, ...projected });
+    remaining(); return capture;
+  }
   const result = acquisition === "pdf_ocr" ? await (adapters.ocrExtraction || extractProgramTextPdfOcr)(raw, { ...ocrOptions, timeoutMs: remaining(), pdf_sha256: hash(raw) })
     : await (adapters.pdfExtraction || extractPdf)(raw, remaining());
   if (acquisition === "pdf_ocr" && result?.pdf_sha256 !== hash(raw)) fail("ocr_original_binding_mismatch");

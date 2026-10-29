@@ -33,11 +33,15 @@ describe("engine-free retained text capture contract", () => {
     const code = readFileSync(new URL("./program-text-capture-contract.mjs", import.meta.url), "utf8");
     const imports = value => [...value.matchAll(/^import\s+[\s\S]*?\sfrom\s+["']([^"']+)["'];/gm)].map(match => match[1]);
     expect(imports(code)).toEqual(["node:crypto", "./public-network-safety.mjs", "./program-text-public-drive-pdf.mjs",
-      "./program-text-smart-publisher-json.mjs", "./program-text-smart-kb-publisher-json.mjs", "./program-text-publisher-json.mjs"]);
+      "./program-text-smart-publisher-json.mjs", "./program-text-smart-kb-publisher-json.mjs", "./program-text-publisher-json.mjs", "./program-text-reviewed-pdf.mjs"]);
     const projector = readFileSync(new URL("./program-text-smart-publisher-json.mjs", import.meta.url), "utf8");
     const observation = readFileSync(new URL("./program-text-publisher-json.mjs", import.meta.url), "utf8");
     const kb = readFileSync(new URL("./program-text-smart-kb-publisher-json.mjs", import.meta.url), "utf8");
     const model = readFileSync(new URL("./program-text-smart-kb-reviewed-model.mjs", import.meta.url), "utf8");
+    const reviewedPdf = readFileSync(new URL("./program-text-reviewed-pdf.mjs", import.meta.url), "utf8");
+    const reviewedPdfData = readFileSync(new URL("./fixtures/khs-2027-reviewed-visible-pdf.mjs", import.meta.url), "utf8");
+    expect(imports(reviewedPdf)).toEqual(["node:crypto", "./fixtures/khs-2027-reviewed-visible-pdf.mjs"]);
+    expect(imports(reviewedPdfData)).toEqual([]);
     expect(imports(projector)).toEqual(["./program-text-smart-kb-publisher-json.mjs", "node:crypto", "cheerio"]);
     expect(imports(kb)).toEqual(["node:crypto", "cheerio", "./program-text-smart-kb-reviewed-model.mjs",
       "./program-text-smart-guide-profiles.mjs", "./program-text-smart-guide-reviewed-model.mjs"]);
@@ -50,7 +54,7 @@ describe("engine-free retained text capture contract", () => {
     const guideData = ["./program-text-smart-guide-profiles.mjs", "./program-text-smart-guide-reviewed-model.mjs"]
       .map(path => readFileSync(new URL(path, import.meta.url), "utf8"));
     for (const pure of guideData) expect(imports(pure)).toEqual([]);
-    for (const pure of [projector, kb, model, observation, ...guideData]) expect(pure).not.toMatch(/\b(?:fetch|spawn|eval|fromURL|loadBuffer|decodeStream|stringStream|readFileSync|writeFileSync)\s*\(|node:(?:fs|child_process|http|https|net)/);
+    for (const pure of [projector, kb, model, observation, reviewedPdf, reviewedPdfData, ...guideData]) expect(pure).not.toMatch(/\b(?:fetch|spawn|eval|fromURL|loadBuffer|decodeStream|stringStream|readFileSync|writeFileSync)\s*\(|node:(?:fs|child_process|http|https|net)/);
     expect(code).not.toMatch(/\b(?:spawn|fileURLToPath|readFileSync|writeFileSync|captureScraplingSource|extractProgramTextPdfOcr|fetchProgramTextBrowserPdf)\s*\(/);
     expect(code).not.toMatch(/(?:import|require)\s*\([^)]*(?:ocr|capture\.mjs|playwright|scrapling|child_process|node:fs)/);
   });

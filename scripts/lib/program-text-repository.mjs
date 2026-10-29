@@ -4,6 +4,7 @@ import { programTextDeterministicNoChange, validatedProgramTextDeterministicProv
 import { attachProgramTextSourceApprovals, hasProgramTextSourceAccess } from "./program-text-source-access.mjs";
 import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
 import { validateProgramTextCollectionFailureRequest } from "./program-text-collection-quality.mjs";
+import { reviewedPdfInitialCoverageDocument, REVIEWED_PDF_INITIAL_POLICY, REVIEWED_PDF_INITIAL_REASON } from "./program-text-reviewed-pdf-transition.mjs";
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value !== null && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -76,6 +77,13 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
       return result(supabase.rpc("transition_known_smart_html_shell", { p_source_id: source_id, p_expected_state: expected_state,
         p_next_state: next_state, p_document: document, p_policy: "awardping.smart-publisher-initial-coverage.v1",
         p_reason: "First meaningful programme coverage replaces only this verified historical loading shell. Preserve the original state and require an independent repeat; no update or fact approval." }), "meaningful first coverage");
+    },
+    async transitionReviewedPdfFirstCoverage(request) {
+      const capture = await loadCapture(request.current_ref);
+      const document = reviewedPdfInitialCoverageDocument(capture, request);
+      return result(supabase.rpc("transition_reviewed_pdf_first_coverage", { p_source_id: request.source_id,
+        p_expected_state: request.expected_state, p_next_state: request.next_state, p_document: document,
+        p_policy: REVIEWED_PDF_INITIAL_POLICY, p_reason: REVIEWED_PDF_INITIAL_REASON }), "reviewed PDF first coverage");
     },
     async enqueueReview(work) {
       const signature = work.comparison.comparison_id;

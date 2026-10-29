@@ -237,6 +237,27 @@ function supportedSummary(summary, previous, current, row) {
   return numbers.every(number => available.has(number));
 }
 
+// A title such as "Information for Candidates - USA" is meaningful document
+// evidence only when the immediately preceding official paragraph identifies
+// that same guide as an available document. Neither generic word is a cue.
+export function qualifiedProgramDocumentReference(previous, current, row) {
+  for (const side of ["previous", "current"]) {
+    const block = row[side], quote = side === "previous" ? previous : current;
+    const title = typeof block?.text === "string" ? flow(block.text) : "";
+    const match = /^(Information for (?:Candidates|Applicants))(?:\s+[-–—]\s+[\p{L}\p{N}][\p{L}\p{N} .'’()&,-]{0,100})?$/iu.exec(title);
+    const path = block?.context?.heading_path;
+    if (!match || block.kind !== "li" || quote?.text !== block.text || !nonempty(block.heading, 4000) ||
+        !Array.isArray(path) || !path.length || !Number.isSafeInteger(block.start_utf16)) continue;
+    const framing = new RegExp(`\\bread\\s+(?:the\\s+)?${match[1]}\\s+carefully[.!]`, "iu");
+    const context = (row[side + "_context"] || []).find(item => item.kind === "p" && item.heading === block.heading &&
+      stableJson(item.context?.heading_path) === stableJson(path) && Number.isSafeInteger(item.end_utf16) &&
+      block.start_utf16 > item.end_utf16 && block.start_utf16 - item.end_utf16 <= 2 && framing.test(flow(item.text)) &&
+      /\bThese documents can all be accessed below[.!]/iu.test(flow(item.text)));
+    if (context) return { side, title, context_block_id: context.id };
+  }
+  return null;
+}
+
 function supportedField(field, previous, current, row) {
   const evidence = [previous?.text, current?.text, row.previous?.heading, row.current?.heading].filter(Boolean).join(" ");
   const sourceHref = ["previous", "current"].some(side => {
@@ -244,7 +265,8 @@ function supportedField(field, previous, current, row) {
     return block?.kind === "source_link" && block.context?.source_attribute === "href" && quote?.text === block.text &&
       /^(?:https?:\/\/|\/|\.\.?\/|\?)[^\s]+$/iu.test(block.text);
   });
-  return fieldCues[field].test(evidence) && (field !== "application_url" || /https?:\/\/[^\s]+/iu.test(evidence) || sourceHref);
+  return (fieldCues[field].test(evidence) || field === "documents" && qualifiedProgramDocumentReference(previous, current, row)) &&
+    (field !== "application_url" || /https?:\/\/[^\s]+/iu.test(evidence) || sourceHref);
 }
 
 /** All responses must resolve, with no missing, duplicate, or reordered row. */
@@ -258,7 +280,7 @@ export function validateProgramTextReviewResult(comparison, plan, responses) {
     }
     const expected = buildProgramTextReviewPackets(comparison, plan?.limits);
     if (expected.status !== "ready" || stableJson(expected) !== stableJson(plan) || !Array.isArray(responses) || responses.length !== plan.packets.length) failure("incomplete_or_modified_packet_plan");
-    const changes = [], seen = new Set();
+    const changes = [], seen = new Set(), descriptionProjections = [];
     for (let index = 0; index < plan.packets.length; index++) {
       const packet = plan.packets[index], response = responses[index];
       if (!exact(response, ["schema", "comparison_id", "packet_id", "award_id", "source_id", "epoch", "cycle_id", "blocks"]) ||
@@ -281,7 +303,18 @@ export function validateProgramTextReviewResult(comparison, plan, responses) {
               (change.operation === "remove" && (previous === null || current !== null || flow(comparison.current_text).includes(flow(previous.text)))) ||
               (change.operation === "replace" && (previous === null || current === null || flow(previous.text) === flow(current.text)))) failure("change_operation_not_supported");
           if (!supportedSummary(change.summary, previous, current, row)) failure("unsupported_summary_number");
-          const parsed = { field: change.field, operation: change.operation, summary: change.summary, previous_quote: previous, current_quote: current };
+          const documentReference = change.field === "documents" && qualifiedProgramDocumentReference(previous, current, row);
+          // A removed page reference does not prove that its document was deleted
+          // globally. Retain the raw model response, and record this derived copy.
+          const projectedSummary = documentReference && ["add", "remove"].includes(change.operation)
+            ? `The page ${change.operation === "remove" ? "no longer lists" : "now lists"} “${documentReference.title}”.`
+            : change.summary;
+          if (projectedSummary !== change.summary) descriptionProjections.push({
+            policy: "awardping.document-reference-description.v1", changed_block_id: row.id,
+            operation: change.operation, original_summary: change.summary, projected_summary: projectedSummary,
+            source_side: documentReference.side, context_block_id: documentReference.context_block_id,
+          });
+          const parsed = { field: change.field, operation: change.operation, summary: projectedSummary, previous_quote: previous, current_quote: current };
           const key = JSON.stringify([parsed.field, parsed.operation, previous, current]);
           if (seen.has(key)) failure("duplicate_program_change");
           seen.add(key); changes.push(parsed);
@@ -295,7 +328,8 @@ export function validateProgramTextReviewResult(comparison, plan, responses) {
     const summary = combined.length <= PROGRAM_CHANGE_LIMITS.summary ? combined : `${changes.length} program details changed. ${summaries[0]}`;
     const details = parseProgramTextChangeDetails({ schema: "awardping.program-change.v1", event_kind: "program_details_changed", summary, program_changes: changes });
     if (!details) failure("invalid_program_change_details");
-    return { status: "accepted", comparison_id: comparison.comparison_id, reasons: [], details };
+    return { status: "accepted", comparison_id: comparison.comparison_id, reasons: [], details,
+      ...(descriptionProjections.length ? { description_projections: descriptionProjections } : {}) };
   } catch (error) { return held(error.message); }
 }
 

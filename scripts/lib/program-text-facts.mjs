@@ -2,6 +2,7 @@ import { PROGRAM_DETAIL_FIELDS } from "./program-change-contract.mjs";
 import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
 import { validateProgramTextReference, programTextReference } from "./program-text-artifacts.mjs";
 import { hasProgramTextSourceAccess } from "./program-text-source-access.mjs";
+import { CURRENT_BASIC_VALIDATION_SCHEMA, CURRENT_BASIC_FIELDS, currentBasicSourceProof } from "./current-basic-source-proof.mjs";
 
 export const PROGRAM_FACT_REVIEW_SCHEMA = "awardping.program-fact-review.v1";
 export const PROGRAM_FACT_FIELDS = Object.freeze(["overview", ...PROGRAM_DETAIL_FIELDS]);
@@ -40,7 +41,24 @@ function checkSource(source, ref, epoch, cohort) {
 }
 
 /** Cold-load every original. No model, provider, database or publication calls. */
-export async function validateProgramFactReview(review, { registry, roles, sources, memberIds, epoch, loadCapture, forApproval = false }) {
+export async function validateProgramFactReview(review, context) {
+  return validateFactReviewBody(review, context, false);
+}
+
+/** A distinct basic-purpose result; the legacy full-review wrapper never opts
+ * into pending-owner readiness and legacy approval rejects this outer schema. */
+export async function validateCurrentBasicFactReview(review, context) {
+  if (!review || !Array.isArray(review.fields) || context.forApproval === true || review.reviewed_all_sources !== false || review.fields.some(field =>
+    field.status === "not_published" || field.status === "verified" && !CURRENT_BASIC_FIELDS.includes(field.field))) fail("current_basic_is_not_full_approval");
+  const ids = [...new Set(context.roles.flatMap(role => role.source_ids))];
+  if (!Array.isArray(context.repeat_observation_ids) || !sameSet(context.repeat_observation_ids.map(row => row?.source_id), ids) ||
+      !Array.isArray(context.repeat_observations) || context.repeat_observations.length > 4000 ||
+      !Array.isArray(context.pending_alert_reviews) || context.pending_alert_reviews.length > 500) fail("bounded_exact_current_basic_proofs_required");
+  return validateFactReviewBody(review, context, true);
+}
+
+async function validateFactReviewBody(review, context, currentBasic) {
+  const { registry, roles, sources, memberIds, epoch, loadCapture, forApproval = false } = context;
   if (!exact(review, ["schema", "cohort_key", "award_id", "epoch", "cycle", "reviewed_all_sources", "roster", "capture_refs", "fields"]) ||
       review.schema !== PROGRAM_FACT_REVIEW_SCHEMA || review.cohort_key !== registry.cohort_key || review.award_id !== registry.canonical_shared_award_id ||
       review.epoch !== epoch || !nonempty(review.cycle, 120) || typeof review.reviewed_all_sources !== "boolean" ||
@@ -52,18 +70,30 @@ export async function validateProgramFactReview(review, { registry, roles, sourc
   const requiredIds = [...new Set(roles.flatMap(role => role.source_ids))];
   if (!requiredIds.length || requiredIds.length > 500 || !sameSet(review.capture_refs.map(ref => ref?.source?.id), requiredIds) ||
       !sameSet(sources.map(source => source.id), requiredIds)) fail("incomplete_source_set");
-  const restored = new Map(); let totalBytes = 0;
+  const restored = new Map(); const currentProofs = []; let totalBytes = 0;
   for (const ref of review.capture_refs) {
     const source = sources.find(source => source.id === ref.source.id);
     if (!memberIds.includes(source.shared_award_id) || roles.filter(role => role.source_ids.includes(source.id)).some(role =>
       role.evidence?.schema !== "awardping.program-text-source-role.v1" || role.manifest_status !== "reviewed_text" ||
       role.evidence.source_bindings?.[source.id]?.source_url !== source.url ||
       role.evidence.source_bindings?.[source.id]?.shared_award_id !== source.shared_award_id)) fail("source_not_approved_for_program");
-    checkSource(source, ref, epoch, registry.cohort_key);
+    if (currentBasic) currentProofs.push(currentBasicSourceProof(source, ref, context));
+    else checkSource(source, ref, epoch, registry.cohort_key);
     const capture = await loadCapture(ref);
     validateProgramTextCapture(capture, { source });
+    if (currentBasic && capture.completeness.status !== "complete") fail("current_basic_original_incomplete");
     if (!equal(programTextReference(capture), ref)) fail("original_reference_changed");
     totalBytes += Buffer.byteLength(capture.text) + Buffer.byteLength(JSON.stringify(capture.blocks));
+    if (currentBasic) {
+      const proof = currentProofs.at(-1), observation = context.repeat_observations.find(row => row.id === proof.repeat_observation_id);
+      for (const retainedRef of [observation.current_ref, observation.repeat_ref]) {
+        if (equal(retainedRef, ref)) continue;
+        const repeat = await loadCapture(retainedRef);
+        validateProgramTextCapture(repeat, { source });
+        if (repeat.completeness.status !== "complete" || !equal(programTextReference(repeat), retainedRef)) fail("current_basic_repeat_original_changed");
+        totalBytes += Buffer.byteLength(repeat.text) + Buffer.byteLength(JSON.stringify(repeat.blocks));
+      }
+    }
     if (totalBytes > 32 * 1024 * 1024) fail("complete_context_exceeds_review_limit");
     restored.set(source.id, capture);
   }
@@ -107,10 +137,11 @@ export async function validateProgramFactReview(review, { registry, roles, sourc
   const overview = review.fields.find(field => field.field === "overview");
   if (overview.status !== "verified" || overview.items.length !== 1 || overview.items[0].track !== null) blockers.push("verified_program_overview_required");
   if (forApproval && blockers.length) fail("unresolved_review_cannot_be_approved");
-  const validation = { schema: "awardping.program-fact-validation.v1", review, blockers,
+  const validation = { schema: currentBasic ? CURRENT_BASIC_VALIDATION_SCHEMA : "awardping.program-fact-validation.v1", review, blockers,
     source_text: review.capture_refs.map(ref => { const capture = restored.get(ref.source.id); return { reference: ref, text: capture.text,
       blocks: capture.blocks, blocks_json: JSON.stringify(canonical(capture.blocks)) }; }),
     public_facts: programFactPublicValues(review),
+    ...(currentBasic ? { current_source_proofs: currentProofs.sort((a, b) => a.source_id.localeCompare(b.source_id)) } : {}),
   };
   if (Buffer.byteLength(JSON.stringify(validation)) > 32 * 1024 * 1024) fail("complete_context_exceeds_review_limit");
   return validation;

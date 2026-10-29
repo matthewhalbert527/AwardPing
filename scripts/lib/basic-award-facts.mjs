@@ -3,6 +3,8 @@ import { PROGRAM_FACT_FIELDS, programFactPublicValues, validateProgramFactReview
 import { programTextReference } from "./program-text-artifacts.mjs";
 import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
 import { hasUnclearedProgramTextCollectionFailure } from "./program-text-collection-quality.mjs";
+import { CURRENT_BASIC_VALIDATION_SCHEMA } from "./current-basic-source-proof.mjs";
+import { prepareCurrentBasicAwardFactReview } from "./current-basic-award-facts.mjs";
 
 export const BASIC_AWARD_FACT_SCHEMA = "awardping.basic-award-fact-review.v1";
 export const BASIC_AWARD_FACT_FIELDS = Object.freeze(["overview", "opening_date", "deadline", "cycle_status", "important_dates",
@@ -27,7 +29,7 @@ export function basicAwardFactPublicValues(review, selectedFields) {
     : { field, status: "unresolved", items: [], note: "Outside this selected basic-information snapshot." }) });
 }
 
-function quotedApplicationDestination(item, documents) {
+export function quotedApplicationDestination(item, documents) {
   let destination;
   try { destination = new URL(item.value); } catch { return false; }
   if (destination.protocol !== "https:" || destination.username || destination.password || destination.href !== item.value) return false;
@@ -67,6 +69,7 @@ export async function prepareBasicAwardFactReview(draft, { selected_fields, revi
       selected_fields.length > BASIC_AWARD_FACT_FIELDS.length || new Set(selected_fields).size !== selected_fields.length ||
       selected_fields.some(field => !BASIC_AWARD_FACT_FIELDS.includes(field)) || !selected_fields.includes("overview") ||
       typeof reviewed_at !== "string" || !Number.isFinite(Date.parse(reviewed_at)) || new Date(reviewed_at).toISOString() !== reviewed_at) fail("invalid_selection_or_draft_identity");
+  if (draft.validation.schema === CURRENT_BASIC_VALIDATION_SCHEMA) return prepareCurrentBasicAwardFactReview(draft, { selected_fields, reviewed_at }, context);
   const coldCaptures = new Map();
   const loadCapture = ref => {
     const key = JSON.stringify(canonical(ref));

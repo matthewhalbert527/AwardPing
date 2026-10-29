@@ -4,6 +4,7 @@ import { buildProgramTextComparison, buildProgramTextReviewPackets, validateProg
 import { isKnownProgramTextHtmlShellReference, programTextPublisherJsonSourceProfile } from "./program-text-capture-contract.mjs";
 import { randomUUID } from "node:crypto";
 import { buildProgramTextCollectionFailure, validateProgramTextCollectionFailureReceipt } from "./program-text-collection-quality.mjs";
+import { reviewedPdfInitialCoverageState } from "./program-text-reviewed-pdf-transition.mjs";
 
 export const PROGRAM_TEXT_STATE_SCHEMA = "awardping.program-text-state.v1";
 export const PROGRAM_TEXT_REVIEW_WORK_SCHEMA = "awardping.program-text-review-work.v1";
@@ -117,6 +118,17 @@ export async function monitorProgramTextSource({ source, epoch, cycle_id = null,
     } catch { return held("baseline_state_write_failed", { current_ref: currentRef }); }
   }
   if (!sameConfiguration(state.baseline_ref, currentRef)) {
+    const reviewedNext = reviewedPdfInitialCoverageState({ source, epoch, expected_state: state, current_ref: currentRef });
+    if (reviewedNext) {
+      if (typeof callbacks.transitionReviewedPdfFirstCoverage !== "function") return held("reviewed_pdf_first_coverage_unavailable", { current_ref: currentRef });
+      try {
+        const result = await callbacks.transitionReviewedPdfFirstCoverage({ source_id: source.id, expected_state: state,
+          next_state: reviewedNext, current_ref: currentRef });
+        if (result?.applied !== true || !uuid(result.journal_id) || !equal(result.state, reviewedNext) ||
+            result.initial_coverage !== true || result.creates_update !== false) return held("reviewed_pdf_first_coverage_unconfirmed", { current_ref: currentRef });
+        return { status: "baseline_ready", initial_coverage: true, creates_update: false, historical_transition_id: result.journal_id, state: reviewedNext };
+      } catch { return held("reviewed_pdf_first_coverage_transition_failed", { current_ref: currentRef }); }
+    }
     const profile = programTextPublisherJsonSourceProfile(source);
     const firstMeaningful = profile &&
       state.status === "baseline_ready" && equal(state.baseline_ref, state.latest_ref) &&

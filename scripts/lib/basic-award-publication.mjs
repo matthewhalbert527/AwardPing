@@ -63,3 +63,12 @@ export function createBasicPublicationRpcAdapter(db,loadCapture){
   commit:async parameters=>{const result=await db.rpc('commit_program_basic_facts',parameters);check(!result.error&&result.data,'publication_not_confirmed_do_not_repeat_blindly');return result.data;},
  };
 }
+
+/** Explicit opt-in. The legacy adapter and all full-approval APIs remain strict. */
+export function createCurrentBasicPublicationRpcAdapter(db,loadCapture){
+ check(typeof db?.rpc==='function'&&typeof loadCapture==='function','service_client_required');
+ return{loadCapture,
+  inspect:async id=>{const r=await db.rpc('inspect_current_basic_fact_draft',{p_id:id});check(!r.error&&r.data,'current_draft_context_unavailable');return r.data;},
+  commit:async p=>{const r=await db.rpc('commit_current_program_basic_facts',p);check(!r.error&&r.data,'current_publication_not_confirmed_do_not_repeat_blindly');return r.data;},
+ };
+}
