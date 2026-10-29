@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { PROGRAM_DETAIL_FIELDS, PROGRAM_CHANGE_LIMITS, parseProgramTextChangeDetails } from "./program-change-contract.mjs";
-import { validateProgramTextCapture } from "./program-text-capture.mjs";
+import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
 
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const exact = (value, names) => object(value) && Object.keys(value).length === names.length && names.every(name => Object.hasOwn(value, name));
