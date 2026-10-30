@@ -1,0 +1,7 @@
+.pastDeadline {
+  color: var(--text-secondary);
+  font-weight: 400;
+  text-decoration-line: line-through;
+  text-decoration-color: var(--text-tertiary);
+  text-decoration-thickness: 1px;
+}

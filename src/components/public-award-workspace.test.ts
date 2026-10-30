@@ -12,6 +12,29 @@ import { PUBLIC_AWARD_PANEL_HEADING_ID } from "@/lib/public-award-panel-focus";
 import * as ChangeEvidence from "@/components/change-evidence-panel";
 
 describe("PublicAwardWorkspace", () => {
+  it("preserves separate scalar and timeline deadline warning links when deadlines share one list", () => {
+    const data = makeDeepLinkPageData();
+    const scalar = "Applications must be submitted by October 1, 2026.";
+    const timeline = "Application deadline for international applicants: February 25, 2027";
+    data.facts.deadline = scalar;
+    data.facts.importantDates = [timeline];
+    data.presentationAsOf = "2026-10-30T12:00:00Z";
+    const originalChange = data.changes[0];
+    data.changes = [
+      { ...originalChange, id: "scalar-deadline-change", changeDetails: { reader_summary: "The deadline changed.",
+        before: scalar, after: "Applications must be submitted by November 1, 2026.", change_type: "deadline", is_alert_worthy: true } },
+      { ...originalChange, id: "timeline-deadline-change", changeDetails: { reader_summary: "The international deadline changed.",
+        before: timeline, after: "Application deadline for international applicants: March 25, 2027", change_type: "deadline", is_alert_worthy: true } },
+    ];
+    const before = structuredClone(data);
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "applying" })));
+    const row = $(".public-award-fact-line").filter((_index, element) => $(element).children("dt").text() === "Application deadlines");
+    const links = row.find("a").map((_index, link) => $(link).attr("href")).get().join(" ");
+    expect(links).toContain("change=scalar-deadline-change");
+    expect(links).toContain("change=timeline-deadline-change");
+    expect(row.find(".public-award-review-date")).toHaveLength(2);
+    expect(data).toEqual(before);
+  });
   it("separates the approved basic-details date from the last reported public change", () => {
     const data: PublicAwardPageData = makeDeepLinkPageData();
     data.factsReviewedAt = "2026-10-29T21:01:32.394Z";
@@ -1362,7 +1385,8 @@ describe("focused award sections", () => {
     }));
     expect(load(overview)(".public-award-deadlines dt").text()).toBe("Scholarships deadline");
     expect(load(overview)(".public-award-deadline-list").text()).toBe("January 27, 2027");
-    expect(dates).toContain("Scholarships deadline</dt><dd>January 27, 2027</dd>");
+    const datesPage = load(dates);
+    expect(datesPage(".public-award-fact-line").filter((_index, row) => datesPage(row).children("dt").text() === "Scholarships deadline").children("dd").text()).toBe("January 27, 2027");
     expect(dates).toContain("Fellowships: January 20, 2027");
     for (const html of [overview, dates]) {
       expect(html).not.toContain("(Boren Scholarships)");
@@ -2204,11 +2228,14 @@ describe("award page criterion boundaries", () => {
       .toEqual(["Full tuition", "Living stipend"]);
   });
 
-  it("leaves a scalar date value splitting exactly as before", () => {
+  it("keeps a scalar deadline whole in the shared deadline presentation", () => {
     const one = renderSection(reviewed({ deadline: "March 1, 2027" }), "dates");
     const two = renderSection(reviewed({ deadline: "March 1; March 15" }), "dates");
-    expect(load(one)("ul.public-award-fact-list > li")).toHaveLength(0);
-    expect(load(two)("ul.public-award-fact-list > li")).toHaveLength(2);
+    expect(load(one)(".public-award-deadline-list > li").text()).toBe("March 1, 2027");
+    const result = load(two);
+    expect(result(".public-award-deadline-list > li")).toHaveLength(1);
+    expect(result(".public-award-deadline-list > li").text()).toBe("March 1; March 15");
+    expect(result("[class*='pastDeadline']")).toHaveLength(0);
   });
 
   it("omits the row entirely for empty and whitespace-only criteria", () => {

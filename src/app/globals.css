@@ -8101,17 +8101,6 @@ a {
   font-weight: 600;
 }
 
-.public-award-past-date {
-  display: inline-block;
-  margin-left: 0.5rem;
-  padding: 0.1rem 0.45rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
 .public-award-date-notice,
 .public-award-overview-next p,
 .public-award-latest > p {

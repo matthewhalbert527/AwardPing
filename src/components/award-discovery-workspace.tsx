@@ -13,7 +13,7 @@ import { directoryFilterOptions, getAwardDirectoryCategories } from "@/lib/award
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { awardMatchesUpdateWindow, UPDATE_WINDOW_OPTIONS } from "@/lib/award-update-window";
-import { AwardDateValue } from "@/components/award-date-value";
+import { AwardDeadlineValue } from "@/components/award-deadline-value";
 import styles from "./award-discovery-workspace.module.css";
 
 export type SharedAwardCard = {
@@ -624,10 +624,9 @@ function AwardDirectoryCardContent({
       <div className="award-row-deadline">
         <span>{deadline.entries.length ? deadline.label : "Deadline"}</span>
         {deadline.entries.length ? deadline.entries.map((entry) => (
-          <strong key={`${entry.label}:${entry.value}`}>
+          <strong key={`${entry.label}:${entry.value}`} data-deadline-status={entry.status}>
             {deadline.entries.length > 1 && entry.label !== "Application deadline" && entry.label !== "Deadline" && <span>{entry.label}: </span>}
-            <AwardDateValue value={entry.value} />
-            {entry.status === "past" && <small className="block font-normal text-[var(--muted)]">Past date</small>}
+            <AwardDeadlineValue value={entry.value} status={entry.status} />
           </strong>
         )) : <strong>{award.hasApplicationRoutes ? "View route deadlines" : "Not listed"}</strong>}
       </div>
