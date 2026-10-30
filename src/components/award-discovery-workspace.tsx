@@ -624,10 +624,12 @@ function AwardDirectoryCardContent({
       <div className="award-row-deadline">
         <span>{deadline.entries.length ? deadline.label : "Deadline"}</span>
         {deadline.entries.length ? deadline.entries.map((entry) => (
-          <strong key={`${entry.label}:${entry.value}`}>
+          <strong key={`${entry.label}:${entry.value}`} data-deadline-status={entry.status}>
             {deadline.entries.length > 1 && entry.label !== "Application deadline" && entry.label !== "Deadline" && <span>{entry.label}: </span>}
-            <AwardDateValue value={entry.value} />
-            {entry.status === "past" && <small className="block font-normal text-[var(--muted)]">Past date</small>}
+            <span className={entry.status === "past" ? styles.pastDeadline : undefined}>
+              <AwardDateValue value={entry.value} />
+            </span>
+            {entry.status === "past" && <span className="sr-only"> (deadline has passed)</span>}
           </strong>
         )) : <strong>{award.hasApplicationRoutes ? "View route deadlines" : "Not listed"}</strong>}
       </div>

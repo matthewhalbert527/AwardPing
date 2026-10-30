@@ -796,7 +796,13 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
     expect(result.text()).toContain("All other eligible applicants round");
     expect(result.text()).toContain("8 December 2026 or Wednesday 6 January 2027");
     expect(result.text()).toContain("(dependent on course)");
-    expect(result.find(".award-row-deadline small").text()).toBe("Past date");
+    const past = result.find('.award-row-deadline > strong[data-deadline-status="past"]');
+    expect(past).toHaveLength(1);
+    expect(past.find('[class*="pastDeadline"]')).toHaveLength(1);
+    expect(past.find(".sr-only").text()).toBe(" (deadline has passed)");
+    expect(result.find('.award-row-deadline > strong:not([data-deadline-status="past"]) [class*="pastDeadline"]')).toHaveLength(0);
+    expect(result.find(".award-row-deadline small")).toHaveLength(0);
+    expect(result.text()).not.toContain("Past date");
     expect(result.text()).not.toMatch(/Not listed|Notification|Postgraduate|Citizens of any country/);
     expectNoCardDateMetadata(html);
     expectNoCardDateMetadata(renderRows([row], [], isAuthenticated, asOf));
@@ -831,8 +837,11 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
     const asOf = "2026-10-17T11:59:59Z";
     vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
     const html = renderRows([row], ["Goldwater", true], false, asOf);
-    expect(html).not.toContain("Past date");
-    expect(renderRows([row], ["Goldwater", true], false, "2026-10-17T12:00:01Z")).toContain("Past date");
+    expect(load(html)('[data-deadline-status="past"]')).toHaveLength(0);
+    const after = load(renderRows([row], ["Goldwater", true], false, "2026-10-17T12:00:01Z"));
+    expect(after('[data-deadline-status="past"] [class*="pastDeadline"]')).toHaveLength(1);
+    expect(after(".sr-only").text()).toContain("deadline has passed");
+    expect(after.text()).not.toContain("Past date");
   });
 });
 
@@ -975,7 +984,9 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     const row = { ...goldwater, name: "Boren Scholarships and Fellowships", deadline: "January 27, 2027 (Boren Scholarships)" };
     const before = JSON.stringify(row);
     const html = renderRows([row]);
-    expect(html).toContain('<span>Scholarships deadline</span><strong>January 27, 2027</strong>');
+    const $ = load(html);
+    expect($(".award-row-deadline > span").text()).toBe("Scholarships deadline");
+    expect($(".award-row-deadline > strong").text()).toBe("January 27, 2027");
     expect(html).not.toContain("(Boren Scholarships)");
     expect(JSON.stringify(row)).toBe(before);
   });
