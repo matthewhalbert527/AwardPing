@@ -797,6 +797,7 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
     expect(result.text()).toContain("8 December 2026 or Wednesday 6 January 2027");
     expect(result.text()).toContain("(dependent on course)");
     const past = result.find('.award-row-deadline > strong[data-deadline-status="past"]');
+    expect(result.find(".award-row-deadline > strong").map((_index, element) => $(element).attr("data-deadline-status")).get()).toEqual(["listed", "past"]);
     expect(past).toHaveLength(1);
     expect(past.find('[class*="pastDeadline"]')).toHaveLength(1);
     expect(past.find(".sr-only").text()).toBe(" (deadline has passed)");

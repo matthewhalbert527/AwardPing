@@ -11,14 +11,6 @@
   overflow-wrap: anywhere;
 }
 
-.pastDeadline {
-  color: var(--text-secondary);
-  font-weight: 400;
-  text-decoration-line: line-through;
-  text-decoration-color: var(--text-tertiary);
-  text-decoration-thickness: 1px;
-}
-
 /* Retain the existing stacked mobile layout and its global border treatment. */
 @media (max-width: 640px) {
   .rowGrid:global(.award-row-grid) {

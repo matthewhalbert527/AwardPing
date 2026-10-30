@@ -22,7 +22,7 @@ export function presentAwardDeadlines(
     if (item) candidates.push(item);
   }
   const seen = new Set<string>();
-  const entries = candidates.filter((item) => {
+  const classified = candidates.filter((item) => {
     // Only exact displayed values with equivalent generic labels collapse.
     // Distinct rounds, qualifiers and program scopes never get merged.
     const label = /^(?:Application )?Deadline$/i.test(item.label) ? "deadline" : item.label;
@@ -31,6 +31,12 @@ export function presentAwardDeadlines(
     seen.add(key);
     return true;
   }).map((entry) => ({ ...entry, status: definitelyPast(entry.value, now) ? "past" as const : "listed" as const }));
+  // Keep actionable or uncertain listings above dates known to have passed.
+  // Preserve source order within each group without guessing a cutoff or cycle.
+  const entries = [
+    ...classified.filter((entry) => entry.status !== "past"),
+    ...classified.filter((entry) => entry.status === "past"),
+  ];
   const allPast = entries.length > 0 && entries.every((entry) => entry.status === "past");
   return {
     label: entries.length > 1 ? "Application deadlines" : entries[0]?.label || "Application deadline",

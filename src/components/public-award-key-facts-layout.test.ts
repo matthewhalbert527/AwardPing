@@ -228,7 +228,9 @@ describe("award key-facts actual rendered content", () => {
       .toEqual(["Award amount", "Academic level", "Citizenship"]);
     expect($(".public-award-deadlines .public-award-deadline-list li")).toHaveLength(1);
     expect($(".public-award-deadlines").text()).toContain("March 27, 2026 at 5:00 p.m. (UTC-05:00)");
-    expect($(".public-award-deadlines .public-award-past-date").text()).toBe("Date passed");
+    expect($(".public-award-deadlines [class*='pastDeadline']")).toHaveLength(1);
+    expect($(".public-award-deadlines .sr-only").text()).toContain("deadline has passed");
+    expect($(".public-award-deadlines .public-award-past-date")).toHaveLength(0);
     expect($(".public-award-deadlines").text()).toContain("A later deadline is not confirmed here.");
     expect($(".public-award-deadlines").text()).not.toContain("Applications closed");
     expect($(".public-award-deadlines").text()).not.toContain("January 5");
@@ -241,15 +243,42 @@ describe("award key-facts actual rendered content", () => {
       "December 8, 2026 or January 6, 2027 (course-dependent; check the Course Directory): Application deadline",
       "April 1, 2027: Interviews",
     ];
+    data.presentationAsOf = "2026-10-30T12:00:00Z";
     const before = structuredClone(data);
     const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
     const deadline = $(".public-award-deadlines");
     expect(deadline.find("li")).toHaveLength(2);
+    expect(deadline.find("li").map((_index, item) => $(item).attr("data-deadline-status")).get()).toEqual(["listed", "past"]);
     expect(deadline.text()).toContain("US citizens living in the US");
     expect(deadline.text()).toContain("December 8, 2026 or January 6, 2027");
     expect(deadline.text()).toContain("course-dependent; check the Course Directory");
     expect(deadline.text()).not.toContain("Interviews");
     expect(deadline.text()).not.toContain("No application deadline");
+    expect(data).toEqual(before);
+  });
+
+  it("uses the same ordered deadline values in the overview and full application schedule", () => {
+    const data = pageData(0);
+    data.presentationAsOf = "2026-10-30T12:00:00Z";
+    data.facts.deadline = "October 1, 2026";
+    data.facts.importantDates = [
+      "Application deadline for international applicants: February 25, 2027 (course-dependent; check the Course Directory)",
+      "Interview: March 5, 2027",
+    ];
+    const before = structuredClone(data);
+    const overview = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    const applying = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "applying" })));
+    const values = ($: ReturnType<typeof load>) => $(".public-award-deadline-list > li").map((_index, item) => $(item).text()).get();
+    expect(values(applying)).toEqual(values(overview));
+    expect(values(overview)[0]).toContain("February 25, 2027");
+    expect(values(applying)[0]).toContain("course-dependent; check the Course Directory");
+    expect(values(overview)[1]).toContain("October 1, 2026");
+    for (const $ of [overview, applying]) {
+      expect($(".public-award-deadline-list [class*='pastDeadline']")).toHaveLength(1);
+      expect($(".public-award-deadline-list > li").map((_index, item) => $(item).attr("data-deadline-status")).get()).toEqual(["listed", "past"]);
+    }
+    expect(applying("#award-schedule").text()).toContain("Interview: March 5, 2027");
+    expect(applying("#award-schedule").text().match(/February 25, 2027/g)).toHaveLength(1);
     expect(data).toEqual(before);
   });
 

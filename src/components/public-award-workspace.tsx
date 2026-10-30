@@ -20,7 +20,7 @@ import { presentAwardDateField, presentAwardTimelineDate } from "@/lib/award-dat
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import { readableSourceTitle } from "@/lib/display-text";
 import { publicAwardHref, publicAwardQueryId, publicAwardSection } from "@/lib/public-award-links";
-import { awardFactCurrentnessNotices, presentAwardDeadlines, type AwardFactCurrentnessNotice } from "@/lib/award-page-presentation";
+import { awardFactCurrentnessNotices, presentAwardDeadlines, type AwardFactCurrentnessNotice, type AwardDeadlinePresentation } from "@/lib/award-page-presentation";
 import { changeSummaryPresentation } from "@/lib/change-summary";
 import { programChangePresentation } from "@/lib/program-change-presentation";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
@@ -38,6 +38,7 @@ import { describeTimestamp, formatCentralDate } from "@/lib/time-zone";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { AwardDateValue } from "@/components/award-date-value";
+import { AwardDeadlineValue } from "@/components/award-deadline-value";
 
 type PublicAwardWorkspaceProps = {
   data: PublicAwardPageData;
@@ -59,9 +60,9 @@ type PublicAwardChange = PublicAwardPageData["changes"][number];
 type FactValue = string | string[];
 // Canonical labels still control section membership; display wording must not
 // move a scoped deadline out of the Deadline slot.
-type FactConflict = { href: string; changeId: string };
-type FactRow = { label: string; displayLabel?: string; value: FactValue; icon?: "calendar" | "checklist"; conflict?: FactConflict };
-type MaybeFactRow = { label: string; displayLabel?: string; value: FactValue | null; icon?: "calendar" | "checklist" };
+type FactConflict = { href: string; changeId: string; affectsApplicationDeadline?: boolean };
+type FactRow = { label: string; displayLabel?: string; value: FactValue; icon?: "calendar" | "checklist"; conflict?: FactConflict; deadlineEntries?: AwardDeadlinePresentation["entries"]; deadlineConflicts?: FactConflict[] };
+type MaybeFactRow = { label: string; displayLabel?: string; value: FactValue | null; icon?: "calendar" | "checklist"; deadlineEntries?: AwardDeadlinePresentation["entries"] };
 
 export function PublicAwardWorkspace({
   data,
@@ -148,7 +149,7 @@ export function PublicAwardWorkspace({
   const currentnessNotices = awardFactCurrentnessNotices(data);
   const currentness = currentnessNotices[0];
   const factConflicts = factConflictLinks(currentnessNotices, data.canonicalPath);
-  const factRows = awardFactRows(data.facts, data.award.name, factConflicts);
+  const factRows = awardFactRows(data.facts, data.award.name, factConflicts, data.presentationAsOf);
   const markChangesRead = (changeIds: string[]) => {
     const uniqueIds = [...new Set(changeIds)].filter(Boolean);
     if (uniqueIds.length === 0) return;
@@ -340,6 +341,7 @@ export function PublicAwardWorkspace({
             factConflicts={factConflicts}
             facts={data.facts}
             awardName={data.award.name}
+            presentationAsOf={data.presentationAsOf}
             section={selected.kind}
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
             onViewSources={() => activatePanel({ kind: "sources" }, "panel")}
@@ -524,9 +526,10 @@ const FACT_SECTIONS = {
   },
 } as const;
 
-export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSources, factConflicts, onReviewChange }: {
+export function AwardFactsPanel({ facts, awardName, presentationAsOf, section, headingId, onViewSources, factConflicts, onReviewChange }: {
   facts: PublicAwardPageData["facts"];
   awardName?: string;
+  presentationAsOf?: string;
   section: keyof typeof FACT_SECTIONS;
   headingId?: string;
   onViewSources: () => void;
@@ -534,7 +537,7 @@ export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSo
   onReviewChange?: (changeId: string) => void;
 }) {
   const definition = FACT_SECTIONS[section];
-  const rows = awardFactRows(facts, awardName, factConflicts);
+  const rows = awardFactRows(facts, awardName, factConflicts, presentationAsOf);
   const sectionRows = definition.labels.flatMap((label) => rows.filter((row) => row.label === label));
   return (
     <div className="public-award-panel-stack">
@@ -690,13 +693,7 @@ function OverviewPanel({
           <dt>{deadlines.label}</dt>
           <dd>
             <FactConflictNotice conflict={deadlineConflict} onReviewChange={onViewUpdates} />
-            {deadlines.entries.length > 0 && <ul className="public-award-deadline-list">
-              {deadlines.entries.map((entry) => <li key={`${entry.label}:${entry.value}`}>
-                {deadlines.entries.length > 1 && entry.label !== "Application deadline" && entry.label !== "Deadline" && <span>{entry.label}: </span>}
-                <AwardDateValue value={entry.value} />
-                {entry.status === "past" && <span className="public-award-past-date">Date passed</span>}
-              </li>)}
-            </ul>}
+            {deadlines.entries.length > 0 && <DeadlineList entries={deadlines.entries} />}
             {deadlines.notice && <p className="public-award-date-notice">{deadlines.notice}</p>}
           </dd>
         </div>
@@ -878,6 +875,15 @@ function ChangeTimestamp({ value }: { value: string }) {
   );
 }
 
+function DeadlineList({ entries }: { entries: AwardDeadlinePresentation["entries"] }) {
+  return <ul className="public-award-deadline-list">
+    {entries.map((entry) => <li key={`${entry.label}:${entry.value}`} data-deadline-status={entry.status}>
+      {entries.length > 1 && entry.label !== "Application deadline" && entry.label !== "Deadline" && <span>{entry.label}: </span>}
+      <AwardDeadlineValue value={entry.value} status={entry.status} />
+    </li>)}
+  </ul>;
+}
+
 function FactLine({
   fact,
   onReviewChange,
@@ -893,8 +899,11 @@ function FactLine({
         {fact.displayLabel ?? fact.label}
       </dt>
       <dd>
-        <FactConflictNotice conflict={fact.conflict} onReviewChange={onReviewChange} />
-        <FactValueDisplay className="public-award-fact-list" value={fact.value} isDate={DATE_FACT_LABELS.has(fact.label)} isLink={fact.label === "Application links"} />
+        {fact.deadlineConflicts ? fact.deadlineConflicts.map((conflict) =>
+          <FactConflictNotice key={conflict.changeId} conflict={conflict} onReviewChange={onReviewChange} />) :
+          <FactConflictNotice conflict={fact.conflict} onReviewChange={onReviewChange} />}
+        {fact.deadlineEntries ? <DeadlineList entries={fact.deadlineEntries} /> :
+          <FactValueDisplay className="public-award-fact-list" value={fact.value} isDate={DATE_FACT_LABELS.has(fact.label)} isLink={fact.label === "Application links"} />}
       </dd>
     </div>
   );
@@ -926,7 +935,8 @@ const FACT_FIELD_LABELS: Record<string, string> = {
 function factConflictLinks(notices: AwardFactCurrentnessNotice[], canonicalPath: string) {
   const links = new Map<string, FactConflict>();
   for (const notice of notices) {
-    const conflict = { href: publicAwardHref(canonicalPath, { changeId: notice.changeId }), changeId: notice.changeId };
+    const conflict = { href: publicAwardHref(canonicalPath, { changeId: notice.changeId }), changeId: notice.changeId,
+      affectsApplicationDeadline: notice.affectsApplicationDeadline };
     if (notice.affectsApplicationDeadline && !links.has("Application deadlines")) {
       links.set("Application deadlines", conflict);
     }
@@ -987,13 +997,21 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
-function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, conflicts?: ReadonlyMap<string, FactConflict>): FactRow[] {
+function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, conflicts?: ReadonlyMap<string, FactConflict>, presentationAsOf?: string): FactRow[] {
   const deadline = presentAwardDateField(facts.deadline, awardName);
+  const now = presentationAsOf ? new Date(presentationAsOf) : undefined;
+  const deadlines = presentAwardDeadlines(facts, awardName, now);
+  // Application deadlines share one ordered list. Other timeline events remain
+  // in Important dates; filter whole reviewed items before any legacy splitting.
+  const otherDates = facts.importantDates.filter((value) =>
+    presentAwardDeadlines({ importantDates: [value] }, awardName, now).entries.length === 0);
   const opening = presentAwardDateField(facts.openingDate, awardName, "Opening date");
   const rows: MaybeFactRow[] = [
     // Date facts render in the house style; every other reviewed value, and
     // any wording this helper does not recognise, is left exactly as reviewed.
-    { label: "Deadline", displayLabel: deadline.label, value: deadline.value, icon: "calendar" as const },
+    { label: "Deadline", displayLabel: deadlines.entries.length ? deadlines.label : deadline.label,
+      value: deadlines.entries.length ? deadlines.entries.map((entry) => entry.value) : deadline.value, icon: "calendar" as const,
+      ...(deadlines.entries.length ? { deadlineEntries: deadlines.entries } : {}) },
     { label: "Opening date", displayLabel: opening.label, value: opening.value },
     { label: "Application status", value: facts.cycleStatus || null },
     { label: "Award amount", value: facts.awardAmount },
@@ -1009,12 +1027,20 @@ function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, 
     { label: "How to apply", value: compactList(facts.howToApply) },
     { label: "Application links", value: compactList(facts.applicationUrls || []) },
     { label: "Selection", value: compactList(facts.selection || []) },
-    { label: "Important dates", value: compactList(facts.importantDates.flatMap(splitFactItems).map((value) => presentAwardTimelineDate(value, awardName))) },
+    { label: "Important dates", value: compactList(otherDates.flatMap(splitFactItems).map((value) => presentAwardTimelineDate(value, awardName))) },
     { label: "Documents", value: compactList(facts.documents) },
     { label: "Contact", value: compactList(facts.contacts) },
   ];
 
-  return rows.filter(isFactRow).map((row) => ({ ...row, conflict: conflicts?.get(row.label) }));
+  return rows.filter(isFactRow).map((row) => {
+    const conflict = conflicts?.get(row.label);
+    if (!row.deadlineEntries) return { ...row, conflict };
+    const timelineConflict = conflicts?.get("Important dates");
+    const candidates = [conflict, conflicts?.get("Application deadlines"),
+      timelineConflict?.affectsApplicationDeadline || otherDates.length === 0 ? timelineConflict : undefined];
+    const byChange = new Map(candidates.filter((item): item is FactConflict => Boolean(item)).map((item) => [item.changeId, item]));
+    return { ...row, conflict, deadlineConflicts: [...byChange.values()] };
+  });
 }
 
 function compactList(values: string[]) {

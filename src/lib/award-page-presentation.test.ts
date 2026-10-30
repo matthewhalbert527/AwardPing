@@ -16,15 +16,75 @@ describe("shared award deadline presentation", () => {
     const result = presentAwardDeadlines(facts, "Gates Cambridge Scholarship", now);
     expect(result.label).toBe("Application deadlines");
     expect(result.entries).toHaveLength(2);
-    expect(result.entries[0].value).toContain("US citizens resident in the USA round");
-    expect(result.entries[0].value).toContain("14 October 2026");
-    expect(result.entries[0].status).toBe("past");
-    expect(result.entries[1].value).toContain("8 December 2026 or Wednesday 6 January 2027");
-    expect(result.entries[1].value).toContain("(dependent on course)");
-    expect(result.entries[1].value).toContain("GMT");
-    expect(result.entries[1].status).toBe("listed");
+    expect(result.entries[0].value).toContain("8 December 2026 or Wednesday 6 January 2027");
+    expect(result.entries[0].value).toContain("(dependent on course)");
+    expect(result.entries[0].value).toContain("GMT");
+    expect(result.entries[0].status).toBe("listed");
+    expect(result.entries[1].value).toContain("US citizens resident in the USA round");
+    expect(result.entries[1].value).toContain("14 October 2026");
+    expect(result.entries[1].status).toBe("past");
     expect(result.notice).toBeNull();
     expect(facts).toEqual(original);
+  });
+
+  it("puts known past dates last without reordering current or uncertain listings", () => {
+    const facts = {
+      deadline: "October 1, 2026",
+      importantDates: [
+        "Application deadline for later track: February 1, 2027",
+        "Application deadline for rolling track: Rolling; check the official page",
+        "Application deadline for archived track: September 1, 2026",
+        "Application deadline for earlier track: November 1, 2026",
+      ],
+    };
+    const original = structuredClone(facts);
+    Object.freeze(facts.importantDates);
+    Object.freeze(facts);
+    const result = presentAwardDeadlines(facts, "Example", now);
+    expect(result.entries.map(({ label, status }) => ({ label, status }))).toEqual([
+      { label: "Application deadline for later track", status: "listed" },
+      { label: "Application deadline for rolling track", status: "listed" },
+      { label: "Application deadline for earlier track", status: "listed" },
+      { label: "Deadline", status: "past" },
+      { label: "Application deadline for archived track", status: "past" },
+    ]);
+    expect(result.entries[1].value).toBe("Rolling; check the official page");
+    expect(result.entries[3].value).toBe("October 1, 2026");
+    expect(result.entries[4].value).toBe("September 1, 2026");
+    expect(result.notice).toBeNull();
+    expect(facts).toEqual(original);
+  });
+
+  it("retains source order and the existing notice when all deadlines have passed", () => {
+    const result = presentAwardDeadlines({
+      deadline: "October 1, 2026",
+      importantDates: [
+        "Application deadline for second track: September 1, 2026",
+        "Application deadline for third track: August 1, 2026",
+      ],
+    }, "Example", now);
+    expect(result.entries.map(({ value, status }) => ({ value, status }))).toEqual([
+      { value: "October 1, 2026", status: "past" },
+      { value: "September 1, 2026", status: "past" },
+      { value: "August 1, 2026", status: "past" },
+    ]);
+    expect(result.notice).toBe("The listed deadlines have passed. A later deadline is not confirmed here.");
+  });
+
+  it("retains uncertain and recurring listings in source order without declaring them past", () => {
+    const result = presentAwardDeadlines({
+      deadline: "Usually October 1, 2026",
+      importantDates: [
+        "Application deadline for second track: TBA",
+        "Application deadline for third track: Rolling; check the official page",
+      ],
+    }, "Example", now);
+    expect(result.entries.map(({ value, status }) => ({ value, status }))).toEqual([
+      { value: "Usually October 1, 2026", status: "listed" },
+      { value: "TBA", status: "listed" },
+      { value: "Rolling; check the official page", status: "listed" },
+    ]);
+    expect(result.notice).toBeNull();
   });
 
   it("keeps Boren track labels, zones and distinct timeline scopes", () => {
