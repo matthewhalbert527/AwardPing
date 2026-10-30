@@ -93,8 +93,8 @@ afterEach(() => {
 });
 
 describe("admin source-intake read-only single-request view", () => {
-  it("preserves existing callers that omit optional Next page props", async () => {
-    renderToStaticMarkup(await AdminSourceIntakePage());
+  it("keeps the unfiltered default when Next supplies empty page props", async () => {
+    renderToStaticMarkup(await AdminSourceIntakePage({}));
     expect(requestsQuery.eq).not.toHaveBeenCalled();
     expect(requestsQuery.limit).toHaveBeenCalledExactlyOnceWith(100);
   });

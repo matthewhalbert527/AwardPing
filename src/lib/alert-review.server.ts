@@ -7,6 +7,7 @@ import { parseProgramTextChangeDetails } from "../../scripts/lib/program-change-
 import { loadProgramTextCapture } from "../../scripts/lib/program-text-artifacts.mjs";
 import { createProgramTextRepository, programTextEqual } from "../../scripts/lib/program-text-repository.mjs";
 import { validateProgramTextReviewResult } from "../../scripts/lib/program-text-review.mjs";
+import { programChangeContext } from "@/lib/program-change-presentation";
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
@@ -66,6 +67,7 @@ export async function loadAlertReviews(status: AlertReviewStatus = "pending"): P
     return {
       id: row.id as string, contentHash: row.content_hash, status, awardName: award.name,
       summary: details.summary, sourceUrl: sourceUrl(candidate.source_url), detectedAt: candidate.created_at,
+      context: programChangeContext(row.details) ?? undefined,
       details: details.program_changes.map((change: { field: string; summary: string; previous_quote: { text: string } | null; current_quote: { text: string } | null }) => ({
         category: labels[change.field], summary: change.summary,
         ...(change.previous_quote ? { previous: change.previous_quote.text } : {}),

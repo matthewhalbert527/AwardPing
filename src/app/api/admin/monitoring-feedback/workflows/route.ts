@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { validateSameOriginAdminMutation } from "@/lib/admin-request-security";
@@ -8,11 +7,11 @@ import {
   isCandidateMonitoringPolicyFlag,
   isGloballyActiveMonitoringPolicyRule,
   monitoringPolicyFlagIdForAlias,
-  monitoringPolicyRuleDefinitionForReview,
   reviewableMonitoringPolicyFlagIdForAlias,
 } from "@/lib/award-monitoring-policy";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
-import type { Database, Json } from "@/lib/database.types";
+import type { Database } from "@/lib/database.types";
+import { buildMonitoringFeedbackRuleDraft } from "@/lib/monitoring-feedback-rule-draft";
 import { currentMonitoringPromotionAppIdentity } from "@/lib/monitoring-feedback-promotion-identity";
 import {
   type MonitoringFeedbackPromotionStage,
@@ -641,18 +640,6 @@ async function validateAdminRequest() {
   return { response: null, user } as const;
 }
 
-export function buildMonitoringFeedbackRuleDraft(
-  canonicalRuleId: string,
-) {
-  const definition = monitoringPolicyRuleDefinitionForReview(canonicalRuleId);
-  if (!definition) return null;
-  const rule = JSON.parse(JSON.stringify(definition)) as Json;
-  const hash = createHash("sha256")
-    .update(canonicalJson(rule), "utf8")
-    .digest("hex");
-  return { hash, rule };
-}
-
 function workflowDatabaseError(error: { code?: string; message?: string }) {
   const message = (
     error.message || "The verified promotion workflow could not advance."
@@ -802,16 +789,4 @@ function canonicalLegitimateNegativeEventIds(eventIds: readonly string[]) {
   return [...eventIds]
     .map((eventId) => eventId.toLocaleLowerCase("en-US"))
     .sort((left, right) => left.localeCompare(right));
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
 }

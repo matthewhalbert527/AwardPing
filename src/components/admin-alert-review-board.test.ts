@@ -20,6 +20,33 @@ beforeEach(() => { hooks.values = []; hooks.refs = []; hooks.effects = []; hooks
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("simple outgoing alert review", () => {
+  it("shows short context alongside the original proposal without changing its approval identity", async () => {
+    const alert = { ...fixture(), context: "Check the closing date and time for your application route before planning your submission." };
+    const before = structuredClone(alert);
+    const tree = render([alert]);
+    expect(text(tree)).toContain(alert.summary);
+    expect(text(tree)).toContain(alert.context);
+    send.mockResolvedValueOnce(response({ ok: true })).mockResolvedValueOnce(response({ alerts: [] }));
+    await button(tree, "Approve alert").props.onClick!();
+    expect(JSON.parse(send.mock.calls[0][1].body)).toEqual({ id: alert.id, expected_hash: alert.contentHash, action: "approve" });
+    expect(alert).toEqual(before);
+  });
+  it.each([null, "", "x".repeat(601), { text: "Unconfirmed explanation" }])("rejects an invalid context value in a refreshed list", async context => {
+    send.mockResolvedValue(response({ alerts: [{ ...fixture(), context }] }));
+    await button(render(), "Refresh").props.onClick!();
+    expect(text(render())).toContain("The alert list could not be confirmed");
+    expect(text(render())).not.toContain("No alerts waiting for review.");
+  });
+  it("loads a short context paragraph and retains compatibility with older alerts", async () => {
+    const context = "Check the current guide on the official site before relying on a saved copy.";
+    send.mockResolvedValueOnce(response({ alerts: [{ ...fixture(), context }] }));
+    await button(render(), "Refresh").props.onClick!();
+    expect(text(render())).toContain(context);
+    send.mockResolvedValueOnce(response({ alerts: [fixture()] }));
+    await button(render(), "Refresh").props.onClick!();
+    expect(text(render())).toContain(fixture().summary);
+    expect(text(render())).not.toContain(context);
+  });
   it("shows the proposed summary and optional text support without exposing technical workflows", () => {
     const tree = render(); expect(text(tree)).toContain("Example Scholarship"); expect(text(tree)).toContain("November 5");
     expect(nodes(tree).find(node => node.type === "a")?.props.href).toBe("https://example.org/award");

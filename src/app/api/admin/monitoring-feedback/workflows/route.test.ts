@@ -99,7 +99,9 @@ vi.mock("@/lib/monitoring-feedback-promotion-identity", () => ({
   }),
 }));
 
-import { POST, buildMonitoringFeedbackRuleDraft } from "./route";
+import { POST } from "./route";
+import * as workflowRoute from "./route";
+import { buildMonitoringFeedbackRuleDraft } from "@/lib/monitoring-feedback-rule-draft";
 
 const requestId = "60000000-0000-4000-8000-000000000006";
 const actorId = "80000000-0000-4000-8000-000000000008";
@@ -112,6 +114,10 @@ const sweepCompletedAt = "2026-07-15T20:00:00.000000Z";
 const attestationFinishedAt = "2026-07-15T21:00:00.123456Z";
 
 describe("verified monitoring feedback workflow route", () => {
+  it("exports only the supported Next route handler and configuration", () => {
+    expect(Object.keys(workflowRoute).sort()).toEqual(["POST", "runtime"]);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.candidateActive = false;

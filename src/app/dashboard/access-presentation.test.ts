@@ -39,7 +39,7 @@ beforeEach(() => {
 
 describe.each([
   { name: "monitoring", page: OpsPage, title: "Monitoring records", titleClass: "dashboard-page-title" },
-  { name: "source intake", page: AdminSourceIntakePage, title: "Source intake", titleClass: "admin-page-title" },
+  { name: "source intake", page: () => AdminSourceIntakePage({}), title: "Source intake", titleClass: "admin-page-title" },
 ])("compact $name access states", ({ page, title, titleClass }) => {
   it("keeps one clear heading and blocks non-admins before any data access", async () => {
     const $ = load(renderToStaticMarkup(await page()));

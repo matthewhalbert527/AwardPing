@@ -16,7 +16,7 @@ export default async function AdminSourceIntakePage({
   searchParams = Promise.resolve({}),
 }: {
   searchParams?: Promise<{ request?: string | string[]; award?: string | string[] }>;
-} = {}) {
+}) {
   if (!hasSupabaseConfig()) return <SetupNotice />;
 
   const user = await requireUser();

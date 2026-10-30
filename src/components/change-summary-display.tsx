@@ -16,17 +16,23 @@ export function ChangeSummaryDisplay({
   compact?: boolean;
   showLabel?: boolean;
 }) {
-  const parts = programChangePresentation(changeDetails) ??
+  const program = programChangePresentation(changeDetails);
+  const parts = program ??
     changeSummaryPresentation(summary, sourceUrl, sourceTitle, changeDetails);
 
   return (
-    <div className={compact ? "change-summary change-summary-compact" : "change-summary"}>
-      {showLabel && <span className="change-summary-label">{parts.label}</span>}
-      {parts.paragraphs.length > 0 ? (
-        parts.paragraphs.map((paragraph, index) => <p key={`${parts.label}-${index}`}>{paragraph}</p>)
-      ) : (
-        <p>{parts.text}</p>
-      )}
-    </div>
+    <>
+      <div className={compact ? "change-summary change-summary-compact" : "change-summary"}>
+        {showLabel && <span className="change-summary-label">{parts.label}</span>}
+        {parts.paragraphs.length > 0 ? (
+          parts.paragraphs.map((paragraph, index) => <p key={`${parts.label}-${index}`}>{paragraph}</p>)
+        ) : (
+          <p>{parts.text}</p>
+        )}
+      </div>
+      {program?.context ? (
+        <p className="change-summary-context mt-2 text-sm leading-relaxed text-[var(--muted)]">{program.context}</p>
+      ) : null}
+    </>
   );
 }

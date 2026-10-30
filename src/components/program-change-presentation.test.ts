@@ -6,6 +6,7 @@ import { ChangeSummaryDisplay } from "./change-summary-display";
 import { PublicUpdateCard } from "./public-update-card";
 import { SourcePageTree } from "./source-page-tree";
 import type { LiveUpdateItem } from "@/lib/live-updates";
+import { programChangeContext } from "@/lib/program-change-presentation";
 
 const summary = "The deadline moved from April 1 to April 15. Applicants must still submit all documents by 5 p.m. Eastern Time.";
 const text = (value: string) => ({ block_id: "deadline", start_utf16: 0, end_utf16: value.length, text: value });
@@ -32,6 +33,9 @@ describe("program-change presentation across reader surfaces", () => {
     })));
     expect(card(".change-summary").text()).toBe(summary);
     expect(standalone(".change-summary").text()).toBe(summary);
+    expect(card(".change-summary-context").text()).toBe(programChangeContext(details));
+    expect(standalone(".change-summary-context").text()).toBe(programChangeContext(details));
+    expect(card(".change-summary-context")).toHaveLength(1);
     expect(card(".public-live-update-time strong").text()).toBe("Deadline changed");
     expect(card("img, iframe, object, [role='dialog']")).toHaveLength(0);
     expect(card(".public-live-update-source-link").attr("href")).toBe(update.sourceUrl);
@@ -49,6 +53,7 @@ describe("program-change presentation across reader surfaces", () => {
         }] }],
     })));
     expect($(".change-summary").text()).toBe(summary);
+    expect($(".change-summary-context").text()).toBe(programChangeContext(details));
     expect($(".program-change-wording > summary").text()).toBe("Exact wording");
     expect($(".program-change-wording").attr("open")).toBeUndefined();
     expect($("blockquote").map((_index, node) => $(node).text()).get()).toEqual([
@@ -57,5 +62,25 @@ describe("program-change presentation across reader surfaces", () => {
     expect($(".change-evidence-source-link").attr("href")).toBe(update.sourceUrl);
     expect($("img, iframe, object, [role='dialog'], .source-snapshot-trigger")).toHaveLength(0);
     expect($.text()).not.toMatch(/View evidence|Open image|Open PDF|Loading screenshot|Legacy summary/);
+  });
+
+  it("keeps a missing guide listing distinct from an unavailable document across public cards", () => {
+    const title = "Information for Candidates - USA";
+    const summary = `The page no longer lists “${title}”.`;
+    const changeDetails = { schema: "awardping.program-change.v1", event_kind: "program_details_changed", summary,
+      program_changes: [{ field: "documents", operation: "remove", summary, previous_quote: text(title), current_quote: null }] };
+    const $ = load(renderToStaticMarkup(createElement(PublicUpdateCard, { update: { ...update, changeDetails } })));
+    expect($(".change-summary").text()).toBe(summary);
+    expect($(".change-summary-context").text()).toBe(programChangeContext(changeDetails));
+    expect($(".change-summary-context").text()).toMatch(/does not|doesn't/i);
+    expect($.text()).not.toMatch(/HTTP|500|reorganized|is unavailable/);
+    expect($(".change-summary-context").text()).toContain("does not establish that a document was deleted or moved");
+  });
+
+  it("does not generate context from legacy summaries or malformed program evidence", () => {
+    for (const changeDetails of [undefined, { ...details, program_changes: [] }]) {
+      const $ = load(renderToStaticMarkup(createElement(ChangeSummaryDisplay, { summary: "The guide was removed.", changeDetails })));
+      expect($(".change-summary-context")).toHaveLength(0);
+    }
   });
 });

@@ -9,6 +9,7 @@ export type AlertReview = {
   contentHash: string;
   awardName: string;
   summary: string;
+  context?: string;
   sourceUrl: string;
   detectedAt: string;
   status: AlertReviewStatus;
@@ -35,6 +36,7 @@ function isAlert(value: unknown, status: AlertReviewStatus): value is AlertRevie
   return object(value) && typeof value.id === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.id) &&
     typeof value.contentHash === "string" && /^[a-f0-9]{64}$/.test(value.contentHash) && value.status === status &&
     boundedText(value.awardName, 500) && boundedText(value.summary, 8000) && Boolean(sourceLink(value.sourceUrl)) &&
+    (value.context === undefined || boundedText(value.context, 600)) &&
     typeof value.detectedAt === "string" && Number.isFinite(Date.parse(value.detectedAt)) && Array.isArray(value.details) &&
     value.details.length <= 64 && value.details.every(detail => object(detail) && boundedText(detail.category, 100) &&
       boundedText(detail.summary, 8000) && (detail.previous === undefined || boundedText(detail.previous, 16000)) &&
@@ -117,6 +119,7 @@ export function AdminAlertReviewBoard({ initialAlerts, initialStatus = "pending"
     {loaded ? <ul className="space-y-4">{alerts.map(alert => <li key={alert.id}><article className="card space-y-4 p-5" aria-label={`${alert.awardName} alert`}>
       <div className="flex flex-wrap justify-between gap-2"><h2 className="text-lg font-bold">{alert.awardName}</h2><time className="text-sm text-[var(--muted)]" dateTime={alert.detectedAt}>{formatCentralDateTime(alert.detectedAt)}</time></div>
       <p className="leading-relaxed">{alert.summary}</p>
+      {alert.context ? <p className="change-summary-context text-sm leading-relaxed text-[var(--muted)]">{alert.context}</p> : null}
       <a className="text-sm font-semibold underline" href={sourceLink(alert.sourceUrl)!} target="_blank" rel="noopener noreferrer">View official page</a>
       {alert.details.length ? <details className="rounded-md border p-3"><summary className="cursor-pointer text-sm font-semibold">Review supporting details</summary>
         <ul className="mt-3 space-y-4">{alert.details.map((detail, index) => <li key={index} className="space-y-2 text-sm"><p className="font-semibold">{detail.category}</p><p>{detail.summary}</p>

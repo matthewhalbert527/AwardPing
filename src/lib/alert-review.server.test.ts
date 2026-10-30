@@ -18,6 +18,7 @@ vi.mock("../../scripts/lib/program-text-repository.mjs", async importOriginal =>
 import { quoteIdRecoveryFixture } from "../../scripts/fixtures/program-text-quote-id-recovery.mjs";
 import { prepareProgramTextQuoteIdRecovery } from "../../scripts/lib/program-text-quote-id-recovery.mjs";
 import { decideAlertReview, loadAlertReviews } from "./alert-review.server";
+import { programChangeContext } from "./program-change-presentation";
 
 const actor = "10000000-0000-4000-8000-000000000001";
 let candidate: Record<string, unknown>, review: Record<string, unknown>, award: Record<string, unknown>;
@@ -49,14 +50,34 @@ beforeEach(async () => {
 function input(action: "approve" | "dismiss" = "approve") { return { id: candidate.id as string, expected_hash: "a".repeat(64), action }; }
 describe("bounded private alert list and independently verified decision", () => {
   it("loads a bounded source and award projection without fetching evidence or provider responses", async () => {
+    const before = structuredClone(review);
     const value = await loadAlertReviews(); expect(value).toHaveLength(1);
     expect(value[0]).toMatchObject({ id: candidate.id, contentHash: review.content_hash, awardName: award.name,
       sourceUrl: candidate.source_url, detectedAt: candidate.created_at, status: "pending",
       details: [{ category: "Application cycle", previous: expect.stringContaining("2027 NSF GRFP"), current: expect.stringContaining("applications are closed") }] });
+    expect(value[0].context).toBe(programChangeContext(review.details));
+    expect(value[0].context).toBeTruthy();
+    expect(value[0].summary).toBe((review.details as { summary: string }).summary);
+    expect(review).toEqual(before);
     expect(value[0]).not.toHaveProperty("ai_result"); expect(value[0]).not.toHaveProperty("previous_snapshot_ref");
     expect(mocks.loadCapture).not.toHaveBeenCalled(); expect(mocks.rpc).not.toHaveBeenCalled();
     expect(calls.filter(call => call.kind === "limit").every(call => call.value === 100)).toBe(true);
     expect(calls.find(call => call.table === "shared_award_visual_review_candidates" && call.kind === "select")?.value).not.toContain("*");
+  });
+  it("explains a removed guide reference without claiming a site investigation or changing stored evidence", async () => {
+    const title = "Information for Candidates - USA";
+    const summary = `The page no longer lists “${title}”.`;
+    review.details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed", summary,
+      program_changes: [{ field: "documents", operation: "remove", summary,
+        previous_quote: { block_id: "guide", start_utf16: 0, end_utf16: title.length, text: title }, current_quote: null }] };
+    const before = structuredClone(review);
+    const [value] = await loadAlertReviews();
+    expect(value.summary).toBe(summary);
+    expect(value.context).toBe(programChangeContext(review.details));
+    expect(value.context).toMatch(/does not|doesn't/i);
+    expect(value.context).not.toMatch(/HTTP|500|reorganized|confirmed|now located/i);
+    expect(review).toEqual(before);
+    expect(mocks.rpc).not.toHaveBeenCalled(); expect(mocks.loadCapture).not.toHaveBeenCalled();
   });
   it("returns an empty confirmed list without unrelated table queries", async () => {
     expect(await loadAlertReviews("approved")).toEqual([]); expect(mocks.from).toHaveBeenCalledTimes(1);
