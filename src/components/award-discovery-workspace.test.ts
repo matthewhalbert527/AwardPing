@@ -627,28 +627,25 @@ function renderRows(rows: SharedAwardCard[], presets: unknown[] = [], isAuthenti
   }
 }
 
-// The same labeled Last reported change field on every listed award, in listing order.
-function statusChips(html: string) {
+// Browse and search retain application dates without card freshness metadata.
+function expectNoCardDateMetadata(html: string) {
   const $ = load(html);
-  return $('.award-row-card dd[data-field="updates"]').map((_index, field) => {
-    expect($(field).siblings("dt").text()).toBe("Last reported change");
-    return $(field).text();
-  }).get();
+  const cards = $('.award-row-card, .award-search-option');
+  expect(cards.length).toBeGreaterThan(0);
+  expect(cards.find('dl[aria-label="Award information dates"], [data-field="details"], [data-field="updates"]')).toHaveLength(0);
+  expect(cards.text()).not.toMatch(/Details checked|Last reported change|No changes reported/);
 }
 
-describe("AwardDiscoveryWorkspace update status", () => {
-  it("places one update stamp directly after the award name, without a description or eligibility fields", () => {
-    const $ = load(renderRows([{ ...goldwaterRow, summary: "Supports undergraduate STEM researchers." }]));
+describe("AwardDiscoveryWorkspace card information", () => {
+  it("keeps the award name and deadline without date stamps, descriptions or eligibility fields", () => {
+    const html = renderRows([{ ...goldwaterRow, deadline: "January 29, 2027", summary: "Supports undergraduate STEM researchers." }]);
+    const $ = load(html);
     const card = $(".award-row-card");
-    const stamp = card.find('dl[aria-label="Award information dates"]');
-    expect(stamp).toHaveLength(1);
-    expect(stamp.parent().prev().text()).toBe("Goldwater Scholarship");
-    expect(stamp.parent().next()).toHaveLength(0);
-    expect(card.find(".award-row-one-line-description")).toHaveLength(0);
-    expect(card.find("dt").map((_index, element) => $(element).text()).get()).toEqual(["Details checked", "Last reported change"]);
-    expect(card.find('[data-field="level"], [data-field="citizenship"]')).toHaveLength(0);
-    expect(card.find(".award-row-deadline").text()).toContain("Deadline");
+    expectNoCardDateMetadata(html);
     expect(card.find("a.award-row-summary").attr("href")).toBe("/goldwater-scholarship");
+    expect(card.find(".award-row-grid > div").first().text()).toBe("Goldwater Scholarship");
+    expect(card.find(".award-row-deadline").text()).toBe("DeadlineJanuary 29, 2027");
+    expect(card.find(".award-row-one-line-description, [data-field='level'], [data-field='citizenship']")).toHaveLength(0);
   });
 
   it.each([
@@ -657,18 +654,15 @@ describe("AwardDiscoveryWorkspace update status", () => {
     "Supports undergraduate STEM researchers.",
     "The Gilman International Scholarship provides grants for U.S. citizens with limited financial means to study abroad.",
     "AwardPing is monitoring this award. Visit the official source for the latest details.",
-  ])("keeps only the award name, update stamp and deadline on cards for summary %j", (summary) => {
+  ])("keeps only the award name and deadline on cards for summary %j", (summary) => {
     const row = { ...goldwater, summary };
     const original = structuredClone(row);
     for (const isAuthenticated of [false, true]) {
-      const $ = load(renderRows([row], [], isAuthenticated));
-      const card = $(".award-row-card");
+      const html = renderRows([row], [], isAuthenticated);
+      const $ = load(html), card = $(".award-row-card");
       expect(card).toHaveLength(1);
-      expect(card.find("a.award-row-summary")).toHaveLength(1);
+      expectNoCardDateMetadata(html);
       expect(card.find("a.award-row-summary").attr("href")).toBe(goldwater.publicPath);
-      expect(card.find('dl[aria-label="Award information dates"]').parent().prev().text()).toBe(goldwater.name);
-      expect(card.find('dl[aria-label="Award information dates"]')).toHaveLength(1);
-      expect(card.find('dd[data-field="updates"]').text()).toBe("September 7, 2026");
       expect(card.find(".award-row-deadline").text()).toBe("DeadlineJanuary 29, 2026");
       expect(card.find("p, .award-row-one-line-description, [data-field='level'], [data-field='citizenship']")).toHaveLength(0);
       if (summary) expect(card.text()).not.toContain(summary);
@@ -676,71 +670,19 @@ describe("AwardDiscoveryWorkspace update status", () => {
     expect(row).toEqual(original);
   });
 
-  it("separates reported change dates from current details checks and first capture", () => {
-    const html = renderRows([gates, gilman, goldwaterRow]);
-
-    expect(browseRowHrefs(html)).toEqual([
-      "/gates-cambridge-scholarship",
-      "/gilman-international-scholarship",
-      "/goldwater-scholarship",
-    ]);
-    expect(statusChips(html)).toEqual([
-      "No changes reported",
-      "September 3, 2026",
-      "September 7, 2026",
-    ]);
-    expect(html).not.toContain("None recorded");
-    // Nothing the directory does not know is claimed.
-    expect(html).not.toContain("source page ·");
-    expect(html).not.toContain("source pages ·");
-    expect(html).not.toContain("Source search pending");
-    expect(html).not.toContain("Recently updated");
-    expect(html).not.toContain("Last checked");
-    expect(html).not.toContain("Open to view source pages");
-  });
-
-  it("does not infer a Last reported change date when the recorded update count is unknown", () => {
-    const html = renderRows([{ ...gates, changeCount: null }]);
-
-    expect(statusChips(html)).toEqual(["Not available"]);
-    // No recorded-update count is stated anywhere in the listing.
-    expect(html).not.toMatch(/\d recorded update/);
-  });
-
-  it.each([
-    { changeCount: 1, firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z", latestUpdateAt: null },
-    { changeCount: 1, firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z", latestUpdateAt: "2026-02-30T18:00:00.000Z" },
-  ])("does not substitute a check or the other timestamp for missing/invalid required provenance: %j", (dates) => {
-    const row = { ...gates, ...dates, lastCheckedAt: "2026-09-08T18:00:00.000Z" };
-    const before = structuredClone(row);
-    const html = renderRows([row]);
-    expect(statusChips(html)).toEqual(["Not available"]);
-    expect(load(html)('dd[data-field="updates"] time').length).toBe(0);
-    expect(row).toEqual(before);
-  });
-
-  it("preserves the actual instant in time markup while showing the Central calendar date", () => {
-    const row = { ...goldwaterRow, latestUpdateAt: "2026-09-08T02:00:00.000Z", firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z" };
-    const before = structuredClone(row);
-    const html = renderRows([row]);
-    expect(statusChips(html)).toEqual(["September 7, 2026"]);
-    expect(load(html)('dd[data-field="updates"] time').attr("datetime")).toBe("2026-09-08T02:00:00.000Z");
-    expect(row).toEqual(before);
-  });
-
-  it("uses the same glance fields regardless of whether source details have loaded", () => {
-    const html = renderRows([
-      { ...gates, sourceCount: 0, changeCount: 0 },
-      { ...gilman, sourceCount: 1, changeCount: 1 },
-      { ...goldwaterRow, sourceCount: 4, changeCount: 2 },
-    ]);
-
-    expect(statusChips(html)).toEqual([
-      "No changes reported",
-      "September 3, 2026",
-      "September 7, 2026",
-    ]);
-    expect(html).not.toContain("Open to view source pages");
+  it.each([0, 12, null, -1, 0.5])("omits both metadata stamps in browse and search for change count %s", (changeCount) => {
+    const row = { ...goldwater, changeCount, detailsCheckedAt: "2026-10-29T12:00:00Z" };
+    const original = structuredClone(row);
+    for (const isAuthenticated of [false, true]) {
+      for (const preset of [[], ["Goldwater", true]]) {
+        const html = renderRows([row], preset, isAuthenticated);
+        expectNoCardDateMetadata(html);
+        expect(load(html)(".award-row-deadline").text()).toBe("DeadlineJanuary 29, 2026");
+        expect(html).not.toContain("October 29, 2026");
+        expect(html).not.toContain("September 7, 2026");
+      }
+    }
+    expect(row).toEqual(original);
   });
 
   it("offers all six update-age windows and applies Last week to eligible event dates", () => {
@@ -761,10 +703,7 @@ describe("AwardDiscoveryWorkspace update status", () => {
       "/gilman-international-scholarship",
       "/goldwater-scholarship",
     ]);
-    expect(statusChips(filtered)).toEqual([
-      "September 3, 2026",
-      "September 7, 2026",
-    ]);
+    expectNoCardDateMetadata(filtered);
   });
 
   it.each([
@@ -807,23 +746,16 @@ describe("AwardDiscoveryWorkspace update status", () => {
     expect(rows).toEqual(before);
   });
 
-  it("shows the same useful update dates in search without the old source-count status line", () => {
+  it("keeps search results free of date stamps and the old source-count status line", () => {
     const html = renderRows([gates, gilman, goldwaterRow], ["Scholarship", true]);
-
     expect(html).toContain("3 matching awards");
     expect(searchOptionHrefs(html)).toEqual([
       "/gates-cambridge-scholarship",
       "/gilman-international-scholarship",
       "/goldwater-scholarship",
     ]);
+    expectNoCardDateMetadata(html);
     expect(html).not.toContain("award-search-option-meta");
-    const $ = load(html);
-    expect($('.award-search-option dd[data-field="updates"]').map((_index, field) => $(field).text()).get()).toEqual([
-      "No changes reported", "September 3, 2026", "September 7, 2026",
-    ]);
-    expect($('.award-search-option dd[data-field="updates"]').first().attr("title")).toBeUndefined();
-    expect($('.award-search-option dd[data-field="details"]').first().attr("title")).toContain("Details checked");
-    expect($('.award-search-option dd[data-field="updates"]').eq(1).attr("title")).toContain("Last reported change");
     expect(html).not.toMatch(/source pages|recorded updates|Source search pending/);
   });
 });
@@ -837,7 +769,7 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
       expect($(".award-row-deadline").text()).toContain("View route deadlines");
     }
   });
-  it.each([false, true])("keeps Gates' scoped application dates and independent details-check provenance while searching (signed in: %s)", (isAuthenticated) => {
+  it.each([false, true])("keeps Gates' scoped application dates while omitting metadata in browse and search (signed in: %s)", (isAuthenticated) => {
     const row: SharedAwardCard = {
       ...gates,
       academicLevels: ["Postgraduate"],
@@ -866,14 +798,8 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
     expect(result.text()).toContain("(dependent on course)");
     expect(result.find(".award-row-deadline small").text()).toBe("Past date");
     expect(result.text()).not.toMatch(/Not listed|Notification|Postgraduate|Citizens of any country/);
-    const stamp = result.find('dl[aria-label="Award information dates"]');
-    expect(stamp).toHaveLength(1);
-    expect(stamp.parent().prev().text()).toBe(gates.name);
-    expect(stamp.html()).toBe(browse('dl[aria-label="Award information dates"]').html());
-    expect(stamp.find('[data-field="details"] time').attr("datetime")).toBe(gates.detailsCheckedAt);
-    expect(stamp.find('[data-field="updates"]').text()).toBe("No changes reported");
-    expect(stamp.find('[data-field="updates"] time')).toHaveLength(0);
-    expect(stamp.find('[data-field="details"]').attr("title")).toContain("Details checked");
+    expectNoCardDateMetadata(html);
+    expectNoCardDateMetadata(renderRows([row], [], isAuthenticated, asOf));
     expect(result.find("button, a, [data-field='level'], [data-field='citizenship']")).toHaveLength(0);
     expectNativeSearchSemantics(html);
     expect(row).toEqual(before);
@@ -884,7 +810,7 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
     { name: "Boren Scholarships and Fellowships", deadline: "January 27, 2027 (Boren Scholarships)", importantDates: ["Application deadline for fellowships: January 20, 2027 at 5:00 p.m. EST"] },
     { name: "Gates Cambridge Scholarship", deadline: null, importantDates: ["Notification of application outcome: December 14, 2026"] },
     { name: "Gates Cambridge Scholarship", deadline: "Rolling; check the official page", importantDates: [] },
-  ])("uses identical browse/search dates and unavailable update handling for $name: $deadline", (facts) => {
+  ])("uses identical browse/search application dates without metadata for $name: $deadline", (facts) => {
     const row = { ...gates, ...facts, changeCount: null, lastCheckedAt: "2026-10-17T12:00:00Z" };
     const original = structuredClone(row);
     const asOf = "2026-10-17T20:00:00Z";
@@ -892,9 +818,8 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
     const search = load(renderRows([row], [facts.name, true], false, asOf));
     const result = search(".award-search-option");
     expect(result.find(".award-row-deadline").html()).toBe(browse(".award-row-deadline").html());
-    expect(result.find('dd[data-field="updates"]').text()).toBe("Not available");
-    expect(result.find('dd[data-field="updates"] time')).toHaveLength(0);
-    expect(result.find('dd[data-field="details"] time').attr("datetime")).toBe(gates.detailsCheckedAt);
+    expectNoCardDateMetadata(renderRows([row], [facts.name, true], false, asOf));
+    expectNoCardDateMetadata(renderRows([row], [], false, asOf));
     expect(result.text()).not.toContain("October 17, 2026");
     expect(result.find(".award-row-grid").attr("class")).toBe(browse(".award-row-grid").attr("class"));
     expect(result.attr("href")).toBe(row.publicPath);

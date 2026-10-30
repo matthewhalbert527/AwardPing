@@ -112,20 +112,12 @@ async function renderDirectory() {
   return renderToStaticMarkup(await AwardDirectoryPage());
 }
 
-function lastUpdate(html: string) {
+function expectNoCardDateMetadata(html: string) {
   const $ = load(html);
-  const field = $('.award-row-card dd[data-field="updates"]');
-  expect(field.length).toBe(1);
-  expect(field.siblings("dt").text()).toBe("Last reported change");
-  return { value: field.text(), dateTime: field.find("time").attr("datetime") };
-}
-
-function detailsChecked(html: string) {
-  const $ = load(html);
-  const field = $('.award-row-card dd[data-field="details"]');
-  expect(field).toHaveLength(1);
-  expect(field.siblings("dt").text()).toBe("Details checked");
-  return { value: field.text(), dateTime: field.find("time").attr("datetime") };
+  const card = $('.award-row-card');
+  expect(card).toHaveLength(1);
+  expect(card.find('dl[aria-label="Award information dates"], [data-field="details"], [data-field="updates"]')).toHaveLength(0);
+  expect(card.text()).not.toMatch(/Details checked|Last reported change|No changes reported/);
 }
 
 function publicEvent(id: string, detectedAt: string, awardId = AWARD_ID): PublicChangeEventRow {
@@ -194,15 +186,15 @@ describe("award directory page", () => {
     mocks.loadEligiblePublicChangeEvents.mockResolvedValue([]);
     mocks.loadFirstPublishedCaptureDates.mockResolvedValue(new Map([[AWARD_ID, FIRST_CAPTURE]]));
   });
-  it("renders new basic details while keeping first coverage separate from the snapshot verification date", async () => {
+  it("shows the current application deadline without verification or change metadata", async () => {
     const index = publicationIndex(), entry = index.verifiedEntries[0];
     entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027", overview: "Current official basic details.", deadline: "January 31, 2027" };
     entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-28T12:00:00.000Z" };
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
     const html = await renderDirectory();
     expect(html).toContain("January 31, 2027"); expect(html).not.toContain("January 31, 2026");
-    expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
-    expect(detailsChecked(html)).toEqual({ value: "October 28, 2026", dateTime: "2026-10-28T12:00:00.000Z" }); expect(html).not.toContain("Application routes");
+    expectNoCardDateMetadata(html);
+    expect(html).not.toContain("October 28, 2026"); expect(html).not.toContain("Application routes");
   });
   it.each(["stale", "unavailable"])("keeps a %s basic snapshot card visible without reviving old fields or inventing updates", async kind => {
     const index = publicationIndex(), entry = index.verifiedEntries[0]; entry.publishedFacts = emptyBasicAwardFacts();
@@ -211,20 +203,18 @@ describe("award directory page", () => {
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
     const html = await renderDirectory();
     expect(html).toContain("Example Fellowship"); expect(html).not.toContain("January 31, 2026"); expect(html).not.toContain("January 31, 2027");
-    expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
-    expect(detailsChecked(html)).toEqual({ value: "Not available", dateTime: undefined });
+    expectNoCardDateMetadata(html);
   });
 
-  it("reports no changes when there are no eligible public events", async () => {
+  it("omits date metadata when there are no eligible public events", async () => {
     const index = publicationIndex();
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
 
     const html = await renderDirectory();
 
-    expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
+    expectNoCardDateMetadata(html);
     expect(html).not.toContain("None recorded");
     expect(mocks.loadFirstPublishedCaptureDates).not.toHaveBeenCalled();
-    expect(detailsChecked(html)).toEqual({ value: "Not available", dateTime: undefined });
     expect(mocks.loadEligiblePublicChangeEvents).toHaveBeenCalledWith({
       admin: expect.objectContaining({ from: expect.any(Function) }),
       publicationIndex: index,
@@ -232,70 +222,24 @@ describe("award directory page", () => {
     });
   });
 
-  it("prefers the newest eligible public event over the first capture and an older event", async () => {
-    const index = publicationIndex();
-    index.verifiedEntries[0].basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-29T12:00:00.000Z" };
+  it.each([false, true])("keeps date metadata off cards with public events (alias source: %s)", async alias => {
+    const index = publicationIndex(), entry = index.verifiedEntries[0];
+    entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-29T12:00:00.000Z" };
+    if (alias) {
+      entry.memberAwardIds = [AWARD_ID, ALIAS_ID];
+      index.entryByMemberAwardId.set(ALIAS_ID, entry);
+      index.verifiedMemberAwardIds = [AWARD_ID, ALIAS_ID];
+    }
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
-    // The eligible-event loader's contract is newest-first, independent of
-    // registry verification and of the initial captured source timestamp.
     mocks.loadEligiblePublicChangeEvents.mockResolvedValue([
-      { event: publicEvent("latest", "2026-09-07T18:00:00.000Z"), publication: index.verifiedEntries[0] },
-      { event: publicEvent("older", "2026-09-03T18:00:00.000Z"), publication: index.verifiedEntries[0] },
+      { event: publicEvent("latest", "2026-09-07T18:00:00.000Z", alias ? ALIAS_ID : AWARD_ID), publication: entry },
+      { event: publicEvent("older", "2026-09-03T18:00:00.000Z"), publication: entry },
     ]);
-
     const html = await renderDirectory();
-    expect(lastUpdate(html)).toEqual({
-      value: "September 7, 2026", dateTime: "2026-09-07T18:00:00.000Z",
-    });
-    expect(detailsChecked(html)).toEqual({ value: "October 29, 2026", dateTime: "2026-10-29T12:00:00.000Z" });
-  });
-
-  it("does not turn an alias or canonical first capture into a reported change", async () => {
-    const index = publicationIndex();
-    const entry = index.verifiedEntries[0];
-    entry.memberAwardIds = [AWARD_ID, ALIAS_ID];
-    index.entryByMemberAwardId.set(ALIAS_ID, entry);
-    index.verifiedMemberAwardIds = [AWARD_ID, ALIAS_ID];
-    mocks.loadStage1PublicationIndex.mockResolvedValue(index);
-    mocks.loadFirstPublishedCaptureDates.mockResolvedValue(new Map([
-      [AWARD_ID, FIRST_CAPTURE], [ALIAS_ID, "2026-08-25T18:00:00.000Z"],
-    ]));
-
-    const html = await renderDirectory();
-    expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
+    expectNoCardDateMetadata(html);
     expect(load(html)(".award-row-summary").attr("href")).toBe("/example-fellowship");
+    expect(html).not.toMatch(/October 29, 2026|September 7, 2026|September 3, 2026/);
   });
-
-  it("attributes an eligible alias event to the canonical award before selecting Last reported change", async () => {
-    const index = publicationIndex();
-    const entry = index.verifiedEntries[0];
-    entry.memberAwardIds = [AWARD_ID, ALIAS_ID];
-    index.entryByMemberAwardId.set(ALIAS_ID, entry);
-    index.verifiedMemberAwardIds = [AWARD_ID, ALIAS_ID];
-    mocks.loadStage1PublicationIndex.mockResolvedValue(index);
-    mocks.loadEligiblePublicChangeEvents.mockResolvedValue([
-      { event: publicEvent("alias-event", "2026-09-03T18:00:00.000Z", ALIAS_ID), publication: entry },
-    ]);
-
-    expect(lastUpdate(await renderDirectory())).toEqual({
-      value: "September 3, 2026", dateTime: "2026-09-03T18:00:00.000Z",
-    });
-  });
-
-  it.each([null, "not a date", "2026-02-30T12:00:00.000Z"])(
-    "does not replace unavailable details verification %s with registry, legacy review or capture dates",
-    async (verifiedAt) => {
-      const index = publicationIndex(), entry = index.verifiedEntries[0];
-      entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: verifiedAt as unknown as string };
-      entry.textFactReview = { reviewedAt: "2026-10-29T12:00:00.000Z" } as Stage1PublicationEntry["textFactReview"];
-      mocks.loadStage1PublicationIndex.mockResolvedValue(index);
-      const html = await renderDirectory();
-      expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
-      expect(detailsChecked(html)).toEqual({ value: "Not available", dateTime: undefined });
-      expect(mocks.loadFirstPublishedCaptureDates).not.toHaveBeenCalled();
-      expect(html).not.toContain("None recorded");
-    },
-  );
 
   it("introduces the directory with one compact heading and its useful tasks", async () => {
     const html = await renderDirectory();

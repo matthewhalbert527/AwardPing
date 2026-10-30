@@ -13,7 +13,6 @@ import { directoryFilterOptions, getAwardDirectoryCategories } from "@/lib/award
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { awardMatchesUpdateWindow, UPDATE_WINDOW_OPTIONS } from "@/lib/award-update-window";
-import { AwardCardGlance } from "@/components/award-card-glance";
 import { AwardDateValue } from "@/components/award-date-value";
 import styles from "./award-discovery-workspace.module.css";
 
@@ -620,11 +619,6 @@ function AwardDirectoryCardContent({
             <ChevronRight size={17} aria-hidden="true" />
           </span>
         )}
-        <AwardCardGlance
-          changeCount={award.changeCount}
-          latestUpdateAt={award.latestUpdateAt}
-          detailsCheckedAt={award.detailsCheckedAt}
-        />
         {award.hasApplicationRoutes ? <p className="mt-2 text-xs font-medium text-[var(--muted)]">Requirements and benefits by route</p> : null}
       </div>
       <div className="award-row-deadline">
