@@ -8,6 +8,8 @@ import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import { loadVariationPublicSources } from "@/lib/public-award-pages";
 import { loadPublishedVariationContext } from "@/lib/program-variation-review.server";
 import type { PublishedVariationContext } from "@/lib/program-variation-review-types";
+import { isProgramExpansionPublication } from "@/lib/program-expansion-tracking.server";
+import { loadProgramExpansionPublicSources } from "@/lib/program-expansion-public-sources.server";
 import { isPublicAwardSource } from "@/lib/source-quality";
 import {
   isTrackableOfficialSourceUrl,
@@ -64,6 +66,7 @@ export async function GET(_request: Request, { params }: Props) {
     }
   }
   const memberAwardIds = publication.memberAwardIds;
+  const expansion = isProgramExpansionPublication(publication);
   const user = await getCurrentUser();
   const officeContext = user ? await getOfficeContext(user) : null;
   const admin = createSupabaseAdminClient();
@@ -74,7 +77,9 @@ export async function GET(_request: Request, { params }: Props) {
     { data: officeAwards, error: officeAwardsError },
     { data: officeSources, error: officeSourcesError },
   ] = await Promise.all([
-    variations ? loadVariationPublicSources(admin, publication, variations).then(result => ({
+    expansion ? loadProgramExpansionPublicSources(admin, publication).catch(() => ({
+      data: null, error: { message: "Approved expansion source identities are unavailable." },
+    })) : variations ? loadVariationPublicSources(admin, publication, variations).then(result => ({
       data: result.data.map(source => ({ ...source, last_error: null })), error: null,
     })).catch(() => ({ data: null, error: { message: "Approved source identities are unavailable." } })) : admin
       .from("shared_award_sources")
@@ -132,10 +137,13 @@ export async function GET(_request: Request, { params }: Props) {
   // Legacy rows require their original public review. Variation rows have
   // already passed the published unit's exact immutable URL/owner bindings.
   const sources = (sharedSources || [])
-    .filter((source) => isTrackableOfficialSourceUrl(source.url))
+    // Exact admitted expansion links passed current text authority in their
+    // loader, including programme-specific database URLs. The legacy listing
+    // heuristic and legacy AI approval remain mandatory for original entries.
+    .filter((source) => expansion || isTrackableOfficialSourceUrl(source.url))
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
-    .filter(source => Boolean(variations) || isPublicAwardSource(source));
+    .filter(source => expansion || Boolean(variations) || isPublicAwardSource(source));
   const reviewedHomepageSource = sources.find((source) =>
     source.id === publication.officialHomepageSourceId &&
     source.url === publication.registry.official_homepage &&

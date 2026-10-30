@@ -15,6 +15,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isSameOriginMutationRequest } from "@/lib/same-origin-mutation";
 import { loadProgramVariationTrackingSources, trackProgramVariationForOffice } from "@/lib/program-variation-tracking.server";
+import { isProgramExpansionPublication, loadProgramExpansionTrackingContext, trackProgramExpansionForOffice, untrackProgramExpansionForOffice } from "@/lib/program-expansion-tracking.server";
 
 export const runtime = "nodejs";
 
@@ -65,6 +66,15 @@ export async function POST(request: Request, { params }: Props) {
     return NextResponse.json({ error: "Check the tracking cadence." }, { status: 400 });
   }
 
+  if (isProgramExpansionPublication(publication)) {
+    try {
+      const { context, sources } = await loadProgramExpansionTrackingContext(createSupabaseAdminClient(), publication);
+      const supabase = await createSupabaseServerClient();
+      return NextResponse.json({ ok: true, ...await trackProgramExpansionForOffice({ supabase, publication, context, sources, officeId: officeContext.current.officeId, cadence: parsed.data.cadence }) });
+    } catch (error) {
+      return NextResponse.json({ error: "Shared award could not be tracked. Refresh and try again." }, { status: trackingMutationStatus(error) });
+    }
+  }
   if (!publication.registry.release_epoch) {
     return NextResponse.json({ error: "Shared award was not found." }, { status: 404 });
   }
@@ -161,6 +171,11 @@ export async function DELETE(request: Request, { params }: Props) {
   const { id } = await params;
   const publication = await getStage1PublicationEntryForAward(id);
   try {
+    if (isProgramExpansionPublication(publication)) {
+      const { context } = await loadProgramExpansionTrackingContext(createSupabaseAdminClient(), publication, undefined, "untrack");
+      const supabase = await createSupabaseServerClient();
+      return NextResponse.json(await untrackProgramExpansionForOffice({ supabase, context, officeId: officeContext.current.officeId }));
+    }
     const supabase = await createSupabaseServerClient();
     const result = await untrackSharedAwardForOffice({
       supabase,

@@ -29,6 +29,8 @@ import {
 import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
 import { loadPublishedVariationContext } from "@/lib/program-variation-review.server";
 import type { PublishedVariationContext } from "@/lib/program-variation-review-types";
+import { isProgramExpansionPublication } from "@/lib/program-expansion-tracking.server";
+import { loadProgramExpansionPublicSources } from "@/lib/program-expansion-public-sources.server";
 
 type SharedAwardRow = Pick<
   Database["public"]["Tables"]["shared_awards"]["Row"],
@@ -216,6 +218,7 @@ async function loadPublicAwardPageData(
   options: PublicAwardPageOptions = {},
 ): Promise<PublicAwardPageData | null> {
   const admin = createSupabaseAdminClient();
+  const expansion = isProgramExpansionPublication(publication);
   const variations = !publication.basicFactSnapshot && !publication.basicFactsUnavailable && publication.textFactReview?.variationInventoryId
     ? await loadPublishedVariationContext(publication.registry.cohort_key, { scopeKey: options.variantId || undefined }) : null;
   if (!publication.basicFactSnapshot && !publication.basicFactsUnavailable && publication.textFactReview?.variationInventoryId && (!variations ||
@@ -241,7 +244,7 @@ async function loadPublicAwardPageData(
       })
     : Promise.resolve([]);
   const [sourcesResult, recentEvents, requestedEvents] = await Promise.all([
-    variations ? loadVariationPublicSources(admin, publication, variations) : admin
+    expansion ? loadProgramExpansionPublicSources(admin, publication) : variations ? loadVariationPublicSources(admin, publication, variations) : admin
       .from("shared_award_sources")
       .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, last_checked_at")
       .in("shared_award_id", publication.memberAwardIds)
@@ -272,11 +275,11 @@ async function loadPublicAwardPageData(
   // discarding one of them hid its own updates, which attach by source ID.
   // Trackability is still applied to every row individually.
   const officialSources = ((sources || []) as SharedSourceRow[])
-    .filter((source) => isTrackableOfficialSourceUrl(source.url))
-    .filter((source) => Boolean(variations) || source.admin_review_status === "open")
+    .filter((source) => expansion || isTrackableOfficialSourceUrl(source.url))
+    .filter((source) => expansion || Boolean(variations) || source.admin_review_status === "open")
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
-    .filter(source => Boolean(variations) || isPublicAwardSource(source));
+    .filter(source => expansion || Boolean(variations) || isPublicAwardSource(source));
   // The reviewed homepage is looked up over the rows again, still under the
   // allowlist and identity-exclusion gates but WITHOUT the open-status,
   // trackability and public-quality gates: it stays pinned even when the

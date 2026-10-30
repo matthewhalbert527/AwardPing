@@ -14,6 +14,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isSameOriginMutationRequest } from "@/lib/same-origin-mutation";
 import { loadProgramVariationTrackingSources, trackProgramVariationForOffice } from "@/lib/program-variation-tracking.server";
+import { isProgramExpansionPublication, loadProgramExpansionTrackingContext, trackProgramExpansionForOffice, untrackProgramExpansionForOffice } from "@/lib/program-expansion-tracking.server";
 
 export const runtime = "nodejs";
 
@@ -46,6 +47,15 @@ export async function POST(request: Request, { params }: Props) {
   const publication = await getStage1PublicationEntryForAward(id);
   if (!publication?.effectivelyVerified) {
     return NextResponse.json({ error: "Award source page was not found." }, { status: 404 });
+  }
+  if (isProgramExpansionPublication(publication)) {
+    try {
+      const { context, sources } = await loadProgramExpansionTrackingContext(createSupabaseAdminClient(), publication, sourceId);
+      const supabase = await createSupabaseServerClient();
+      return NextResponse.json({ ok: true, ...await trackProgramExpansionForOffice({ supabase, publication, context, sources, officeId: officeContext.current.officeId, cadence: "daily" }) });
+    } catch (error) {
+      return NextResponse.json({ error: "Award source page could not be tracked. Refresh and try again." }, { status: trackingMutationStatus(error) });
+    }
   }
   if (!publication.registry.release_epoch) {
     return NextResponse.json({ error: "Award source page was not found." }, { status: 404 });
@@ -132,6 +142,11 @@ export async function DELETE(request: Request, { params }: Props) {
   const { id, sourceId } = await params;
   const publication = await getStage1PublicationEntryForAward(id);
   try {
+    if (isProgramExpansionPublication(publication)) {
+      const { context } = await loadProgramExpansionTrackingContext(createSupabaseAdminClient(), publication, sourceId, "untrack");
+      const supabase = await createSupabaseServerClient();
+      return NextResponse.json(await untrackProgramExpansionForOffice({ supabase, context, officeId: officeContext.current.officeId, sourceId }));
+    }
     const supabase = await createSupabaseServerClient();
     const result = await untrackSharedAwardSourceForOffice({
       supabase,
