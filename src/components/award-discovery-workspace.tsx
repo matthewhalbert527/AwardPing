@@ -36,6 +36,7 @@ export type SharedAwardCard = {
   sourceIssueCount: number | null;
   changeCount: number | null;
   latestUpdateAt?: string | null;
+  detailsCheckedAt?: string | null;
   firstPublishedCaptureAt?: string | null;
   tracked: boolean;
   detailsLoaded?: boolean;
@@ -622,7 +623,7 @@ function AwardDirectoryCardContent({
         <AwardCardGlance
           changeCount={award.changeCount}
           latestUpdateAt={award.latestUpdateAt}
-          firstPublishedCaptureAt={award.firstPublishedCaptureAt}
+          detailsCheckedAt={award.detailsCheckedAt}
         />
         {award.hasApplicationRoutes ? <p className="mt-2 text-xs font-medium text-[var(--muted)]">Requirements and benefits by route</p> : null}
       </div>

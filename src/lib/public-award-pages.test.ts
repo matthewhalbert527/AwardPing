@@ -207,9 +207,12 @@ describe("public award page deep links", () => {
     expect(mocks.loadStage1PublicationIndex).not.toHaveBeenCalled();
   });
 
-  it("exposes pinned fact review time separately from source checks with one serialized presentation clock", async () => {
+  it("does not call legacy registry or full-review timestamps a current basic-details check", async () => {
+    const entry = publication();
+    entry.textFactReview = { id: AWARD_ID, reviewedAt: "2026-10-28T12:00:00.000Z", current: true, releaseRevision: "legacy-review" };
+    mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex(entry));
     const data = await getPublicAwardPageBySlug("example-fellowship");
-    expect(data?.factsReviewedAt).toBe("2026-07-01T00:00:00.000Z");
+    expect(data?.factsReviewedAt).toBeUndefined();
     expect(data?.presentationAsOf).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(Number.isFinite(Date.parse(data?.presentationAsOf || ""))).toBe(true);
     expect(data).not.toHaveProperty("factsGeneratedAt");
@@ -218,11 +221,13 @@ describe("public award page deep links", () => {
     const entry = publication(); entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027", overview: "Current source-backed award information.",
       deadline: "January 31, 2027", tenure: ["Two years"], application_urls: ["https://example.edu/apply"] };
     entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-28T12:00:00.000Z" };
+    (mocks.sourceRows[0] as Record<string, unknown>).last_checked_at = "2026-10-30T12:00:00.000Z";
     mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex(entry));
     const data = await getPublicAwardPageBySlug("example-fellowship");
     expect(data?.facts.deadline).toBe("January 31, 2027"); expect(data?.facts.tenure).toEqual(["Two years"]);
     expect(data?.facts.applicationUrls).toEqual(["https://example.edu/apply"]); expect(data?.factsReviewedAt).toBe(entry.basicFactSnapshot.verifiedAt);
     expect(data?.factsNeedReview).toBe(false); expect(data?.variations).toBeUndefined(); expect(entry.textFactReview).toBeUndefined();
+    expect(data?.lastCheckedAt).toBe("2026-10-30T12:00:00.000Z");
     const markup = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data: data! }));
     expect(markup).toContain("January 31, 2027"); expect(markup).toContain("Details checked");
     expect(markup).not.toContain("application route"); expect(markup).not.toContain("The last approved details are shown");
@@ -234,9 +239,25 @@ describe("public award page deep links", () => {
     mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex(entry));
     const data = await getPublicAwardPageBySlug("example-fellowship");
     expect(data?.facts.deadline).toBeNull(); expect(data?.facts.overview).toBeNull(); expect(data?.factsNeedReview).toBe(true);
+    expect(data?.factsReviewedAt).toBeUndefined();
     expect(data?.changes.length).toBeGreaterThan(0); expect(data?.officialHomepage).toBe("https://example.edu/fellowship");
     const markup = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data: data! }));
     expect(markup).toContain("Some award details are being checked."); expect(markup).not.toContain("The last approved details are shown");
+    expect(markup).not.toContain("Details checked");
+  });
+  it("keeps a pending-only award's current basic check separate from zero eligible reported changes", async () => {
+    const entry = publication();
+    entry.publishedFacts = { ...emptyBasicAwardFacts(), overview: "Verified basic summary.", reviewed_cycle: "2027" };
+    entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-29T21:01:32.394Z" };
+    mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex(entry));
+    // A private pending alert is excluded by the eligible-public-event loader.
+    mocks.loadEligiblePublicChangeEvents.mockResolvedValue([]);
+    const data = await getPublicAwardPageBySlug("example-fellowship");
+    expect(data?.factsReviewedAt).toBe(entry.basicFactSnapshot.verifiedAt);
+    expect(data?.changes).toEqual([]);
+    const markup = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data: data! }));
+    expect(markup).toContain("Details checked"); expect(markup).toContain("Last reported change"); expect(markup).toContain("No changes reported");
+    expect(mocks.queriedTables).not.toContain("program_text_alert_reviews");
   });
   it.each(["current", "stale", "unavailable"])("does not revive old source-card facts or descriptions under %s basic information", async kind => {
     const entry = publication(); entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027",

@@ -4,7 +4,6 @@ import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
-import { loadFirstPublishedCaptureDates } from "@/lib/award-first-capture";
 import { canonicalAwardPath } from "@/lib/award-slugs";
 import { dedupeChangeSummaries } from "@/lib/change-summary";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
@@ -24,7 +23,7 @@ type OfficeAwardTrackingRow = Pick<AwardRow, "shared_award_id">;
 type SharedAwardDirectoryRow = Pick<
   SharedAwardRow,
   "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts" | "public_facts_generated_at"
-> & { completeSnapshot?: boolean; hasApplicationRoutes?: boolean };
+> & { completeSnapshot?: boolean; hasApplicationRoutes?: boolean; detailsCheckedAt: string | null };
 type SharedChangeDirectoryRow = Pick<
   SharedChangeRow,
   | "id"
@@ -174,14 +173,12 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
       summary: null,
       public_facts: publication.publishedFacts,
       public_facts_generated_at: publication.basicFactSnapshot?.verifiedAt || (publication.basicFactsUnavailable ? null : publication.textFactReview?.reviewedAt || publication.registry.last_verified_at),
+      detailsCheckedAt: publication.basicFactSnapshot?.current === true ? publication.basicFactSnapshot.verifiedAt : null,
       completeSnapshot: Boolean(publication.basicFactSnapshot || publication.basicFactsUnavailable || publication.textFactReview),
       hasApplicationRoutes: !publication.basicFactSnapshot && !publication.basicFactsUnavailable && (publication.textFactReview?.variationCount || 0) > 0,
     }),
   );
-  const [eligibleEvents, firstPublishedCaptureDates] = await Promise.all([
-    loadEligiblePublicChangeEvents({ admin, publicationIndex, limit: null }),
-    loadFirstPublishedCaptureDates({ admin, publicationIndex }),
-  ]);
+  const eligibleEvents = await loadEligiblePublicChangeEvents({ admin, publicationIndex, limit: null });
   const canonicalChanges = eligibleEvents.map(({ event, publication }) => ({
     ...event,
     shared_award_id: publication.canonicalAwardId,
@@ -193,7 +190,6 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
       sharedAwards,
       groupBySharedAwardId(canonicalChanges),
       new Set<string>(),
-      firstPublishedCaptureDates,
     ),
     canonicalAwardIdByMember,
   };
@@ -203,7 +199,6 @@ function mapSharedAwards(
   sharedAwards: SharedAwardDirectoryRow[],
   sharedChangesByAwardId: Map<string, SharedChangeDirectoryRow[]>,
   trackedSharedIds: Set<string>,
-  firstPublishedCaptureDates: Map<string, string>,
 ) {
   return sharedAwards.map((award) => {
     const facts = publicAwardFactsFromAward({
@@ -235,7 +230,7 @@ function mapSharedAwards(
       changeCount: changes.length,
       // Eligible public events are loaded newest-first before canonical deduplication.
       latestUpdateAt: changes[0]?.detected_at ?? null,
-      firstPublishedCaptureAt: firstPublishedCaptureDates.get(award.id) ?? null,
+      detailsCheckedAt: award.detailsCheckedAt,
       tracked: trackedSharedIds.has(award.id),
       detailsLoaded: false,
       sources: [],

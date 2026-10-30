@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { awardCardGlance, type AwardCardGlanceInput } from "@/lib/award-card-glance";
+import { awardCardDetailsChecked, awardCardGlance, type AwardCardGlanceInput } from "@/lib/award-card-glance";
 import { getAwardDirectoryCategories } from "@/lib/award-directory-filters";
 
 const EMPTY: AwardCardGlanceInput = { academicLevels: [], citizenship: [], changeCount: null };
@@ -11,7 +11,8 @@ describe("awardCardGlance", () => {
     expect(awardCardGlance(EMPTY)).toEqual([
       { key: "level", label: "Level", value: "Not listed" },
       { key: "citizenship", label: "Citizenship", value: "Not listed" },
-      { key: "updates", label: "Last update", value: "Not available" },
+      { key: "updates", label: "Last reported change", value: "Not available" },
+      { key: "details", label: "Details checked", value: "Not available" },
     ]);
   });
 
@@ -21,7 +22,8 @@ describe("awardCardGlance", () => {
       .toEqual([
         { key: "level", label: "Level", value: "Sophomores; Juniors", detail: "Sophomore; Junior" },
         { key: "citizenship", label: "Citizenship", value: "U.S. citizens, nationals or permanent residents", detail: original },
-        { key: "updates", label: "Last update", value: "Not available" },
+        { key: "updates", label: "Last reported change", value: "No changes reported" },
+        { key: "details", label: "Details checked", value: "Not available" },
       ]);
   });
 
@@ -146,7 +148,7 @@ describe("awardCardGlance", () => {
   it.each([0, 1, 20, null, NaN, Infinity, -Infinity, -1, 0.5])(
     "does not turn count %s alone into a date or a recency highlight", (changeCount) => {
       const item = awardCardGlance({ ...EMPTY, changeCount })[2];
-      expect(item).toEqual({ key: "updates", label: "Last update", value: "Not available" });
+      expect(item).toEqual({ key: "updates", label: "Last reported change", value: changeCount === 0 ? "No changes reported" : "Not available" });
     },
   );
 
@@ -158,22 +160,19 @@ describe("awardCardGlance", () => {
     })[2];
     expect(item.value).toBe("September 7, 2026");
     expect(item.dateTime).toBe("2026-09-08T03:00:00.123Z");
-    expect(item.detail).toMatch(/^Last recorded update: Sep 7, 2026,/);
+    expect(item.detail).toMatch(/^Last reported change: Sep 7, 2026,/);
     expect(item.detail).toContain("CDT");
     expect(item.highlight).toBeUndefined();
   });
 
-  it("uses the first available published capture only for exactly zero changes, even if a latest-update value is supplied", () => {
+  it("reports no changes for a known zero count regardless of capture or verification dates", () => {
     const item = awardCardGlance({
       ...EMPTY, changeCount: 0,
       latestUpdateAt: "2026-09-08T12:00:00Z",
       firstPublishedCaptureAt: "2026-01-01T05:30:00Z",
+      detailsCheckedAt: "2026-10-29T12:00:00Z",
     })[2];
-    expect(item.value).toBe("December 31, 2025");
-    expect(item.dateTime).toBe("2026-01-01T05:30:00.000Z");
-    expect(item.detail).toMatch(/^First available information capture: Dec 31, 2025,/);
-    expect(item.detail).toContain("CST");
-    expect(item.highlight).toBeUndefined();
+    expect(item).toEqual({ key: "updates", label: "Last reported change", value: "No changes reported" });
   });
 
   it.each([null, NaN, Infinity, -Infinity, -1, 0.5])(
@@ -181,7 +180,7 @@ describe("awardCardGlance", () => {
       expect(awardCardGlance({
         ...EMPTY, changeCount,
         latestUpdateAt: "2026-09-08T12:00:00Z", firstPublishedCaptureAt: "2026-07-01T12:00:00Z",
-      })[2]).toEqual({ key: "updates", label: "Last update", value: "Not available" });
+      })[2]).toEqual({ key: "updates", label: "Last reported change", value: "Not available" });
     },
   );
 
@@ -193,11 +192,14 @@ describe("awardCardGlance", () => {
     const latestMissing = awardCardGlance({
       ...EMPTY, changeCount: 1, latestUpdateAt: timestamp, firstPublishedCaptureAt: "2026-07-01T12:00:00Z",
     })[2];
-    const firstMissing = awardCardGlance({
-      ...EMPTY, changeCount: 0, firstPublishedCaptureAt: timestamp, latestUpdateAt: "2026-09-08T12:00:00Z",
-    })[2];
-    expect(latestMissing).toEqual({ key: "updates", label: "Last update", value: "Not available" });
-    expect(firstMissing).toEqual(latestMissing);
+    expect(latestMissing).toEqual({ key: "updates", label: "Last reported change", value: "Not available" });
+    expect(awardCardDetailsChecked({ detailsCheckedAt: timestamp })).toEqual({ key: "details", label: "Details checked", value: "Not available" });
+  });
+
+  it("shows independently verified details without implying a new reported change", () => {
+    const fields = awardCardGlance({ ...EMPTY, changeCount: 0, detailsCheckedAt: "2026-10-29T02:00:00Z", firstPublishedCaptureAt: "2026-07-01T12:00:00Z" });
+    expect(fields[2].value).toBe("No changes reported");
+    expect(fields[3]).toEqual({ key: "details", label: "Details checked", value: "October 28, 2026", dateTime: "2026-10-29T02:00:00.000Z", detail: expect.stringMatching(/^Details checked: Oct 28, 2026,/) });
   });
 
   it("does not infer recentness from a positive lifetime count or an old date", () => {

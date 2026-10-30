@@ -12,6 +12,41 @@ import { PUBLIC_AWARD_PANEL_HEADING_ID } from "@/lib/public-award-panel-focus";
 import * as ChangeEvidence from "@/components/change-evidence-panel";
 
 describe("PublicAwardWorkspace", () => {
+  it("separates the approved basic-details date from the last reported public change", () => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.factsReviewedAt = "2026-10-29T21:01:32.394Z";
+    data.factsNeedReview = false;
+    data.lastCheckedAt = "2026-10-30T12:00:00.000Z";
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect($(".public-award-review-date time").attr("datetime")).toBe(data.factsReviewedAt);
+    expect($(".public-award-review-date").text()).toContain("Details checked");
+    expect($("#award-latest-heading").text()).toBe("Last reported change");
+    expect($(".public-award-latest time").attr("datetime")).toBe(data.changes[0].detectedAt);
+    expect($(".public-award-review-date time").attr("datetime")).not.toBe(data.lastCheckedAt);
+  });
+
+  it("does not report a change or reuse a source-check date when no public changes are eligible", () => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.changes = [];
+    data.lastCheckedAt = "2026-10-30T12:00:00.000Z";
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect($("#award-latest-heading").text()).toBe("Last reported change");
+    expect($(".public-award-latest").text()).toContain("No changes reported");
+    expect($(".public-award-latest").text()).toContain("This does not confirm");
+    expect($(".public-award-latest time")).toHaveLength(0);
+    expect($(".public-award-review-date time")).toHaveLength(0);
+  });
+
+  it("hides stale detail-check metadata when those details need another review", () => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.factsReviewedAt = "2026-10-28T12:00:00.000Z";
+    data.factsNeedReview = true;
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect($(".public-award-review-date")).toHaveLength(0);
+    expect($("#public-award-panel").text()).toContain("Some award details are being checked");
+    expect($(".public-award-latest time").attr("datetime")).toBe(data.changes[0].detectedAt);
+  });
+
   it("labels only conflicting fields for review in overview and full requirements", () => {
     const data = makeDeepLinkPageData();
     data.facts = publicAwardFactsFromAward({ publicFacts: {

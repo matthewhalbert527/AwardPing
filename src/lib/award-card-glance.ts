@@ -11,12 +11,14 @@ export type AwardCardGlanceInput = {
   changeCount: number | null;
   /** Latest recorded public change, never the most recent source check. */
   latestUpdateAt?: string | null;
-  /** Earliest available published capture, not a claim of the first-ever pull. */
+  /** Verification date of the current approved basic-details snapshot only. */
+  detailsCheckedAt?: string | null;
+  /** Historical capture metadata; never a change or details-verification date. */
   firstPublishedCaptureAt?: string | null;
 };
 
 export type AwardCardGlanceItem = {
-  key: "level" | "citizenship" | "updates";
+  key: "level" | "citizenship" | "updates" | "details";
   label: string;
   value: string;
   detail?: string;
@@ -169,23 +171,36 @@ function glanceTimestamp(value: string | null | undefined) {
 }
 
 export function awardCardLastUpdate(
-  input: Pick<AwardCardGlanceInput, "changeCount" | "latestUpdateAt" | "firstPublishedCaptureAt">,
+  input: Pick<AwardCardGlanceInput, "changeCount" | "latestUpdateAt">,
 ): AwardCardGlanceItem {
-  const unavailable: AwardCardGlanceItem = { key: "updates", label: "Last update", value: "Not available" };
+  const unavailable: AwardCardGlanceItem = { key: "updates", label: "Last reported change", value: "Not available" };
   const count = input.changeCount;
   const countKnown = count !== null && Number.isFinite(count) && Number.isInteger(count) && count >= 0;
   if (!countKnown) return unavailable;
-  // The two dates have distinct provenance. A missing required date must not
-  // borrow the other date or imply that a check or a render recorded an update.
-  const firstCapture = count === 0;
-  const timestamp = glanceTimestamp(firstCapture ? input.firstPublishedCaptureAt : input.latestUpdateAt);
+  if (count === 0) return { ...unavailable, value: "No changes reported" };
+  // Collection and details verification do not report a public change.
+  const timestamp = glanceTimestamp(input.latestUpdateAt);
   if (!timestamp?.dateTime) return unavailable;
   return {
     key: "updates",
-    label: "Last update",
+    label: "Last reported change",
     value: formatCentralDate(timestamp.dateTime, { month: "long", day: "numeric", year: "numeric" }),
     dateTime: timestamp.dateTime,
-    detail: `${firstCapture ? "First available information capture" : "Last recorded update"}: ${timestamp.full}`,
+    detail: `Last reported change: ${timestamp.full}`,
+  };
+}
+
+export function awardCardDetailsChecked(
+  input: Pick<AwardCardGlanceInput, "detailsCheckedAt">,
+): AwardCardGlanceItem {
+  const timestamp = glanceTimestamp(input.detailsCheckedAt);
+  if (!timestamp?.dateTime) return { key: "details", label: "Details checked", value: "Not available" };
+  return {
+    key: "details",
+    label: "Details checked",
+    value: formatCentralDate(timestamp.dateTime, { month: "long", day: "numeric", year: "numeric" }),
+    dateTime: timestamp.dateTime,
+    detail: `Details checked: ${timestamp.full}`,
   };
 }
 
@@ -194,5 +209,6 @@ export function awardCardGlance(input: AwardCardGlanceInput): AwardCardGlanceIte
     criterionItem("level", "Level", input.academicLevels),
     criterionItem("citizenship", "Citizenship", input.citizenship),
     awardCardLastUpdate(input),
+    awardCardDetailsChecked(input),
   ];
 }

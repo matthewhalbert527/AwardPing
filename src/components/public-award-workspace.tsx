@@ -682,7 +682,7 @@ function OverviewPanel({
       <div className="public-award-section-heading">
         <h2 id={headingId}>Overview</h2>
         {overview && <p className="public-award-section-description">{overview}</p>}
-        {data.factsReviewedAt && <p className="public-award-review-date">Details checked {formatDate(data.factsReviewedAt)}. Recorded changes are shown separately below.</p>}
+        {data.factsReviewedAt && !data.factsNeedReview && <p className="public-award-review-date">Details checked <time dateTime={data.factsReviewedAt}>{formatDate(data.factsReviewedAt)}</time>. Reported changes are shown separately below.</p>}
         {data.factsNeedReview && <p role="status" className="public-award-date-notice">Some award details are being checked. Use the official website for the latest requirements.</p>}
       </div>
       <dl className="public-award-deadlines">
@@ -725,12 +725,12 @@ function OverviewPanel({
         <button type="button" className="public-award-context-link" onClick={() => onViewDetails()}>Eligibility & applying <ArrowRight size={15} aria-hidden="true" /></button>
       </div>
       <section className="public-award-latest" aria-labelledby="award-latest-heading">
-        <div className="public-award-latest-heading"><h3 id="award-latest-heading">Latest update</h3>
+        <div className="public-award-latest-heading"><h3 id="award-latest-heading">Last reported change</h3>
           {latestChange && <ChangeTimestamp value={latestChange.detectedAt} />}</div>
         {latestChange ? <>
           <ChangeSummaryDisplay summary={latestChange.summary} changeDetails={latestChange.changeDetails} sourceTitle={latestChange.sourceTitle} sourceUrl={latestChange.sourceUrl} compact />
           <button className="public-award-context-link" type="button" onClick={() => onViewUpdates(latestChange.id)}>View updates <ArrowRight size={15} aria-hidden="true" /></button>
-        </> : <p>No updates are available in this view yet. This does not confirm that the official pages have stayed unchanged.</p>}
+        </> : <p>No changes reported. This does not confirm that the official pages have stayed unchanged.</p>}
       </section>
     </div>
   );

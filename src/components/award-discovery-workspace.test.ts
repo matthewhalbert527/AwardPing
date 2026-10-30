@@ -553,7 +553,7 @@ describe("AwardDiscoveryWorkspace", () => {
 // public update count and timestamp provenance, but never a source count.
 function directoryRow(
   row: Pick<SharedAwardCard, "id" | "name" | "publicPath" | "changeCount"> &
-    Partial<Pick<SharedAwardCard, "latestUpdateAt" | "firstPublishedCaptureAt">>,
+    Partial<Pick<SharedAwardCard, "latestUpdateAt" | "firstPublishedCaptureAt" | "detailsCheckedAt">>,
 ): SharedAwardCard {
   return {
     slug: null,
@@ -569,6 +569,7 @@ function directoryRow(
     sourceIssueCount: null,
     latestUpdateAt: null,
     firstPublishedCaptureAt: null,
+    detailsCheckedAt: null,
     tracked: false,
     detailsLoaded: false,
     sources: [],
@@ -584,6 +585,7 @@ const gates = directoryRow({
   publicPath: "/gates-cambridge-scholarship",
   changeCount: 0,
   firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z",
+  detailsCheckedAt: "2026-10-29T12:00:00.000Z",
 });
 const gilman = directoryRow({
   id: "0e4b6a5f-3c2d-4e9f-8a1b-2c3d4e5f6a71",
@@ -625,11 +627,11 @@ function renderRows(rows: SharedAwardCard[], presets: unknown[] = [], isAuthenti
   }
 }
 
-// The same labeled Last update field on every listed award, in listing order.
+// The same labeled Last reported change field on every listed award, in listing order.
 function statusChips(html: string) {
   const $ = load(html);
   return $('.award-row-card dd[data-field="updates"]').map((_index, field) => {
-    expect($(field).siblings("dt").text()).toBe("Last update");
+    expect($(field).siblings("dt").text()).toBe("Last reported change");
     return $(field).text();
   }).get();
 }
@@ -638,12 +640,12 @@ describe("AwardDiscoveryWorkspace update status", () => {
   it("places one update stamp directly after the award name, without a description or eligibility fields", () => {
     const $ = load(renderRows([{ ...goldwaterRow, summary: "Supports undergraduate STEM researchers." }]));
     const card = $(".award-row-card");
-    const stamp = card.find('dl[aria-label="Award last update"]');
+    const stamp = card.find('dl[aria-label="Award information dates"]');
     expect(stamp).toHaveLength(1);
     expect(stamp.parent().prev().text()).toBe("Goldwater Scholarship");
     expect(stamp.parent().next()).toHaveLength(0);
     expect(card.find(".award-row-one-line-description")).toHaveLength(0);
-    expect(card.find("dt").map((_index, element) => $(element).text()).get()).toEqual(["Last update"]);
+    expect(card.find("dt").map((_index, element) => $(element).text()).get()).toEqual(["Details checked", "Last reported change"]);
     expect(card.find('[data-field="level"], [data-field="citizenship"]')).toHaveLength(0);
     expect(card.find(".award-row-deadline").text()).toContain("Deadline");
     expect(card.find("a.award-row-summary").attr("href")).toBe("/goldwater-scholarship");
@@ -664,8 +666,8 @@ describe("AwardDiscoveryWorkspace update status", () => {
       expect(card).toHaveLength(1);
       expect(card.find("a.award-row-summary")).toHaveLength(1);
       expect(card.find("a.award-row-summary").attr("href")).toBe(goldwater.publicPath);
-      expect(card.find('dl[aria-label="Award last update"]').parent().prev().text()).toBe(goldwater.name);
-      expect(card.find('dl[aria-label="Award last update"]')).toHaveLength(1);
+      expect(card.find('dl[aria-label="Award information dates"]').parent().prev().text()).toBe(goldwater.name);
+      expect(card.find('dl[aria-label="Award information dates"]')).toHaveLength(1);
       expect(card.find('dd[data-field="updates"]').text()).toBe("September 7, 2026");
       expect(card.find(".award-row-deadline").text()).toBe("DeadlineJanuary 29, 2026");
       expect(card.find("p, .award-row-one-line-description, [data-field='level'], [data-field='citizenship']")).toHaveLength(0);
@@ -674,7 +676,7 @@ describe("AwardDiscoveryWorkspace update status", () => {
     expect(row).toEqual(original);
   });
 
-  it("states the last update date, using first capture only for an award with zero public changes", () => {
+  it("separates reported change dates from current details checks and first capture", () => {
     const html = renderRows([gates, gilman, goldwaterRow]);
 
     expect(browseRowHrefs(html)).toEqual([
@@ -683,7 +685,7 @@ describe("AwardDiscoveryWorkspace update status", () => {
       "/goldwater-scholarship",
     ]);
     expect(statusChips(html)).toEqual([
-      "August 20, 2026",
+      "No changes reported",
       "September 3, 2026",
       "September 7, 2026",
     ]);
@@ -697,7 +699,7 @@ describe("AwardDiscoveryWorkspace update status", () => {
     expect(html).not.toContain("Open to view source pages");
   });
 
-  it("does not infer a Last update date when the recorded update count is unknown", () => {
+  it("does not infer a Last reported change date when the recorded update count is unknown", () => {
     const html = renderRows([{ ...gates, changeCount: null }]);
 
     expect(statusChips(html)).toEqual(["Not available"]);
@@ -706,8 +708,6 @@ describe("AwardDiscoveryWorkspace update status", () => {
   });
 
   it.each([
-    { changeCount: 0, firstPublishedCaptureAt: null, latestUpdateAt: "2026-09-07T18:00:00.000Z" },
-    { changeCount: 0, firstPublishedCaptureAt: "not a date", latestUpdateAt: "2026-09-07T18:00:00.000Z" },
     { changeCount: 1, firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z", latestUpdateAt: null },
     { changeCount: 1, firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z", latestUpdateAt: "2026-02-30T18:00:00.000Z" },
   ])("does not substitute a check or the other timestamp for missing/invalid required provenance: %j", (dates) => {
@@ -736,7 +736,7 @@ describe("AwardDiscoveryWorkspace update status", () => {
     ]);
 
     expect(statusChips(html)).toEqual([
-      "August 20, 2026",
+      "No changes reported",
       "September 3, 2026",
       "September 7, 2026",
     ]);
@@ -819,10 +819,11 @@ describe("AwardDiscoveryWorkspace update status", () => {
     expect(html).not.toContain("award-search-option-meta");
     const $ = load(html);
     expect($('.award-search-option dd[data-field="updates"]').map((_index, field) => $(field).text()).get()).toEqual([
-      "August 20, 2026", "September 3, 2026", "September 7, 2026",
+      "No changes reported", "September 3, 2026", "September 7, 2026",
     ]);
-    expect($('.award-search-option dd[data-field="updates"]').first().attr("title")).toContain("First available information capture");
-    expect($('.award-search-option dd[data-field="updates"]').eq(1).attr("title")).toContain("Last recorded update");
+    expect($('.award-search-option dd[data-field="updates"]').first().attr("title")).toBeUndefined();
+    expect($('.award-search-option dd[data-field="details"]').first().attr("title")).toContain("Details checked");
+    expect($('.award-search-option dd[data-field="updates"]').eq(1).attr("title")).toContain("Last reported change");
     expect(html).not.toMatch(/source pages|recorded updates|Source search pending/);
   });
 });
@@ -836,7 +837,7 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
       expect($(".award-row-deadline").text()).toContain("View route deadlines");
     }
   });
-  it.each([false, true])("keeps Gates' scoped application dates and first-capture provenance while searching (signed in: %s)", (isAuthenticated) => {
+  it.each([false, true])("keeps Gates' scoped application dates and independent details-check provenance while searching (signed in: %s)", (isAuthenticated) => {
     const row: SharedAwardCard = {
       ...gates,
       academicLevels: ["Postgraduate"],
@@ -865,12 +866,14 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
     expect(result.text()).toContain("(dependent on course)");
     expect(result.find(".award-row-deadline small").text()).toBe("Past date");
     expect(result.text()).not.toMatch(/Not listed|Notification|Postgraduate|Citizens of any country/);
-    const stamp = result.find('dl[aria-label="Award last update"]');
+    const stamp = result.find('dl[aria-label="Award information dates"]');
     expect(stamp).toHaveLength(1);
     expect(stamp.parent().prev().text()).toBe(gates.name);
-    expect(stamp.html()).toBe(browse('dl[aria-label="Award last update"]').html());
-    expect(stamp.find("time").attr("datetime")).toBe(gates.firstPublishedCaptureAt);
-    expect(stamp.find("dd").attr("title")).toContain("First available information capture");
+    expect(stamp.html()).toBe(browse('dl[aria-label="Award information dates"]').html());
+    expect(stamp.find('[data-field="details"] time').attr("datetime")).toBe(gates.detailsCheckedAt);
+    expect(stamp.find('[data-field="updates"]').text()).toBe("No changes reported");
+    expect(stamp.find('[data-field="updates"] time')).toHaveLength(0);
+    expect(stamp.find('[data-field="details"]').attr("title")).toContain("Details checked");
     expect(result.find("button, a, [data-field='level'], [data-field='citizenship']")).toHaveLength(0);
     expectNativeSearchSemantics(html);
     expect(row).toEqual(before);
@@ -890,7 +893,8 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
     const result = search(".award-search-option");
     expect(result.find(".award-row-deadline").html()).toBe(browse(".award-row-deadline").html());
     expect(result.find('dd[data-field="updates"]').text()).toBe("Not available");
-    expect(result.find("time")).toHaveLength(0);
+    expect(result.find('dd[data-field="updates"] time')).toHaveLength(0);
+    expect(result.find('dd[data-field="details"] time').attr("datetime")).toBe(gates.detailsCheckedAt);
     expect(result.text()).not.toContain("October 17, 2026");
     expect(result.find(".award-row-grid").attr("class")).toBe(browse(".award-row-grid").attr("class"));
     expect(result.attr("href")).toBe(row.publicPath);

@@ -337,7 +337,7 @@ async function loadPublicAwardPageData(
     facts,
     metaDescription: publicAwardMetaDescription(award.name, facts),
     officialHomepage: publication.registry.official_homepage,
-    factsReviewedAt: publication.basicFactSnapshot?.verifiedAt || (publication.basicFactsUnavailable ? undefined : variations?.reviewed_at || publication.textFactReview?.reviewedAt || publication.registry.last_verified_at),
+    factsReviewedAt: publication.basicFactSnapshot?.current === true ? publication.basicFactSnapshot.verifiedAt : undefined,
     factsNeedReview: publication.basicFactsUnavailable ? true : publication.basicFactSnapshot ? !publication.basicFactSnapshot.current : variations ? !variations.current : publication.textFactReview ? !publication.textFactReview.current : undefined,
     ...(variations ? { variations: { ...variations, cohort_key: publication.registry.cohort_key } } : {}),
     presentationAsOf: new Date().toISOString(),

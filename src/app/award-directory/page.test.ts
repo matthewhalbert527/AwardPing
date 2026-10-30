@@ -116,7 +116,15 @@ function lastUpdate(html: string) {
   const $ = load(html);
   const field = $('.award-row-card dd[data-field="updates"]');
   expect(field.length).toBe(1);
-  expect(field.siblings("dt").text()).toBe("Last update");
+  expect(field.siblings("dt").text()).toBe("Last reported change");
+  return { value: field.text(), dateTime: field.find("time").attr("datetime") };
+}
+
+function detailsChecked(html: string) {
+  const $ = load(html);
+  const field = $('.award-row-card dd[data-field="details"]');
+  expect(field).toHaveLength(1);
+  expect(field.siblings("dt").text()).toBe("Details checked");
   return { value: field.text(), dateTime: field.find("time").attr("datetime") };
 }
 
@@ -193,8 +201,8 @@ describe("award directory page", () => {
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
     const html = await renderDirectory();
     expect(html).toContain("January 31, 2027"); expect(html).not.toContain("January 31, 2026");
-    expect(lastUpdate(html)).toEqual({ value: "August 20, 2026", dateTime: FIRST_CAPTURE });
-    expect(html).not.toContain("October 28, 2026"); expect(html).not.toContain("Application routes");
+    expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
+    expect(detailsChecked(html)).toEqual({ value: "October 28, 2026", dateTime: "2026-10-28T12:00:00.000Z" }); expect(html).not.toContain("Application routes");
   });
   it.each(["stale", "unavailable"])("keeps a %s basic snapshot card visible without reviving old fields or inventing updates", async kind => {
     const index = publicationIndex(), entry = index.verifiedEntries[0]; entry.publishedFacts = emptyBasicAwardFacts();
@@ -203,21 +211,20 @@ describe("award directory page", () => {
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
     const html = await renderDirectory();
     expect(html).toContain("Example Fellowship"); expect(html).not.toContain("January 31, 2026"); expect(html).not.toContain("January 31, 2027");
-    expect(lastUpdate(html).dateTime).toBe(FIRST_CAPTURE);
+    expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
+    expect(detailsChecked(html)).toEqual({ value: "Not available", dateTime: undefined });
   });
 
-  it("shows the first published capture as Last update when there are no public events", async () => {
+  it("reports no changes when there are no eligible public events", async () => {
     const index = publicationIndex();
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
 
     const html = await renderDirectory();
 
-    expect(lastUpdate(html)).toEqual({ value: "August 20, 2026", dateTime: FIRST_CAPTURE });
+    expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
     expect(html).not.toContain("None recorded");
-    expect(mocks.loadFirstPublishedCaptureDates).toHaveBeenCalledExactlyOnceWith({
-      admin: expect.objectContaining({ from: expect.any(Function) }),
-      publicationIndex: index,
-    });
+    expect(mocks.loadFirstPublishedCaptureDates).not.toHaveBeenCalled();
+    expect(detailsChecked(html)).toEqual({ value: "Not available", dateTime: undefined });
     expect(mocks.loadEligiblePublicChangeEvents).toHaveBeenCalledWith({
       admin: expect.objectContaining({ from: expect.any(Function) }),
       publicationIndex: index,
@@ -227,6 +234,7 @@ describe("award directory page", () => {
 
   it("prefers the newest eligible public event over the first capture and an older event", async () => {
     const index = publicationIndex();
+    index.verifiedEntries[0].basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-29T12:00:00.000Z" };
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
     // The eligible-event loader's contract is newest-first, independent of
     // registry verification and of the initial captured source timestamp.
@@ -235,12 +243,14 @@ describe("award directory page", () => {
       { event: publicEvent("older", "2026-09-03T18:00:00.000Z"), publication: index.verifiedEntries[0] },
     ]);
 
-    expect(lastUpdate(await renderDirectory())).toEqual({
+    const html = await renderDirectory();
+    expect(lastUpdate(html)).toEqual({
       value: "September 7, 2026", dateTime: "2026-09-07T18:00:00.000Z",
     });
+    expect(detailsChecked(html)).toEqual({ value: "October 29, 2026", dateTime: "2026-10-29T12:00:00.000Z" });
   });
 
-  it("looks up the first capture by canonical award ID rather than an alias", async () => {
+  it("does not turn an alias or canonical first capture into a reported change", async () => {
     const index = publicationIndex();
     const entry = index.verifiedEntries[0];
     entry.memberAwardIds = [AWARD_ID, ALIAS_ID];
@@ -252,11 +262,11 @@ describe("award directory page", () => {
     ]));
 
     const html = await renderDirectory();
-    expect(lastUpdate(html)).toEqual({ value: "August 20, 2026", dateTime: FIRST_CAPTURE });
+    expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
     expect(load(html)(".award-row-summary").attr("href")).toBe("/example-fellowship");
   });
 
-  it("attributes an eligible alias event to the canonical award before selecting Last update", async () => {
+  it("attributes an eligible alias event to the canonical award before selecting Last reported change", async () => {
     const index = publicationIndex();
     const entry = index.verifiedEntries[0];
     entry.memberAwardIds = [AWARD_ID, ALIAS_ID];
@@ -273,11 +283,16 @@ describe("award directory page", () => {
   });
 
   it.each([null, "not a date", "2026-02-30T12:00:00.000Z"])(
-    "does not replace unavailable first-capture data %s with registry verification or update dates",
-    async (capture) => {
-      mocks.loadFirstPublishedCaptureDates.mockResolvedValue(capture === null ? new Map() : new Map([[AWARD_ID, capture]]));
+    "does not replace unavailable details verification %s with registry, legacy review or capture dates",
+    async (verifiedAt) => {
+      const index = publicationIndex(), entry = index.verifiedEntries[0];
+      entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: verifiedAt as unknown as string };
+      entry.textFactReview = { reviewedAt: "2026-10-29T12:00:00.000Z" } as Stage1PublicationEntry["textFactReview"];
+      mocks.loadStage1PublicationIndex.mockResolvedValue(index);
       const html = await renderDirectory();
-      expect(lastUpdate(html)).toEqual({ value: "Not available", dateTime: undefined });
+      expect(lastUpdate(html)).toEqual({ value: "No changes reported", dateTime: undefined });
+      expect(detailsChecked(html)).toEqual({ value: "Not available", dateTime: undefined });
+      expect(mocks.loadFirstPublishedCaptureDates).not.toHaveBeenCalled();
       expect(html).not.toContain("None recorded");
     },
   );

@@ -99,7 +99,9 @@ describe("all 25 identities × four sections: synthetic empty template coverage,
     expect($(".public-award-update-count, .public-award-past-date")).toHaveLength(0);
     if (section === "overview") {
       expect(panel.text()).toContain("No application deadline is recorded here. Check the official award site.");
-      expect(panel.text()).toContain("No updates are available in this view yet. This does not confirm that the official pages have stayed unchanged.");
+      expect(panel.find("#award-latest-heading").text()).toBe("Last reported change");
+      expect(panel.text()).toContain("No changes reported. This does not confirm that the official pages have stayed unchanged.");
+      expect(panel.find(".public-award-latest time, .public-award-review-date time")).toHaveLength(0);
     }
     expect(data).toEqual(before);
   });

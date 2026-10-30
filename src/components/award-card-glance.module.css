@@ -3,7 +3,8 @@
 }
 
 .stamp {
-  display: inline-flex;
+  display: inline-grid;
+  gap: 0.15rem;
   max-width: 100%;
   margin: 0;
   border: 1px solid var(--accent-border);
