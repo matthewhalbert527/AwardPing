@@ -20,7 +20,7 @@ import { runProgramTextWorker } from "./program-text-worker.mjs";
 import { buildProgramTextCapture } from "./lib/program-text-capture.mjs";
 import { programTextReference } from "./lib/program-text-storage.mjs";
 import { buildProgramTextComparison, buildProgramTextReviewPackets } from "./lib/program-text-review.mjs";
-import { rosterPageFixture, emptyVariationBatchFixture } from "./fixtures/program-text-roster-pages.mjs";
+import { rosterPageFixture } from "./fixtures/program-text-roster-pages.mjs";
 
 const epoch = "33333333-3333-4333-8333-333333333333", oldEpoch = "99999999-9999-4999-8999-999999999999";
 function rowSet(index, candidateEpoch = epoch) {
@@ -49,8 +49,11 @@ function database(sets, { approved = true } = {}) {
   return { calls, rpc(name, params) {
     calls.push({ rpc: name, params });
     if (name === "get_program_text_worker_roster_page") return Promise.resolve(rosterPageFixture(sets.map(set => set.role), sets.map(set => set.source))(params));
-    if (name === "get_program_variation_admin_batch") return Promise.resolve({ data: emptyVariationBatchFixture() });
-    if (name === "get_program_text_fact_review_batch") return Promise.resolve({ data: [] });
+    if (name === "get_program_award_monitoring_basics") return Promise.resolve({ data: {
+      schema: "awardping.program-award-monitoring-basics.v1", awards: sets.map(set => ({
+        cohort_key: set.role.cohort_key, award_id: set.source.shared_award_id, snapshot_id: null, basic_details_current: false,
+      })),
+    } });
     if (name !== "program_text_source_is_approved") throw new Error("Unexpected source-scope RPC");
     return Promise.resolve({ data: approved && sets.some(set => set.source.id === params.p_source_id) });
   }, from(table) {
@@ -111,6 +114,8 @@ describe("CLI source scope before any provider submission", () => {
     shared.config.enabled = true; shared.db = database([rowSet(1)]);
     const report = await runProgramTextWorker(["--mode=new_page_review", "--apply=true"]);
     expect(report.results).toEqual([]); expect(shared.provider).toEqual([]); expect(shared.captureCalls).toEqual([]); expect(shared.destroyed).toBe(0);
+    expect(report.coverage[0].basic_details_current).toBe(false);
+    expect(shared.db.calls.every(call => ["get_program_text_worker_roster_page", "get_program_award_monitoring_basics"].includes(call.rpc))).toBe(true);
   });
   it("collection reports first coverage without invoking review/publication", async () => {
     const current = rowSet(1); current.source.text_monitoring_state = {}; shared.db = database([current]);

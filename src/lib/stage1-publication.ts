@@ -5,6 +5,7 @@ import type { Database, Json } from "@/lib/database.types";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadProgramTextAlertSourceBindings } from "@/lib/program-text-alert-sources.server";
 import { loadProgramBasicFacts } from "@/lib/program-basic-facts.server";
+import { loadProgramAwardExpansion } from "@/lib/program-award-expansion.server";
 import textMonitoring from "../../config/program-text-monitoring.json";
 import {
   stage1CohortIdentityHash,
@@ -494,7 +495,8 @@ export async function loadStage1PublicationIndex(): Promise<Stage1PublicationInd
   // The retired complete-facts/route approvals remain private history. Normal
   // public reads use accepted identity + individually source-verified basics.
   const basics = await loadProgramBasicFacts(admin, index);
-  return loadProgramTextAlertSourceBindings(admin, basics, textMonitoring.epoch);
+  const expanded = await loadProgramAwardExpansion(admin, basics, textMonitoring.epoch);
+  return loadProgramTextAlertSourceBindings(admin, expanded, textMonitoring.epoch);
 }
 
 export async function getStage1PublicationEntryForAward(

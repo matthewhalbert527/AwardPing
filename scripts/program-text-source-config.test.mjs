@@ -50,6 +50,14 @@ const reviewed = [
     url: "https://www.noaa.gov/office-education/undergraduate-scholarships", page_type: "application", acquisition: "rendered_html" },
 ];
 const sourceRows = () => reviewed.map(({ id, shared_award_id, url, page_type }) => ({ id, shared_award_id, url, page_type, admin_review_status: "open" }));
+// The current provider pages were independently collected through the ordinary
+// rendered acquisition after their HTTP transport returned429. No alias URL is
+// granted a browser override merely because it belongs to the same award.
+const rotary = [
+  { id: "c906cb21-aeb3-40b9-a5fe-b72fb54db2e9", shared_award_id: "4f66e3fa-3924-4d0d-a04d-a32989f74c2e", url: "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships", page_type: "homepage", acquisition: "rendered_html" },
+  { id: "235ed53e-5cd3-4315-b653-7450e0e10c84", shared_award_id: "4f66e3fa-3924-4d0d-a04d-a32989f74c2e", url: "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships/peace-fellowships-masters-degree-programs", page_type: "other", acquisition: "rendered_html" },
+  { id: "37255bb3-547a-4181-a953-86c38093e87c", shared_award_id: "4f66e3fa-3924-4d0d-a04d-a32989f74c2e", url: "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships/peace-fellowships-certificate-program", page_type: "other", acquisition: "rendered_html" },
+];
 const smartCanonical = "d7d4d117-f312-456f-a75c-3dbd5d372c99", smartAlias = "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108";
 // Independent reviewed identities, including the existing alias-owned routes.
 // Expected owners, literal URLs and page types do not come from the configuration.
@@ -105,15 +113,28 @@ describe("reviewed source-bound browser acquisition configuration", () => {
     expect(report.results).toEqual([{ source_id: id, status: "held", reason: "source_configuration_changed" }]);
     expect(shared.calls).toEqual([]);
   });
-  it("enables browser acquisition only for the six reviewed NOAA identities", () => {
+  it("enables browser acquisition only for the six NOAA and three Rotary reviewed identities", () => {
     const browserOverrides = Object.entries(actualConfig.sources).filter(([, options]) => options.acquisition === "rendered_html" || options.pdf_transport === "browser");
-    expect(browserOverrides.map(([id]) => id).sort()).toEqual(reviewed.map(source => source.id).sort());
-    for (const source of reviewed) {
+    expect(browserOverrides.map(([id]) => id).sort()).toEqual([...reviewed, ...rotary].map(source => source.id).sort());
+    for (const source of [...reviewed, ...rotary]) {
       expect(actualConfig.sources[source.id]).toEqual({ source_url: source.url, shared_award_id: source.shared_award_id,
         acquisition: source.acquisition, ...(source.pdf_transport ? { pdf_transport: source.pdf_transport } : {}) });
     }
     expect(actualConfig.sources[reviewed[2].id].shared_award_id).toBe(alias);
     expect(actualConfig.sources[reviewed[3].id].source_url).not.toContain("/sites/default/files/");
+  });
+  it("collects the three exact Rotary pages through the reviewed rendered transport", async () => {
+    shared.cohort = "rotary_peace"; shared.sources = rotary.map(source => ({ ...source, admin_review_status: "open" }));
+    const report = await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);
+    expect(report.results).toHaveLength(3); expect(shared.calls).toHaveLength(3);
+    for (const source of rotary) expect(shared.calls.find(call => call.source.id === source.id)).toMatchObject({ source, captureOptions: { acquisition: "rendered_html" } });
+  });
+  it.each(["url", "shared_award_id"])("holds a changed Rotary %s binding before acquisition", async field => {
+    const source = rotary[0]; shared.cohort = "rotary_peace";
+    shared.sources = [{ ...source, [field]: field === "url" ? `${source.url}/unreviewed` : canonical, admin_review_status: "open" }];
+    const report = await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);
+    expect(report.results).toEqual([{ source_id: source.id, status: "held", reason: "source_configuration_changed" }]);
+    expect(shared.calls).toHaveLength(0);
   });
   it("passes explicit per-source acquisition and transport without replacing source identities", async () => {
     const report = await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);

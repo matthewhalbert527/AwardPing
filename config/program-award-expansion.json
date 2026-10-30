@@ -1,0 +1,95 @@
+{
+  "schema": "awardping.program-award-expansion-cohort.v1",
+  "awards": [
+    {
+      "cohort_key": "ppia_jsi",
+      "batch": 1,
+      "launch_rank": 26,
+      "canonical_shared_award_id": "874d043a-3819-4032-a7c4-bb9582a1d51f",
+      "canonical_name": "Public Policy & International Affairs (PPIA) Junior Summer Institute",
+      "canonical_slug": "public-policy-and-international-affairs-junior-summer-institute",
+      "official_homepage": "https://www.ppiaprogram.org/JSI"
+    },
+    {
+      "cohort_key": "daad_rise",
+      "batch": 1,
+      "launch_rank": 27,
+      "canonical_shared_award_id": "4a862735-6d67-4154-81ad-4bcc51ad0ec1",
+      "canonical_name": "DAAD RISE Germany",
+      "canonical_slug": "daad-rise",
+      "official_homepage": "https://www.daad.de/rise/en/rise-germany/"
+    },
+    {
+      "cohort_key": "tillman",
+      "batch": 1,
+      "launch_rank": 28,
+      "canonical_shared_award_id": "cb8740aa-4585-4e1c-a939-35fc854cb12b",
+      "canonical_name": "Tillman Scholars Program",
+      "canonical_slug": "tillman-scholars-program",
+      "official_homepage": "https://pattillmanfoundation.org/apply/"
+    },
+    {
+      "cohort_key": "freeman_asia",
+      "batch": 1,
+      "launch_rank": 29,
+      "canonical_shared_award_id": "06713967-eaf6-49cf-aa8d-a12d6cf1ab51",
+      "canonical_name": "Freeman-ASIA Award",
+      "canonical_slug": "freeman-asia-award",
+      "official_homepage": "https://www.iie.org/programs/freeman-asia/"
+    },
+    {
+      "cohort_key": "james_madison",
+      "batch": 1,
+      "launch_rank": 30,
+      "canonical_shared_award_id": "592d1ab0-7eff-402a-82ba-90d19559aa7f",
+      "canonical_name": "James Madison Memorial Fellowship",
+      "canonical_slug": "james-madison-memorial-fellowship",
+      "official_homepage": "https://www.jamesmadison.gov/"
+    },
+    {
+      "cohort_key": "rangel",
+      "batch": 2,
+      "launch_rank": 31,
+      "canonical_shared_award_id": "e6ebd346-0567-4464-85b1-92a555036992",
+      "canonical_name": "Charles B. Rangel International Affairs Fellowship",
+      "canonical_slug": "charles-b-rangel-international-affairs-fellowship",
+      "official_homepage": "https://rangelprogram.org/graduate-fellowship-program/"
+    },
+    {
+      "cohort_key": "pickering",
+      "batch": 2,
+      "launch_rank": 32,
+      "canonical_shared_award_id": "06b39341-8489-4c72-a555-dfd96d336f4b",
+      "canonical_name": "Pickering Foreign Affairs Fellowship",
+      "canonical_slug": "pickering-foreign-affairs-fellowship",
+      "official_homepage": "https://pickeringfellowship.org/"
+    },
+    {
+      "cohort_key": "daad_study",
+      "batch": 2,
+      "launch_rank": 33,
+      "canonical_shared_award_id": "440d6985-ece9-48c4-ac30-65a739f60d65",
+      "canonical_name": "DAAD Study Scholarships",
+      "canonical_slug": "master-studies-for-all-academic-disciplines",
+      "official_homepage": "https://www.daad.org/en/find-funding/scholarship-database/?type=a&q=&status=0&subject=0&onlydaad=1&detail_to_show=0&target=44&origin=44&pg=1&detail_to_show=50026200"
+    },
+    {
+      "cohort_key": "rotary_peace",
+      "batch": 2,
+      "launch_rank": 34,
+      "canonical_shared_award_id": "4f66e3fa-3924-4d0d-a04d-a32989f74c2e",
+      "canonical_name": "Rotary Peace Fellowship",
+      "canonical_slug": "rotary-peace-fellowship",
+      "official_homepage": "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships"
+    },
+    {
+      "cohort_key": "voyager",
+      "batch": 2,
+      "launch_rank": 35,
+      "canonical_shared_award_id": "10dda818-c922-47ac-8b56-55494c2c889f",
+      "canonical_name": "The Voyager Scholarship",
+      "canonical_slug": "the-voyager-scholarship",
+      "official_homepage": "https://www.obama.org/programs/voyager-scholarship/"
+    }
+  ]
+}

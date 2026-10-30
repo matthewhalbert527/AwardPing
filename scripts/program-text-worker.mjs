@@ -169,6 +169,28 @@ export function programTextCoverage({ manifest, sources }, epoch, factReviews = 
   });
 }
 
+/** Reporting the current basic-information purpose does not require the retired
+ * complete-program/variation review batch or assume a fixed award count. */
+export async function loadProgramTextBasicStatus(supabase, roster) {
+  const cohorts = new Set(roster.manifest.map(role => role.cohort_key));
+  const { data, error } = await supabase.rpc("get_program_award_monitoring_basics");
+  if (error || data?.schema !== "awardping.program-award-monitoring-basics.v1" ||
+      !Array.isArray(data.awards) || data.awards.length !== cohorts.size || data.awards.length > 35) {
+    throw new Error("Current basic-information coverage is unavailable");
+  }
+  const rows = new Map(), owners = new Set();
+  for (const row of data.awards) {
+    if (!row || Object.keys(row).sort().join() !== "award_id,basic_details_current,cohort_key,snapshot_id" ||
+        !cohorts.has(row.cohort_key) || rows.has(row.cohort_key) || !uuid(row.award_id) || owners.has(row.award_id) ||
+        !(row.snapshot_id === null || uuid(row.snapshot_id)) || typeof row.basic_details_current !== "boolean" ||
+        row.snapshot_id === null && row.basic_details_current) {
+      throw new Error("Current basic-information identities are incomplete");
+    }
+    owners.add(row.award_id); rows.set(row.cohort_key, row);
+  }
+  return rows;
+}
+
 export async function review(repository, options, callbacks, limit, scope) {
   const queued = await repository.listCandidates(["pending", "submitted", "succeeded"], limit, scope);
   const report = [];
@@ -211,19 +233,16 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
   let client;
   try {
     const roster = await loadProgramTextSources(supabase, { epoch: config.epoch });
-    // Historical exhaustive detail approvals are reporting data, never a dependency
-    // of collecting approved sources or reviewing their real programme changes.
-    let factReviews = [], variationReviews = [];
+    // Historical complete-program and application-route approvals remain private
+    // history. Report the supported basic details across the actual current roster.
+    const factReviews = [], variationReviews = [];
+    let basicStatuses = null;
     if (!["collect", "review"].includes(args.mode)) {
-      const factBatch = await supabase.rpc("get_program_text_fact_review_batch");
-      if (factBatch.error || !Array.isArray(factBatch.data) || factBatch.data.length > 25) throw new Error("Current factual approvals are unavailable");
-      const variationBatch = await supabase.rpc("get_program_variation_admin_batch");
-      if (variationBatch.error || variationBatch.data?.schema !== "awardping.program-variation-admin-batch.v1" ||
-          !Array.isArray(variationBatch.data.awards) || variationBatch.data.awards.length !== 25 ||
-          variationBatch.data.awards.some(row => !/^[a-z0-9_-]{1,80}$/.test(row?.cohort_key || "")) ||
-          new Set(variationBatch.data.awards.map(row => row.cohort_key)).size !== 25) throw new Error("Current variation approval coverage is unavailable");
-      factReviews = factBatch.data; variationReviews = variationBatch.data.awards;
+      basicStatuses = await loadProgramTextBasicStatus(supabase, roster);
     }
+    const coverage = () => programTextCoverage(roster, config.epoch, factReviews, variationReviews).map(row => ({ ...row,
+      ...(basicStatuses ? { basic_details_current: basicStatuses.get(row.cohort).basic_details_current,
+        basic_snapshot_id: basicStatuses.get(row.cohort).snapshot_id } : {}) }));
     const scopedSources = roster.sources.filter((source, index) => index % args.shardCount === args.shardIndex &&
       (!args["source-id"] || source.id === args["source-id"]) && (!args.cohort || source.cohorts.includes(args.cohort)));
     // Review --limit caps candidates below, not the source roster they may come
@@ -231,7 +250,7 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     const selected = args.mode === "review" ? scopedSources : scopedSources.slice(0, args.limit);
     if (args["source-id"] && selected.length !== 1) throw new Error("The requested source is not in this shard's required roster");
     const report = { schema: "awardping.program-text-run.v1", mode: args.mode, epoch: config.epoch, apply: args.apply,
-      selected_sources: selected.length, roster_seal: roster.roster_seal, checked_at: new Date().toISOString(), coverage: programTextCoverage(roster, config.epoch, factReviews, variationReviews), results: [] };
+      selected_sources: selected.length, roster_seal: roster.roster_seal, checked_at: new Date().toISOString(), coverage: coverage(), results: [] };
     if (!args.apply || ["plan", "report", "new_page_review", "legacy_hold"].includes(args.mode)) return report;
     const bucket = env.R2_BUCKET, endpoint = env.R2_ENDPOINT || (env.R2_ACCOUNT_ID ? `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null);
     if (!bucket || !endpoint || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY) throw new Error("Private raw/text retention is not configured");
@@ -285,7 +304,7 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
         ...(Object.hasOwn(outcome, "collection_failure_recorded") ? { collection_failure_recorded: outcome.collection_failure_recorded,
           collection_failure_journal_reason: outcome.collection_failure_journal_reason || null } : {}) });
     }
-    report.coverage = programTextCoverage(roster, config.epoch, factReviews, variationReviews);
+    report.coverage = coverage();
     return report;
   } finally { client?.destroy(); await closeSupabaseServiceTransport(); }
 }

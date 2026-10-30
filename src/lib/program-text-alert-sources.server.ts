@@ -1,12 +1,14 @@
 import "server-only";
 import type { Stage1PublicationEntry, Stage1PublicationIndex } from "@/lib/stage1-publication";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import expansionCohort from "../../config/program-award-expansion.json";
 
 export type ProgramTextAlertSourceBinding = { url: string; shared_award_id: string; epoch: string };
 export type ProgramTextAlertApproval = { eventId: string; candidateId: string; contentHash: string };
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const exact = (value: unknown, keys: string[]): value is Record<string, unknown> => object(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value) && !/^0{8}(?:-0{4}){3}-0{12}$/.test(value);
+const expansionOwners = new Map(expansionCohort.awards.map(award => [award.cohort_key, award.canonical_shared_award_id]));
 function officialUrl(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 10_000) return false;
   try { const url = new URL(value); return url.href === value && ["https:", "http:"].includes(url.protocol) && !url.username && !url.password && !url.port && !url.hash; }
@@ -27,9 +29,16 @@ export function applyProgramTextAlertSourceBindings(index: Stage1PublicationInde
     if (!exact(binding, ["cohort_key", "source_id", "shared_award_id", "url", "epoch"]) ||
         typeof binding.cohort_key !== "string" || !uuid(binding.source_id) || !uuid(binding.shared_award_id) ||
         !officialUrl(binding.url) || binding.epoch !== epoch || seen.has(binding.source_id)) throw Error("Text alert source identity changed.");
-    const entry = index.entryByCohortKey.get(binding.cohort_key);
-    if (!entry?.effectivelyVerified || !entry.memberAwardIds.includes(binding.shared_award_id)) throw Error("Text alert source has the wrong award owner.");
     seen.add(binding.source_id);
+    const entry = index.entryByCohortKey.get(binding.cohort_key);
+    if (!entry && expansionOwners.get(binding.cohort_key) === binding.shared_award_id && !index.entryByMemberAwardId.has(binding.shared_award_id)) {
+      // A failed expansion lookup must not remove the accepted awards' alert
+      // authority. This exact reviewed extra owner receives no permission until
+      // its publication entry is available. The full snapshot still validates
+      // above, including epochs and duplicate source IDs across ignored rows.
+      continue;
+    }
+    if (!entry?.effectivelyVerified || !entry.memberAwardIds.includes(binding.shared_award_id)) throw Error("Text alert source has the wrong award owner.");
     if (!byCohort.has(binding.cohort_key)) byCohort.set(binding.cohort_key, []);
     byCohort.get(binding.cohort_key)!.push([binding.source_id, { url: binding.url, shared_award_id: binding.shared_award_id, epoch }]);
   }

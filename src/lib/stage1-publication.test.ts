@@ -44,13 +44,14 @@ describe("Stage 1 publication gate", () => {
     const rpc = vi.fn(async (name: string) => {
       if (name === "get_stage1_publication_snapshot") return { data: snapshot, error: null };
       if (name === "get_program_basic_facts") return { data: [], error: null };
+      if (name === "get_program_award_expansion_publication") return { data: { schema: "awardping.program-award-expansion-publication.v1", epoch: textMonitoring.epoch, awards: [] }, error: null };
       if (name === "get_program_text_public_alert_source_bindings") return { data: { schema: "awardping.program-text-public-alert-sources.v1", epoch: textMonitoring.epoch, source_count: 0, bindings: [] }, error: null };
       throw Error("Retired complete-fact and application-route workflows must not run here.");
     });
     vi.mocked(createSupabaseAdminClient).mockReturnValue({ rpc } as unknown as ReturnType<typeof createSupabaseAdminClient>);
     const index = await loadStage1PublicationIndex();
     expect(index.available).toBe(true); expect(index.verifiedEntries).toHaveLength(25);
-    expect(rpc.mock.calls.map(([name]) => name)).toEqual(["get_stage1_publication_snapshot", "get_program_basic_facts", "get_program_text_public_alert_source_bindings"]);
+    expect(rpc.mock.calls.map(([name]) => name)).toEqual(["get_stage1_publication_snapshot", "get_program_basic_facts", "get_program_award_expansion_publication", "get_program_text_public_alert_source_bindings"]);
     expect(index.entries[0].publishedFacts).toEqual(snapshot.cohorts[0].published_facts);
   });
   it("publishes all 25 only under one fresh authoritative release epoch", () => {

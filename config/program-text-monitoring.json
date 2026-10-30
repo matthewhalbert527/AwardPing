@@ -3,6 +3,21 @@
   "epoch": "ec349339-ff62-4d2e-a610-8c361b4044ec",
   "enabled": true,
   "sources": {
+    "c906cb21-aeb3-40b9-a5fe-b72fb54db2e9": {
+      "source_url": "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships",
+      "shared_award_id": "4f66e3fa-3924-4d0d-a04d-a32989f74c2e",
+      "acquisition": "rendered_html"
+    },
+    "235ed53e-5cd3-4315-b653-7450e0e10c84": {
+      "source_url": "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships/peace-fellowships-masters-degree-programs",
+      "shared_award_id": "4f66e3fa-3924-4d0d-a04d-a32989f74c2e",
+      "acquisition": "rendered_html"
+    },
+    "37255bb3-547a-4181-a953-86c38093e87c": {
+      "source_url": "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships/peace-fellowships-certificate-program",
+      "shared_award_id": "4f66e3fa-3924-4d0d-a04d-a32989f74c2e",
+      "acquisition": "rendered_html"
+    },
     "58aefec0-0d42-4b7b-9887-60d25940b3d0": {
       "source_url": "https://www.smartscholarship.org/smart",
       "shared_award_id": "d7d4d117-f312-456f-a75c-3dbd5d372c99",

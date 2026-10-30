@@ -402,6 +402,26 @@ export type Database = {
         Update: never;
         Relationships: [];
       };
+      program_award_registry: {
+        Row: Database["public"]["Tables"]["stage1_award_registry"]["Row"];
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      program_award_members: {
+        Row: Database["public"]["Tables"]["stage1_award_members"]["Row"];
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      program_award_expansion_admissions: {
+        Row: { id: string; cohort_key: string; batch: number; epoch: string; plan_hash: string; proof: Json;
+          source_ids: string[]; status: "monitoring" | "active"; activation_receipt: Json | null;
+          admitted_by: string; admitted_at: string; activated_at: string | null };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
       stage1_award_registry: {
         Row: {
           cohort_key: string;
@@ -3725,6 +3745,14 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      get_program_award_expansion_publication: { Args: { p_epoch: string }; Returns: Json };
+      admit_program_award_expansion_batch: {
+        Args: { p_batch: number; p_awards: Json; p_actor: string; p_plan_hash: string }; Returns: Json;
+      };
+      activate_program_award_expansion_batch: {
+        Args: { p_batch: number; p_expected_plan_hash: string; p_actor: string }; Returns: Json;
+      };
+      get_program_award_monitoring_basics: { Args: Record<string, never>; Returns: Json };
       get_program_text_source_roster: { Args: Record<string, never>; Returns: Json };
       replace_program_text_source_role: {
         Args: { p_cohort: string; p_role: string; p_expected_revision: string; p_source_ids: string[]; p_evidence: Json; p_reviewer: string }; Returns: Json;
