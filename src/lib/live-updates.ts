@@ -7,6 +7,8 @@ import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
 import { describeDetectedAt } from "@/lib/time-zone";
+import { attachPublicAlertGroups, loadPublicAlertGroups } from "@/lib/public-alert-groups.server";
+import { publicAlertDisplayRows, type PublicAlertGroup } from "@/lib/public-alert-groups";
 
 export type LiveUpdateItem = {
   id: string;
@@ -27,6 +29,7 @@ export type LiveUpdateItem = {
   /** Full Central date and time with zone. */
   detectedTitle: string;
   changeTypeLabel: string;
+  group?: PublicAlertGroup;
 };
 
 // `now` is read once per load so every item's label agrees with the others.
@@ -42,7 +45,8 @@ export async function getLiveUpdateItems(limit = 30, now: Date = new Date()): Pr
     limit,
   });
 
-  return eligibleEvents.map(({ event: change, publication }) => {
+  const related = await loadPublicAlertGroups({ admin, publicationIndex, events: eligibleEvents });
+  const items = related.events.map(({ event: change, publication }) => {
       const sourceTitle = readableSourceTitle(change.source_title, change.source_url);
       const detected = describeDetectedAt(change.detected_at, now);
       return {
@@ -63,6 +67,8 @@ export async function getLiveUpdateItems(limit = 30, now: Date = new Date()): Pr
         changeTypeLabel: changeTypeLabel(change.change_details),
       };
     });
+  const grouped = attachPublicAlertGroups(items, related.groups);
+  return publicAlertDisplayRows(grouped).map(row => row.members[0]).slice(0, limit);
 }
 
 function changeTypeLabel(value: unknown) {

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ user: vi.fn(), isAdmin: vi.fn(), load: vi.fn(), decide: vi.fn() }));
 vi.mock("@/lib/auth", () => ({ getCurrentUser: mocks.user, isSiteAdminEmail: mocks.isAdmin }));
 vi.mock("@/lib/alert-review.server", () => ({ loadAlertReviews: mocks.load, decideAlertReview: mocks.decide }));
+vi.mock("@/lib/alert-groups.server", () => ({ loadAlertReviewBoard: mocks.load }));
 import { GET, POST } from "./route";
 
 const actor = "10000000-0000-4000-8000-000000000001";
@@ -13,12 +14,12 @@ function post(value: unknown = input, origin: string | null = "https://awardping
 }
 beforeEach(() => {
   vi.resetAllMocks(); mocks.user.mockResolvedValue({ id: actor, email: "admin@example.com" }); mocks.isAdmin.mockReturnValue(true);
-  mocks.load.mockResolvedValue([]); mocks.decide.mockResolvedValue({ ok: true });
+  mocks.load.mockResolvedValue({ alerts: [], mergeOptions: [] }); mocks.decide.mockResolvedValue({ ok: true });
 });
 describe("minimal authenticated alert review endpoint", () => {
   it("returns only one requested status with private noncacheable responses", async () => {
     const response = await GET(new Request("https://awardping.com/api/admin/alert-reviews?status=dismissed"));
-    expect(response.status).toBe(200); expect(await response.json()).toEqual({ alerts: [] });
+    expect(response.status).toBe(200); expect(await response.json()).toEqual({ alerts: [], mergeOptions: [] });
     expect(mocks.load).toHaveBeenCalledExactlyOnceWith("dismissed");
     expect(response.headers.get("cache-control")).toBe("private, no-store");
   });

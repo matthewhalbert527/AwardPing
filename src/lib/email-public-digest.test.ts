@@ -20,7 +20,7 @@ import {
   renderPublicDailyDigestEmail,
   sendFrozenPublicDailyDigestEmail,
 } from "@/lib/email";
-import { buildPublicDigestChanges } from "@/lib/public-updates-core";
+import { buildPublicDigestChanges, pendingPublicDigestChangesForSubscriber } from "@/lib/public-updates-core";
 import { programChangePresentation } from "@/lib/program-change-presentation";
 
 const changes = [
@@ -36,6 +36,29 @@ const changes = [
 
 describe("public digest frozen email", () => {
   beforeEach(() => mocks.send.mockReset());
+
+  it("groups only current batch display rows while retaining every original event for delivery receipts", () => {
+    const first = { ...changes[0], eventId: "first", summary: "The previous eligibility condition changed." };
+    const second = { ...changes[0], eventId: "second", sourceTitle: "Application rules", sourceUrl: "https://example.edu/application", summary: "A new application statement is required." };
+    const group = { id: "related", revisionHash: "a".repeat(64), memberEventIds: [first.eventId, second.eventId], members: [] };
+    const batch = [{ ...first, group }, { ...second, group }];
+    const before = structuredClone(batch);
+    const rendered = renderPublicDailyDigestEmail({ changes: batch, unsubscribeUrl: "https://awardping.org/unsubscribe" });
+    expect(rendered.subject).toContain("1 award page update");
+    expect(rendered.text).toContain(first.summary);
+    expect(rendered.text).toContain(second.summary);
+    expect(rendered.text).toContain(first.sourceUrl);
+    expect(rendered.text).toContain(second.sourceUrl);
+    expect(batch.map(change => change.eventId)).toEqual(["first", "second"]);
+    expect(batch).toEqual(before);
+
+    const pending = pendingPublicDigestChangesForSubscriber(batch, "2026-07-01T00:00:00Z", new Set(["first"]));
+    const followup = renderPublicDailyDigestEmail({ changes: pending, unsubscribeUrl: "https://awardping.org/unsubscribe" });
+    expect(pending.map(change => change.eventId)).toEqual(["second"]);
+    expect(followup.text).toContain(second.summary);
+    expect(followup.text).not.toContain(first.summary);
+    expect(followup.subject).toContain("1 award page update");
+  });
 
   it("renders one deterministic, escaped payload before enqueue", () => {
     const input = {

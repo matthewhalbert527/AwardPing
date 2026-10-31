@@ -4,6 +4,7 @@ import { appConfig } from "@/lib/config";
 import type { PublicDigestChange } from "@/lib/public-updates-core";
 import { formatCentralDate } from "@/lib/time-zone";
 import { programChangePresentation } from "@/lib/program-change-presentation";
+import { publicAlertDisplayRows } from "@/lib/public-alert-groups";
 
 let resend: Resend | null = null;
 
@@ -257,9 +258,18 @@ export async function sendPublicUpdateConfirmationEmail(
 export function renderPublicDailyDigestEmail(
   input: PublicDailyDigestRenderInput,
 ): RenderedPublicDailyDigestEmail {
-  const listHtml = input.changes
+  // The caller has already filtered each subscriber's original event IDs and
+  // formed bounded batches. Group only these display rows, never their ledger.
+  const rows = publicAlertDisplayRows(input.changes.map(change => ({ ...change, id: change.eventId })), { allowPartialGroups: true });
+  const listHtml = rows
     .map(
-      (change) => `
+      (row) => row.grouped ? `
+        <li style="margin-bottom: 18px;">
+          <strong>${escapeHtml(row.members[0].awardName)}</strong><br />
+          Related award changes
+          <ul>${row.members.map(change => `<li><strong>${escapeHtml(change.sourceTitle)}</strong><br />${escapeHtml(change.summary)}<br />${change.context ? `${escapeHtml(change.context)}<br />` : ""}<a href="${escapeHtml(change.sourceUrl)}">Open source page</a></li>`).join("")}</ul>
+        </li>
+      ` : row.members.map(change => `
         <li style="margin-bottom: 18px;">
           <strong>${escapeHtml(change.awardName)}</strong><br />
           <span>${escapeHtml(change.sourceTitle)}</span><br />
@@ -267,27 +277,27 @@ export function renderPublicDailyDigestEmail(
           ${change.context ? `${escapeHtml(change.context)}<br />` : ""}
           <a href="${escapeHtml(change.sourceUrl)}">Open source page</a>
         </li>
-      `,
+      `).join(""),
     )
     .join("");
 
-  const listText = input.changes
+  const listText = rows
     .map(
-      (change) =>
-        `${change.awardName}\n${change.sourceTitle}\n${change.summary}${change.context ? `\n${change.context}` : ""}\n${change.sourceUrl}\nDetected: ${formatDigestDate(change.detectedAt)}`,
+      (row) => `${row.grouped ? `${row.members[0].awardName}\nRelated award changes\n` : ""}${row.members.map(change =>
+        `${row.grouped ? "" : `${change.awardName}\n`}${change.sourceTitle}\n${change.summary}${change.context ? `\n${change.context}` : ""}\n${change.sourceUrl}\nDetected: ${formatDigestDate(change.detectedAt)}`).join("\n\n")}`,
     )
     .join("\n\n");
 
   return {
     from: appConfig.alertFromEmail,
-    subject: `AwardPing daily updates: ${input.changes.length} award page update${
-      input.changes.length === 1 ? "" : "s"
+    subject: `AwardPing daily updates: ${rows.length} award page update${
+      rows.length === 1 ? "" : "s"
     }`,
     html: `
       <div style="font-family: Arial, sans-serif; color: #17211b; line-height: 1.55;">
         <h1 style="font-size: 22px;">AwardPing daily updates</h1>
-        <p>AwardPing found ${input.changes.length} useful public award-page update${
-          input.changes.length === 1 ? "" : "s"
+        <p>AwardPing found ${rows.length} useful public award-page update${
+          rows.length === 1 ? "" : "s"
         }.</p>
         <ul>${listHtml}</ul>
         <p style="color: #626b7c; font-size: 13px;">

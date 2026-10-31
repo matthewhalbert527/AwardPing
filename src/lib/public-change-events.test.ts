@@ -40,6 +40,39 @@ describe("loadEligiblePublicChangeEvents", () => {
     mocks.loadPublicEventVisualEvidence.mockClear();
   });
 
+  it("preserves distinct exact-ID group members only when explicitly requested, keeping normal dedupe unchanged", async () => {
+    const first = eventRow("2026-07-16T18:00:00.000Z", 4, allowedSourceId);
+    const duplicate = { ...first, id: "40000000-0000-4000-8000-000000000003", detected_at: "2026-07-16T17:00:00.000Z" };
+    const selected = [first.id, duplicate.id];
+    const normal = fakeAdmin([[first, duplicate]], [sourceRow()]);
+    expect((await loadEligiblePublicChangeEvents({ admin: normal.client, publicationIndex: publicationIndex(), eventIds: selected, limit: null })).map(row => row.event.id)).toEqual([first.id]);
+    const grouped = fakeAdmin([[first, duplicate]], [sourceRow()]);
+    expect((await loadEligiblePublicChangeEvents({ admin: grouped.client, publicationIndex: publicationIndex(), eventIds: selected,
+      preserveDistinctEventIds: true, limit: null })).map(row => row.event.id)).toEqual(selected);
+    expect(grouped.changeInFilters).toContainEqual({ column: "id", values: selected });
+  });
+
+  it("still rejects an unauthorized exact-ID group member and never invents a missing one", async () => {
+    const rejected = eventRow("2026-07-16T18:00:00.000Z", 4, allowedSourceId);
+    const permitted = eventRow("2026-07-16T17:00:00.000Z", 3, allowedSourceId);
+    mocks.isPublicChangeEvent.mockReturnValueOnce(false);
+    const admin = fakeAdmin([[rejected, permitted]], [sourceRow()]);
+    const result = await loadEligiblePublicChangeEvents({ admin: admin.client, publicationIndex: publicationIndex(),
+      eventIds: [rejected.id, permitted.id, "40000000-0000-4000-8000-000000000002"], preserveDistinctEventIds: true, limit: null });
+    expect(result.map(row => row.event.id)).toEqual([permitted.id]);
+    expect(mocks.isPublicChangeEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses broad or oversized dedupe overrides before querying", async () => {
+    const admin = fakeAdmin([], []);
+    await expect(loadEligiblePublicChangeEvents({ admin: admin.client, publicationIndex: publicationIndex(),
+      preserveDistinctEventIds: true, limit: null })).rejects.toThrow("exact event IDs");
+    await expect(loadEligiblePublicChangeEvents({ admin: admin.client, publicationIndex: publicationIndex(),
+      preserveDistinctEventIds: true, eventIds: Array.from({ length: 1001 }, (_, n) => `40000000-0000-4000-8000-${String(n).padStart(12, "0")}`),
+      limit: null })).rejects.toThrow("exact event IDs");
+    expect(admin.changePageCalls).toBe(0);
+  });
+
   it("continues past invalid newer rows instead of starving an older valid update", async () => {
     const firstPage = [
       eventRow("2026-07-16T18:00:00.000Z", 4, invalidSourceId),

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser, isSiteAdminEmail } from "@/lib/auth";
 import { validateSameOriginAdminMutation } from "@/lib/admin-request-security";
-import { decideAlertReview, loadAlertReviews } from "@/lib/alert-review.server";
+import { decideAlertReview } from "@/lib/alert-review.server";
+import { loadAlertReviewBoard } from "@/lib/alert-groups.server";
 import type { AlertReviewStatus } from "@/components/admin-alert-review-board";
 
 export const runtime = "nodejs";
@@ -36,7 +37,7 @@ export async function GET(request: Request) {
   if ([...query.keys()].some(key => key !== "status") || query.getAll("status").length > 1 || !["pending", "approved", "dismissed"].includes(status)) {
     return reply({ error: "Choose one supported alert view." }, 400);
   }
-  try { return reply({ alerts: await loadAlertReviews(status as AlertReviewStatus) }); }
+  try { return reply(await loadAlertReviewBoard(status as AlertReviewStatus)); }
   catch { return reply({ error: "The alert list could not be confirmed. Refresh before reviewing." }, 409); }
 }
 export async function POST(request: Request) {

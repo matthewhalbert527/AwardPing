@@ -5,10 +5,11 @@ import { changeSummaryPresentation } from "@/lib/change-summary";
 import { programChangePresentation } from "@/lib/program-change-presentation";
 import type { LiveUpdateItem } from "@/lib/live-updates";
 import { liveUpdateAwardHref } from "@/lib/public-award-links";
+import { PublicAlertGroupSummary } from "@/components/public-alert-group-summary";
 
 /** One reader-facing update presentation shared by home and the full feed. */
 export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
-  const awardHref = liveUpdateAwardHref(update);
+  const awardHref = liveUpdateAwardHref({ ...update, sourceId: update.group ? null : update.sourceId });
   const presentation = programChangePresentation(update.changeDetails) ??
     changeSummaryPresentation(update.summary, update.sourceUrl, update.sourceTitle, update.changeDetails);
   const normalizedTitle = normalizedSentence(presentation.title);
@@ -32,18 +33,18 @@ export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
             update.detectedLabel
           )}
         </span>
-        {showTitle && <strong>{presentation.title}</strong>}
+        {update.group ? <strong>Related award changes</strong> : showTitle && <strong>{presentation.title}</strong>}
       </div>
-      {update.sourceTitle && (
+      {!update.group && update.sourceTitle && (
         <p className="public-live-update-source">{update.sourceTitle}</p>
       )}
-      <ChangeSummaryDisplay
+      {update.group ? <PublicAlertGroupSummary members={update.group.members} /> : <ChangeSummaryDisplay
         compact
         summary={update.summary}
         sourceUrl={update.sourceUrl}
         sourceTitle={update.sourceTitle}
         changeDetails={update.changeDetails}
-      />
+      />}
       <div className="public-live-update-actions">
         <Link
           className="public-live-update-detail-link"
@@ -53,7 +54,7 @@ export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
           View update
           <ArrowRight size={15} aria-hidden="true" />
         </Link>
-        <a
+        {!update.group && <a
           className="public-live-update-source-link"
           href={update.sourceUrl}
           rel="noreferrer"
@@ -62,7 +63,7 @@ export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
         >
           Official source
           <ExternalLink size={15} aria-hidden="true" />
-        </a>
+        </a>}
       </div>
     </article>
   );

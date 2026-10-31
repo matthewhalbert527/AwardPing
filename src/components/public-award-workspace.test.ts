@@ -12,6 +12,25 @@ import { PUBLIC_AWARD_PANEL_HEADING_ID } from "@/lib/public-award-panel-focus";
 import * as ChangeEvidence from "@/components/change-evidence-panel";
 
 describe("PublicAwardWorkspace", () => {
+  it("groups approved related changes while preserving child deep links, source views and per-event reads", () => {
+    const data = makeDeepLinkPageData();
+    const members = data.changes.slice(0, 2);
+    const group = { id: "related-group", revisionHash: "a".repeat(64), memberEventIds: members.map(member => member.id), members };
+    data.changes = members.map(member => ({ ...member, group }));
+    const before = structuredClone(data);
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialChangeId: "change-apply" })));
+    expect($(".public-award-change-line")).toHaveLength(1);
+    expect($(".public-award-change-line[aria-current='true']")).toHaveLength(1);
+    expect($("[aria-label='Related changes'] section")).toHaveLength(2);
+    expect($.text()).toContain("The homepage changed.");
+    expect($.text()).toContain("The application instructions changed.");
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "changes" })).toEqual(["change-home", "change-apply"]);
+    const source = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSourceId: "source-apply", initialSection: "sources" })));
+    expect(source(".public-award-change-line")).toHaveLength(1);
+    expect(source("[aria-label='Related changes']")).toHaveLength(0);
+    expect(source(".public-award-change-line").text()).not.toContain("The homepage changed.");
+    expect(data).toEqual(before);
+  });
   it("preserves separate scalar and timeline deadline warning links when deadlines share one list", () => {
     const data = makeDeepLinkPageData();
     const scalar = "Applications must be submitted by October 1, 2026.";

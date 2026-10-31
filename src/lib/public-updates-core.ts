@@ -8,6 +8,7 @@ import { isChangeEventSuppressed } from "@/lib/change-event-suppression";
 import { readableSourceTitle } from "@/lib/display-text";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 import { programChangePresentation } from "@/lib/program-change-presentation";
+import { publicAlertDisplayRows, type PublicAlertGroup } from "@/lib/public-alert-groups";
 
 export type PublicDigestCandidate = {
   id: string;
@@ -22,6 +23,7 @@ export type PublicDigestCandidate = {
   suppression_reason?: string | null;
   suppression_source?: string | null;
   detected_at: string;
+  group?: PublicAlertGroup;
 };
 
 export type PublicDigestChange = {
@@ -32,6 +34,7 @@ export type PublicDigestChange = {
   summary: string;
   context?: string;
   detectedAt: string;
+  group?: PublicAlertGroup;
 };
 
 export type PublicDigestSubscriber = {
@@ -110,7 +113,14 @@ export function buildPublicDigestChanges(
       );
     });
 
-  const deduped = dedupeChangeSummaries(usefulChanges);
+  const dedupedIds = new Set(dedupeChangeSummaries(usefulChanges).map(change => change.id));
+  const seenEventIds = new Set<string>();
+  const deduped = usefulChanges.filter(change => {
+    const groupedMember = change.group?.memberEventIds.includes(change.id);
+    if (seenEventIds.has(change.id) || !groupedMember && !dedupedIds.has(change.id)) return false;
+    seenEventIds.add(change.id);
+    return true;
+  });
   const retained = limit === null ? deduped : deduped.slice(0, limit);
   return retained
     .map((change) => {
@@ -122,6 +132,7 @@ export function buildPublicDigestChanges(
         sourceUrl: change.source_url,
         summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
         ...(presentation ? { context: presentation.context } : {}),
+        ...(change.group ? { group: change.group } : {}),
         detectedAt: change.detected_at,
       };
     });
@@ -158,9 +169,20 @@ export function splitPublicDigestChanges(
     throw new Error("Public digest presentation batches must contain 1-12 events.");
   }
   const batches: PublicDigestChange[][] = [];
-  for (let start = 0; start < changes.length; start += batchSize) {
-    batches.push(changes.slice(start, start + batchSize));
+  const indexed = changes.map((change, index) => ({ id: change.eventId, group: change.group, index }));
+  const units = publicAlertDisplayRows(indexed, { allowPartialGroups: true });
+  let batch: PublicDigestChange[] = [];
+  for (const unit of units) {
+    const members = unit.members.map(row => changes[row.index]);
+    // The normal 12-event cap fits every approved group (maximum eight).
+    // Explicit smaller caller caps still remain hard bounds.
+    if (batch.length && batch.length + members.length > batchSize) { batches.push(batch); batch = []; }
+    for (const member of members) {
+      batch.push(member);
+      if (batch.length === batchSize) { batches.push(batch); batch = []; }
+    }
   }
+  if (batch.length) batches.push(batch);
   return batches;
 }
 

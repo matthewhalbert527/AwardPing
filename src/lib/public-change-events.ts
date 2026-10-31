@@ -72,6 +72,9 @@ type LoadEligiblePublicChangeEventsInput = {
    * and when none remain the result is empty without a query.
    */
   eventIds?: string[];
+  /** Exact-ID group hydration keeps distinct evidence records for receipts.
+   * Default reads retain the existing presentation deduplication. */
+  preserveDistinctEventIds?: boolean;
   since?: string;
   pageSize?: number;
   maxScannedRows?: number;
@@ -93,6 +96,7 @@ export async function loadEligiblePublicChangeEvents({
   limit,
   memberAwardIds = publicationIndex.verifiedMemberAwardIds,
   eventIds,
+  preserveDistinctEventIds = false,
   since,
   pageSize = 200,
   maxScannedRows = limit === null ? 50_000 : Math.max(5_000, limit * 500),
@@ -119,6 +123,9 @@ export async function loadEligiblePublicChangeEvents({
   const selectedEventIds = eventIds === undefined
     ? null
     : [...new Set(eventIds.filter((id) => isUuid(id)))];
+  if (typeof preserveDistinctEventIds !== "boolean" || preserveDistinctEventIds && (!selectedEventIds || selectedEventIds.length > 1000)) {
+    throw new Error("Distinct event hydration requires at most 1000 exact event IDs.");
+  }
   if (selectedEventIds && !selectedEventIds.length) return [];
   const verifiedMemberIds = new Set(publicationIndex.verifiedMemberAwardIds);
   const selectedMemberIds = [
@@ -245,7 +252,7 @@ export async function loadEligiblePublicChangeEvents({
       }
     }
 
-    const deduped = dedupeEligiblePublicChangeEvents(eligible);
+    const deduped = preserveDistinctEventIds ? eligible : dedupeEligiblePublicChangeEvents(eligible);
     if (limit !== null && deduped.length >= limit) {
       await assertStage1PublicationReleaseCurrent(admin, publicationIndex);
       return deduped.slice(0, limit);

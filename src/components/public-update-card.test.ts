@@ -20,6 +20,21 @@ function update(overrides: Partial<LiveUpdateItem> = {}): LiveUpdateItem {
 }
 
 describe("consistent public update cards shared by home and global Updates", () => {
+  it("shows one related update with each original page and description kept separate", () => {
+    const first = update({ id: "first", summary: "U.S. applicants now need an additional statement.", changeDetails: {}, sourceTitle: "Application instructions" });
+    const second = update({ id: "second", summary: "A new citizenship exception applies only to the stated route.", changeDetails: {},
+      sourceTitle: "Eligibility rules", sourceUrl: "https://example.edu/award/eligibility" });
+    first.group = { id: "group", revisionHash: "a".repeat(64), memberEventIds: [first.id, second.id], members: [{ ...first }, second] };
+    const before = structuredClone(first);
+    const $ = load(renderToStaticMarkup(createElement(PublicUpdateCard, { update: first })));
+    expect($("article")).toHaveLength(1);
+    expect($("[aria-label='Related changes'] section")).toHaveLength(2);
+    expect($("h3 a").attr("href")).toBe("/example-award?change=first");
+    expect($("a[href='https://example.edu/award/eligibility']")).toHaveLength(1);
+    expect($.text()).toContain(first.summary);
+    expect($.text()).toContain(second.summary);
+    expect(first).toEqual(before);
+  });
   it("uses the award-page presentation title and preserves non-PDF source attribution", () => {
     const item = update();
     const before = structuredClone(item);

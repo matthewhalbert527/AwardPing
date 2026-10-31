@@ -7,6 +7,7 @@ vi.mock("@/lib/config", () => ({ hasSupabaseConfig: mocks.config, hasSupabaseAdm
 vi.mock("@/lib/auth", () => ({ requireUser: mocks.user, isSiteAdminEmail: mocks.admin }));
 vi.mock("@/lib/alert-review.server", () => ({ loadAlertReviews: mocks.load }));
 vi.mock("@/lib/alert-reviews.server", () => ({ loadAlertReviews: mocks.load }));
+vi.mock("@/lib/alert-groups.server", () => ({ loadAlertReviewBoard: mocks.load }));
 vi.mock("@/components/admin-alert-review-board", () => ({ AdminAlertReviewBoard: mocks.board }));
 vi.mock("@/components/setup-notice", () => ({ SetupNotice: () => "Setup required" }));
 import AdminAlertReviewsPage from "@/app/dashboard/admin/issues/page";
@@ -15,7 +16,7 @@ const alerts = [{ id: "synthetic-proposed-change" }];
 beforeEach(() => {
   vi.resetAllMocks(); mocks.config.mockReturnValue(true); mocks.adminConfig.mockReturnValue(true);
   mocks.user.mockResolvedValue({ email: "admin@example.org" }); mocks.admin.mockReturnValue(true);
-  mocks.load.mockResolvedValue(alerts); mocks.board.mockReturnValue("Proposed alert review board");
+  mocks.load.mockResolvedValue({ alerts, mergeOptions: [] }); mocks.board.mockReturnValue("Proposed alert review board");
 });
 
 describe("minimal outgoing alert review page", () => {
@@ -23,7 +24,7 @@ describe("minimal outgoing alert review page", () => {
     const html = renderToStaticMarkup(await AdminAlertReviewsPage());
     expect(mocks.admin).toHaveBeenCalledExactlyOnceWith("admin@example.org");
     expect(mocks.load).toHaveBeenCalledExactlyOnceWith("pending");
-    expect(mocks.board.mock.calls[0][0]).toEqual({ initialAlerts: alerts, initialStatus: "pending" });
+    expect(mocks.board.mock.calls[0][0]).toEqual({ initialAlerts: alerts, initialMergeOptions: [], initialStatus: "pending" });
     expect(html).toContain("Proposed alert review board");
     expect(mocks.user.mock.invocationCallOrder[0]).toBeLessThan(mocks.admin.mock.invocationCallOrder[0]);
     expect(mocks.admin.mock.invocationCallOrder[0]).toBeLessThan(mocks.load.mock.invocationCallOrder[0]);
@@ -59,6 +60,6 @@ describe("minimal outgoing alert review page", () => {
     for (const retired of ["loadAdminRegressionAuditFailures", "loadProgramFactBatch", "ProgramFactReviewBoard", "AdminOperationsBoard", "loadQuarantine", "Promise.all", "source-intake", "program-facts", "createSupabaseAdminClient"]) {
       expect(source).not.toContain(retired);
     }
-    expect(source).toContain('loadAlertReviews("pending")'); expect(source).toContain('initialStatus="pending"');
+    expect(source).toContain('loadAlertReviewBoard("pending")'); expect(source).toContain('initialStatus="pending"');
   });
 });

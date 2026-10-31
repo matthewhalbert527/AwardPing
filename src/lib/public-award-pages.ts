@@ -27,6 +27,8 @@ import {
   type Stage1PublicationIndex,
 } from "@/lib/stage1-publication";
 import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
+import { attachPublicAlertGroups, loadPublicAlertGroups } from "@/lib/public-alert-groups.server";
+import type { PublicAlertGroup } from "@/lib/public-alert-groups";
 import { loadPublishedVariationContext } from "@/lib/program-variation-review.server";
 import type { PublishedVariationContext } from "@/lib/program-variation-review-types";
 import { isProgramExpansionPublication } from "@/lib/program-expansion-tracking.server";
@@ -98,6 +100,7 @@ export type PublicAwardPageData = {
     changeDetails: Json;
     detectedAt: string;
     unread?: boolean;
+    group?: PublicAlertGroup;
   }>;
 };
 
@@ -298,10 +301,12 @@ async function loadPublicAwardPageData(
     }),
     requestedEventsPromise,
   ]);
-  const eligibleEvents = mergeRequestedPublicChangeEvents(recentEvents, requestedEvents);
   if (sourcesResult.error) {
     throw new Error(`Public award source query failed: ${sourcesResult.error.message}`);
   }
+  const related = await loadPublicAlertGroups({ admin, publicationIndex,
+    events: mergeRequestedPublicChangeEvents(recentEvents, requestedEvents) });
+  const eligibleEvents = related.events;
   const sources = sourcesResult.data || [];
 
   // Reviewed sources are kept by source ID, never collapsed by a loose
@@ -381,7 +386,7 @@ async function loadPublicAwardPageData(
     presentationAsOf: new Date().toISOString(),
     lastCheckedAt: latestCheckedAt(officialSources),
     sources: publicSources,
-    changes: limitedChanges.map((change) => ({
+    changes: attachPublicAlertGroups(limitedChanges.map((change) => ({
       id: change.id,
       sourceId: change.shared_award_source_id,
       sourceTitle: readableSourceTitle(change.source_title, change.source_url),
@@ -391,7 +396,7 @@ async function loadPublicAwardPageData(
       changeDetails: change.change_details,
       detectedAt: change.detected_at,
       unread: unreadChangeIds ? unreadChangeIds.has(change.id) : true,
-    })),
+    })), related.groups),
   };
 }
 

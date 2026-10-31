@@ -39,6 +39,8 @@ import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { AwardDateValue } from "@/components/award-date-value";
 import { AwardDeadlineValue } from "@/components/award-deadline-value";
+import { publicAlertDisplayRows } from "@/lib/public-alert-groups";
+import { PublicAlertGroupSummary } from "@/components/public-alert-group-summary";
 
 type PublicAwardWorkspaceProps = {
   data: PublicAwardPageData;
@@ -83,6 +85,7 @@ export function PublicAwardWorkspace({
   const [readChangeIds, setReadChangeIds] = useState<Set<string>>(
     () => new Set(data.changes.filter((change) => change.unread === false).map((change) => change.id)),
   );
+  const [readStatusNotice, setReadStatusNotice] = useState("");
   const panelRef = useRef<HTMLElement>(null);
   const activationOrigin = useRef<"outline" | "panel">("outline");
   const activationAnchor = useRef<string | null>(null);
@@ -100,7 +103,7 @@ export function PublicAwardWorkspace({
     for (const source of data.sources) {
       counts.set(
         source.id,
-        data.changes.filter((change) => isChangeForSource(change, source)).length,
+        publicAlertDisplayRows(data.changes.filter((change) => isChangeForSource(change, source))).length,
       );
     }
     return counts;
@@ -110,17 +113,16 @@ export function PublicAwardWorkspace({
     for (const source of data.sources) {
       counts.set(
         source.id,
-        data.changes.filter(
+        publicAlertDisplayRows(data.changes.filter((change) => isChangeForSource(change, source))).filter(row => row.members.some(
           (change) =>
-            isChangeForSource(change, source) &&
             isUnreadChange(change, readChangeIds),
-        ).length,
+        )).length,
       );
     }
     return counts;
   }, [data.changes, data.sources, readChangeIds]);
   const unreadChangeCount = useMemo(
-    () => data.changes.filter((change) => isUnreadChange(change, readChangeIds)).length,
+    () => publicAlertDisplayRows(data.changes).filter(row => row.members.some(change => isUnreadChange(change, readChangeIds))).length,
     [data.changes, readChangeIds],
   );
   // Resolve names against the full roster, not the selected/filtered source.
@@ -153,8 +155,10 @@ export function PublicAwardWorkspace({
   const markChangesRead = (changeIds: string[]) => {
     const uniqueIds = [...new Set(changeIds)].filter(Boolean);
     if (uniqueIds.length === 0) return;
-    setReadChangeIds((current) => new Set([...current, ...uniqueIds]));
-    postReadChangeIds(uniqueIds);
+    void postReadChangeIds(uniqueIds).then(({ confirmedIds, complete }) => {
+      setReadChangeIds((current) => new Set([...current, ...confirmedIds]));
+      setReadStatusNotice(complete ? "" : "Read status could not be saved for some updates. They remain unread.");
+    });
   };
   // Every outline activation goes through here: it marks what the visitor
   // is about to see as read and applies the pure activation transition,
@@ -317,6 +321,7 @@ export function PublicAwardWorkspace({
         ref={panelRef}
         tabIndex={-1}
       >
+        {readStatusNotice && <p role="status" className="text-sm text-[var(--muted)]">{readStatusNotice}</p>}
         {currentness && (selected.kind === "overview" || selected.kind === "application") && (
           <div className="public-award-currentness" role="note">
             <strong>{currentness.title}</strong>
@@ -807,8 +812,9 @@ function ChangesPanel({
   hideSourceLink?: boolean;
   showHeading?: boolean;
 }) {
-  const isHighlighted = (change: PublicAwardChange) =>
-    highlightedChangeId !== null && change.id === highlightedChangeId;
+  const rows = publicAlertDisplayRows(changes);
+  const isHighlighted = (members: PublicAwardChange[]) =>
+    highlightedChangeId !== null && members.some(change => change.id === highlightedChangeId);
 
   return (
     <div className="public-award-panel-stack">
@@ -819,16 +825,20 @@ function ChangesPanel({
       )}
       {changes.length > 0 ? (
         <div className="public-award-change-table">
-          {changes.map((change) => (
+          {rows.map(({ id, members, grouped }) => {
+            const change = members[0];
+            return (
             <article
-              aria-current={isHighlighted(change) ? "true" : undefined}
+              aria-current={isHighlighted(members) ? "true" : undefined}
               className="public-award-change-line"
-              data-highlighted={isHighlighted(change) ? "true" : undefined}
-              key={change.id}
+              data-highlighted={isHighlighted(members) ? "true" : undefined}
+              key={id}
             >
               <ChangeTimestamp value={change.detectedAt} />
               <div>
-                <h3>{(programChangePresentation(change.changeDetails) ?? changeSummaryPresentation(change.summary, change.sourceUrl, change.sourceTitle, change.changeDetails)).title}</h3>
+                <h3>{grouped ? "Related award changes" : (programChangePresentation(change.changeDetails) ?? changeSummaryPresentation(change.summary, change.sourceUrl, change.sourceTitle, change.changeDetails)).title}</h3>
+                {grouped ? <PublicAlertGroupSummary showEvidence showSourceLinks={!hideSourceLink}
+                  members={members.map(member => ({ ...member, sourceTitle: listedSourceNames.get(member.id) ?? member.sourceTitle }))} /> : <>
                 <p className="public-award-update-source">{listedSourceNames.get(change.id) ?? change.sourceTitle}</p>
                 <ChangeSummaryDisplay
                   summary={change.summary}
@@ -837,21 +847,23 @@ function ChangesPanel({
                   sourceUrl={change.sourceUrl}
                   compact
                 />
-                <ChangeEvidencePanel
+                </>}
+                {!grouped && members.map(member => <ChangeEvidencePanel
                   hideSourceLink={hideSourceLink}
-                  changeEventId={change.id}
-                  changeDetails={change.changeDetails}
+                  key={member.id}
+                  changeEventId={member.id}
+                  changeDetails={member.changeDetails}
                   compact
-                  detectedAt={change.detectedAt}
-                  sourceId={change.sourceId}
-                  sourcePageTypeLabel={change.sourcePageType ? pageTypeLabel(change.sourcePageType) : null}
-                  sourceTitle={change.sourceTitle}
-                  sourceUrl={change.sourceUrl}
-                  summary={change.summary}
-                />
+                  detectedAt={member.detectedAt}
+                  sourceId={member.sourceId}
+                  sourcePageTypeLabel={member.sourcePageType ? pageTypeLabel(member.sourcePageType) : null}
+                  sourceTitle={member.sourceTitle}
+                  sourceUrl={member.sourceUrl}
+                  summary={member.summary}
+                />)}
               </div>
             </article>
-          ))}
+          ); })}
         </div>
       ) : (
         <EmptyState text={emptyText} />
@@ -1312,14 +1324,23 @@ function isUnreadChange(change: PublicAwardChange, readChangeIds: Set<string>) {
   return change.unread !== false && !readChangeIds.has(change.id);
 }
 
-function postReadChangeIds(changeIds: string[]) {
-  void fetch("/api/shared-award-change-reads", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ changeIds }),
-  }).catch(() => {
-    // The local UI state should still clear promptly if persistence is unavailable.
-  });
+export async function postReadChangeIds(changeIds: string[], fetcher: typeof fetch = fetch) {
+  const ids = [...new Set(changeIds)].filter(Boolean);
+  const batches: string[][] = [];
+  for (let start = 0; start < ids.length; start += 50) batches.push(ids.slice(start, start + 50));
+  const results = await Promise.all(batches.map(async batch => {
+    try {
+      const response = await fetcher("/api/shared-award-change-reads", {
+        method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ changeIds: batch }),
+      });
+      const value: unknown = await response.json();
+      return response.ok && value !== null && typeof value === "object" && "ok" in value && value.ok === true &&
+        "read" in value && value.read === batch.length ? batch : [];
+    } catch { return []; }
+  }));
+  const confirmedIds = results.flat();
+  return { confirmedIds, complete: confirmedIds.length === ids.length };
 }
 
 function sourceUrlsMatch(left: string | null | undefined, right: string | null | undefined) {

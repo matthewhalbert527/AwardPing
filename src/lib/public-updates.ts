@@ -35,6 +35,9 @@ import {
 import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
+import { attachPublicAlertGroups, loadPublicAlertGroups } from "@/lib/public-alert-groups.server";
+import { readableSourceTitle } from "@/lib/display-text";
+import { displayChangeSummary } from "@/lib/change-summary";
 
 type PublicSubscriberRow =
   Database["public"]["Tables"]["public_update_subscribers"]["Row"];
@@ -782,6 +785,14 @@ async function loadPublicDigestChanges({
     limit: null,
     since,
   });
+  const related = await loadPublicAlertGroups({ admin: supabase, publicationIndex, events: eligibleEvents });
+  const groupedEvents = attachPublicAlertGroups(related.events.map(({ event }) => ({
+    id: event.id, sourceId: event.shared_award_source_id, sourceTitle: readableSourceTitle(event.source_title, event.source_url),
+    sourceUrl: event.source_url, sourcePageType: event.source_page_type,
+    summary: displayChangeSummary(event.summary, event.source_url, event.change_details),
+    changeDetails: event.change_details, detectedAt: event.detected_at,
+  })), related.groups);
+  const groupByEventId = new Map(groupedEvents.map(row => [row.id, row.group]));
 
   const awardNameById = new Map(
     publicationIndex.verifiedEntries.map((publication) => [
@@ -789,9 +800,10 @@ async function loadPublicDigestChanges({
       publication.registry.canonical_name,
     ]),
   );
-  const canonicalChangeRows = eligibleEvents.map(({ event, publication }) => ({
+  const canonicalChangeRows = related.events.map(({ event, publication }) => ({
     ...event,
     shared_award_id: publication.canonicalAwardId,
+    ...(groupByEventId.get(event.id) ? { group: groupByEventId.get(event.id) } : {}),
   }));
 
   const changes = buildPublicDigestChanges(
@@ -800,7 +812,7 @@ async function loadPublicDigestChanges({
       null,
     );
   const eligibleByEventId = new Map(
-    eligibleEvents.map((eligible) => [eligible.event.id, eligible]),
+    related.events.map((eligible) => [eligible.event.id, eligible]),
   );
   const eventBindings = changes.map((change) => {
     const eligible = eligibleByEventId.get(change.eventId);

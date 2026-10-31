@@ -17,7 +17,7 @@ vi.mock("../../scripts/lib/program-text-repository.mjs", async importOriginal =>
 }; });
 import { quoteIdRecoveryFixture } from "../../scripts/fixtures/program-text-quote-id-recovery.mjs";
 import { prepareProgramTextQuoteIdRecovery } from "../../scripts/lib/program-text-quote-id-recovery.mjs";
-import { decideAlertReview, loadAlertReviews } from "./alert-review.server";
+import { decideAlertReview, loadAlertReviews, loadAlertReviewMembers, verifyApprovedAlertReview } from "./alert-review.server";
 import { programChangeContext, programChangePresentation } from "./program-change-presentation";
 
 const actor = "10000000-0000-4000-8000-000000000001";
@@ -82,6 +82,13 @@ describe("bounded private alert list and independently verified decision", () =>
   it("returns an empty confirmed list without unrelated table queries", async () => {
     expect(await loadAlertReviews("approved")).toEqual([]); expect(mocks.from).toHaveBeenCalledTimes(1);
   });
+  it("loads exact original members with award identity for a merge without changing their statuses", async () => {
+    const before = structuredClone(review);
+    const values = await loadAlertReviewMembers([candidate.id as string]);
+    expect(values[0]).toMatchObject({ id: candidate.id, awardId: candidate.shared_award_id, status: "pending" });
+    expect(review).toEqual(before); expect(mocks.loadCapture).not.toHaveBeenCalled();
+    await expect(loadAlertReviewMembers([candidate.id as string, candidate.id as string])).rejects.toThrow("Invalid alert members");
+  });
   it("projects a clear page-scoped application-link alert without editing its review or approval hash", async () => {
     const url = "https://funding.example.org/application#programme=2027";
     review.details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed",
@@ -144,6 +151,35 @@ describe("bounded private alert list and independently verified decision", () =>
     await expect(decideAlertReview(input(), actor)).rejects.toThrow("No alert decision was confirmed");
     mocks.rpc.mockResolvedValue({ data: { ok: true }, error: { code: "40001" } });
     await expect(decideAlertReview(input(), actor)).rejects.toThrow("No alert decision was confirmed");
+  });
+});
+
+describe("historical approved group members retain their own original evidence", () => {
+  let eventId: string;
+  beforeEach(() => {
+    eventId = "30000000-0000-4000-8000-000000000003";
+    candidate.status = "published"; candidate.published_at = "2026-10-27T23:01:00.000Z";
+    Object.assign(candidate.worker_metadata as Record<string, unknown>, { monitoring_contract: "program-text-v1", evidence_signature: candidate.candidate_signature, bucket: "private-test-evidence", change_event_id: eventId });
+    Object.assign(review, { status: "approved", event_id: eventId, localization: { schema: "retained-test-localization" } });
+    tables.shared_award_change_events = [{ id: eventId, shared_award_id: candidate.shared_award_id, shared_award_source_id: candidate.shared_award_source_id, source_url: candidate.source_url, visual_review_candidate_id: candidate.id, change_details: review.details }];
+    tables.shared_award_change_event_visual_evidence = [{ change_event_id: eventId, visual_review_candidate_id: candidate.id, candidate_signature: candidate.candidate_signature, bucket: "private-test-evidence", evidence_status: "verified_text", evidence_schema_version: "program-text-event-evidence-v1", previous_capture: candidate.previous_snapshot_ref, current_capture: candidate.new_snapshot_ref, localization: review.localization }];
+  });
+  it("cold rebuilds approved originals without requiring the historical pair to be today's current baseline", async () => {
+    await expect(verifyApprovedAlertReview(candidate.id as string, review.content_hash as string)).resolves.toBeUndefined();
+    expect(mocks.loadCapture).toHaveBeenCalledTimes(2); expect(mocks.verifyCandidate).not.toHaveBeenCalled(); expect(mocks.rpc).not.toHaveBeenCalled();
+  });
+  it.each(["event wording", "localization", "capture", "source owner"])("rejects altered historical %s before any group publication", async field => {
+    if (field === "event wording") tables.shared_award_change_events[0].change_details = {};
+    if (field === "source owner") tables.shared_award_change_events[0].shared_award_id = actor;
+    if (field === "localization") tables.shared_award_change_event_visual_evidence[0].localization = {};
+    if (field === "capture") tables.shared_award_change_event_visual_evidence[0].current_capture = {};
+    await expect(verifyApprovedAlertReview(candidate.id as string, review.content_hash as string)).rejects.toThrow("retained evidence");
+    expect(mocks.loadCapture).not.toHaveBeenCalled(); expect(mocks.rpc).not.toHaveBeenCalled();
+  });
+  it("rejects an invalidated saved model result even when retained captures still load", async () => {
+    (candidate.ai_result as Record<string, unknown>).responses = [];
+    await expect(verifyApprovedAlertReview(candidate.id as string, review.content_hash as string)).rejects.toThrow("saved alert");
+    expect(mocks.rpc).not.toHaveBeenCalled();
   });
 });
 

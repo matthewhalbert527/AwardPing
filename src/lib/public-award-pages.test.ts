@@ -38,6 +38,7 @@ vi.mock("@/lib/source-quality", async (importOriginal) => ({
 // predicate is part of what these tests exercise at this boundary.
 vi.mock("@/lib/supabase/admin", () => ({
   createSupabaseAdminClient: () => ({
+    rpc: async () => ({ data: [], error: null }),
     from(table: string) {
       mocks.queriedTables.push(table);
       if (["shared_awards", "shared_award_slug_aliases"].includes(table)) {

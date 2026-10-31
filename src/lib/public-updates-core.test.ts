@@ -13,6 +13,29 @@ import {
 } from "@/lib/public-updates-core";
 
 describe("public update digest helpers", () => {
+  it("keeps every grouped event ID for receipts even when their displayed facts would dedupe", () => {
+    const first: PublicDigestCandidate = { id: "first", shared_award_id: "award-a", source_title: "Application rules", source_url: "https://example.edu/award/apply",
+      source_page_type: "application", summary: "Applicants must now provide two recommendation letters.", detected_at: "2026-10-31T12:00:00Z" };
+    const second = { ...first, id: "second", detected_at: "2026-10-30T12:00:00Z" };
+    const names = new Map([["award-a", "Example Award"]]);
+    expect(buildPublicDigestChanges([first, second], names).map(change => change.eventId)).toEqual(["first"]);
+    const group = { id: "group", revisionHash: "a".repeat(64), memberEventIds: ["first", "second"], members: [] };
+    const grouped = buildPublicDigestChanges([{ ...first, group }, { ...second, group }], names);
+    expect(grouped.map(change => change.eventId)).toEqual(["first", "second"]);
+    expect(splitPublicDigestChanges(grouped).flat().map(change => change.eventId)).toEqual(["first", "second"]);
+  });
+  it("keeps approved group members together within the raw event cap without losing receipt IDs", () => {
+    const make = (eventId: string) => ({ eventId, awardName: "Example Fellowship", sourceTitle: "Rules", sourceUrl: "https://example.edu/rules",
+      summary: `Changed ${eventId}`, detectedAt: "2026-10-31T12:00:00Z" });
+    const group = { id: "group", revisionHash: "a".repeat(64), memberEventIds: ["member-a", "member-b"], members: [] };
+    const changes = [...Array.from({ length: 11 }, (_, n) => make(`ordinary-${n}`)),
+      { ...make("member-a"), group }, make("ordinary-between"), { ...make("member-b"), group }];
+    const before = structuredClone(changes), batches = splitPublicDigestChanges(changes);
+    expect(batches.map(batch => batch.length)).toEqual([11, 3]);
+    expect(batches[1].map(change => change.eventId)).toEqual(["member-a", "member-b", "ordinary-between"]);
+    expect(new Set(batches.flat().map(change => change.eventId))).toEqual(new Set(changes.map(change => change.eventId)));
+    expect(changes).toEqual(before);
+  });
   it("carries the same clear description and applicant guidance into new digest batches", () => {
     const url = "https://funding.example.org/application#programme=2027";
     const details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed",
