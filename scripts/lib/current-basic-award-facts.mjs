@@ -1,6 +1,7 @@
 import { validateCurrentBasicFactReview, PROGRAM_FACT_FIELDS, programFactPublicValues } from './program-text-facts.mjs';
 import { CURRENT_BASIC_RECEIPT_SCHEMA, CURRENT_BASIC_FIELDS, currentBasicEqual, currentBasicHash } from './current-basic-source-proof.mjs';
 import { quotedApplicationDestination } from './basic-award-facts.mjs';
+import {currentBasicProofSelection} from './current-basic-reviewed-repeat.mjs';
 
 const check=(ok,reason)=>{if(!ok)throw Error('Current basic publication: '+reason);};
 /** Independent facts purpose; never decides a queued alert or advances a source. */
@@ -8,7 +9,7 @@ export async function prepareCurrentBasicAwardFactReview(draft,{selected_fields,
  check(Array.isArray(selected_fields)&&selected_fields.length>0&&selected_fields.length<=15&&selected_fields.includes('overview')&&
   new Set(selected_fields).size===selected_fields.length&&selected_fields.every(f=>CURRENT_BASIC_FIELDS.includes(f)), 'explicit_basic_selection');
  const validated=await validateCurrentBasicFactReview(draft.validation.review,{...context,forApproval:false,
-  repeat_observation_ids:draft.validation.current_source_proofs?.map(p=>({source_id:p.source_id,id:p.repeat_observation_id}))});
+  repeat_observation_ids:draft.validation.current_source_proofs?.map(currentBasicProofSelection)});
  check(currentBasicEqual(validated,draft.validation),'saved_validation_or_current_sources_changed');
  const review=validated.review;
  check(review.fields.filter(f=>selected_fields.includes(f.field)).length===selected_fields.length&&
