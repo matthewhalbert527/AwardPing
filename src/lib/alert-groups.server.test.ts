@@ -40,6 +40,14 @@ describe("related updates are drafts over original verified alerts", () => {
     expect(preview.summary).toContain(leaves[0].summary); expect(preview.summary).toContain(leaves[1].summary);
     expect(m.rpc.mock.calls.every(c => c[0] === "get_program_text_alert_groups")).toBe(true);
   });
+  it("uses a neutral overview instead of cutting off a long scoped claim", async () => {
+    leaves = Array.from({ length: 8 }, (_, i) => ({ ...leaves[1], id: id(20 + i), summary: `Track ${i}: ${"A".repeat(1100)} Important applicant limitation.` }));
+    group.head = { ...(group.head as object), member_refs: memberRefs().slice(0, 7) };
+    m.rpc.mockResolvedValue({ data: [group], error: null });
+    const preview = await previewAlertGroup(groupId, leaves[7].id);
+    expect(preview.summary).toBe("8 related changes. Review each original change below for its application cycle, track and source.");
+    expect(preview.members).toHaveLength(8); expect(preview.members.every(m => m.summary.endsWith("Important applicant limitation."))).toBe(true);
+  });
   it("shows a mixed draft only once and keeps its already approved member identified", async () => {
     m.rpc.mockResolvedValue({ data: [group], error: null }); const board = await loadAlertReviewBoard();
     expect(board.alerts).toHaveLength(1); expect(board.alerts[0].id).toBe(groupId);

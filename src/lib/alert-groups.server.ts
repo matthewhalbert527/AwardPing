@@ -57,7 +57,8 @@ function checkedMembers(group: Group, rev: Revision, byId: Map<string, AlertRevi
   }).sort((a, b) => Date.parse(a.detectedAt) - Date.parse(b.detectedAt) || a.id.localeCompare(b.id));
 }
 function mergedSummary(members: AlertReviewLeaf[]) {
-  return [...new Set(members.map(m => m.summary))].join(" ").slice(0, 8000);
+  const summary = [...new Set(members.map(m => m.summary))].join(" ");
+  return summary.length <= 8000 ? summary : `${members.length} related changes. Review each original change below for its application cycle, track and source.`;
 }
 function groupCard(group: Group, rev: Revision, byId: Map<string, AlertReviewLeaf>, status: AlertReviewStatus): AlertReview {
   const members = checkedMembers(group, rev, byId);
