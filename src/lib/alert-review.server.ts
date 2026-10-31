@@ -7,7 +7,7 @@ import { parseProgramTextChangeDetails } from "../../scripts/lib/program-change-
 import { loadProgramTextCapture } from "../../scripts/lib/program-text-artifacts.mjs";
 import { createProgramTextRepository, programTextEqual } from "../../scripts/lib/program-text-repository.mjs";
 import { validateProgramTextReviewResult } from "../../scripts/lib/program-text-review.mjs";
-import { programChangeContext } from "@/lib/program-change-presentation";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
@@ -64,12 +64,14 @@ export async function loadAlertReviews(status: AlertReviewStatus = "pending"): P
     if (row.status !== status || !hash(row.content_hash) || !candidate || candidate.candidate_scope !== "program_text_change" ||
         !award || typeof award.name !== "string" || !award.name.trim() || award.name.length > 500 || !details ||
         typeof candidate.created_at !== "string" || !Number.isFinite(Date.parse(candidate.created_at))) throw Error("Invalid alert details.");
+    const presentation = programChangePresentation(row.details);
+    if (!presentation) throw Error("Invalid alert presentation.");
     return {
       id: row.id as string, contentHash: row.content_hash, status, awardName: award.name,
-      summary: details.summary, sourceUrl: sourceUrl(candidate.source_url), detectedAt: candidate.created_at,
-      context: programChangeContext(row.details) ?? undefined,
-      details: details.program_changes.map((change: { field: string; summary: string; previous_quote: { text: string } | null; current_quote: { text: string } | null }) => ({
-        category: labels[change.field], summary: change.summary,
+      summary: presentation.text, sourceUrl: sourceUrl(candidate.source_url), detectedAt: candidate.created_at,
+      context: presentation.context,
+      details: details.program_changes.map((change: { field: string; summary: string; previous_quote: { text: string } | null; current_quote: { text: string } | null }, index: number) => ({
+        category: labels[change.field], summary: presentation.changes[index].summary,
         ...(change.previous_quote ? { previous: change.previous_quote.text } : {}),
         ...(change.current_quote ? { current: change.current_quote.text } : {}),
       })),

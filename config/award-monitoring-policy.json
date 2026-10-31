@@ -1,7 +1,7 @@
 {
   "version": 4,
   "name": "AwardPing global monitoring policy",
-  "updated_at": "2026-10-30",
+  "updated_at": "2026-10-31",
   "promotion_matcher": {
     "identity": "awardping-monitoring-promotion-matcher-bundle",
     "version": "source-bundle-sha256-v1",
@@ -51,7 +51,7 @@
       "src/lib/source-ai-review-status.ts",
       "src/lib/source-url-policy.ts"
     ],
-    "hash": "d1a3e7962639c89a14bbd1484cc9a750d624727a76e516727071d14ff995d027"
+    "hash": "43389dbf5c2868abd0bc8716cea8baccefc2139185fdd4cd2c65b4d7da6b36d0"
   },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",

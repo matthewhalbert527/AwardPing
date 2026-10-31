@@ -18,7 +18,7 @@ vi.mock("../../scripts/lib/program-text-repository.mjs", async importOriginal =>
 import { quoteIdRecoveryFixture } from "../../scripts/fixtures/program-text-quote-id-recovery.mjs";
 import { prepareProgramTextQuoteIdRecovery } from "../../scripts/lib/program-text-quote-id-recovery.mjs";
 import { decideAlertReview, loadAlertReviews } from "./alert-review.server";
-import { programChangeContext } from "./program-change-presentation";
+import { programChangeContext, programChangePresentation } from "./program-change-presentation";
 
 const actor = "10000000-0000-4000-8000-000000000001";
 let candidate: Record<string, unknown>, review: Record<string, unknown>, award: Record<string, unknown>;
@@ -57,7 +57,7 @@ describe("bounded private alert list and independently verified decision", () =>
       details: [{ category: "Application cycle", previous: expect.stringContaining("2027 NSF GRFP"), current: expect.stringContaining("applications are closed") }] });
     expect(value[0].context).toBe(programChangeContext(review.details));
     expect(value[0].context).toBeTruthy();
-    expect(value[0].summary).toBe((review.details as { summary: string }).summary);
+    expect(value[0].summary).toBe(programChangePresentation(review.details)?.text);
     expect(review).toEqual(before);
     expect(value[0]).not.toHaveProperty("ai_result"); expect(value[0]).not.toHaveProperty("previous_snapshot_ref");
     expect(mocks.loadCapture).not.toHaveBeenCalled(); expect(mocks.rpc).not.toHaveBeenCalled();
@@ -81,6 +81,25 @@ describe("bounded private alert list and independently verified decision", () =>
   });
   it("returns an empty confirmed list without unrelated table queries", async () => {
     expect(await loadAlertReviews("approved")).toEqual([]); expect(mocks.from).toHaveBeenCalledTimes(1);
+  });
+  it("projects a clear page-scoped application-link alert without editing its review or approval hash", async () => {
+    const url = "https://funding.example.org/application#programme=2027";
+    review.details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed",
+      summary: "Removed the application portal URL.", program_changes: [{ field: "application_url", operation: "remove",
+        summary: "Removed the application portal URL.", current_quote: null,
+        previous_quote: { block_id: "source-link-000061", start_utf16: 0, end_utf16: url.length, text: url } }] };
+    const before = structuredClone(review);
+    const [value] = await loadAlertReviews();
+    const presentation = programChangePresentation(review.details)!;
+    expect(value.summary).toBe(presentation.text);
+    expect(value.summary).not.toBe("Removed the application portal URL.");
+    expect(value.summary).toMatch(/page/i);
+    expect(value.context).toBe(presentation.context);
+    expect(value.details[0].summary).toBe(presentation.changes[0].summary);
+    expect(value.details[0].previous).toBe(url);
+    expect(value.contentHash).toBe(before.content_hash);
+    expect(review).toEqual(before);
+    expect(mocks.rpc).not.toHaveBeenCalled(); expect(mocks.loadCapture).not.toHaveBeenCalled();
   });
   it("fails closed when a referenced award or valid official source is missing", async () => {
     tables.shared_awards = []; await expect(loadAlertReviews()).rejects.toThrow("Invalid alert details");

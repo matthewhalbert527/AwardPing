@@ -7,6 +7,7 @@ import {
 import { isChangeEventSuppressed } from "@/lib/change-event-suppression";
 import { readableSourceTitle } from "@/lib/display-text";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 
 export type PublicDigestCandidate = {
   id: string;
@@ -29,6 +30,7 @@ export type PublicDigestChange = {
   sourceTitle: string;
   sourceUrl: string;
   summary: string;
+  context?: string;
   detectedAt: string;
 };
 
@@ -111,14 +113,18 @@ export function buildPublicDigestChanges(
   const deduped = dedupeChangeSummaries(usefulChanges);
   const retained = limit === null ? deduped : deduped.slice(0, limit);
   return retained
-    .map((change) => ({
-      eventId: change.id,
-      awardName: awardNameById.get(change.shared_award_id) || "Tracked award",
-      sourceTitle: readableSourceTitle(change.source_title, change.source_url),
-      sourceUrl: change.source_url,
-      summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
-      detectedAt: change.detected_at,
-    }));
+    .map((change) => {
+      const presentation = programChangePresentation(change.change_details);
+      return {
+        eventId: change.id,
+        awardName: awardNameById.get(change.shared_award_id) || "Tracked award",
+        sourceTitle: readableSourceTitle(change.source_title, change.source_url),
+        sourceUrl: change.source_url,
+        summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
+        ...(presentation ? { context: presentation.context } : {}),
+        detectedAt: change.detected_at,
+      };
+    });
 }
 
 export function pendingPublicDigestChangesForSubscriber(

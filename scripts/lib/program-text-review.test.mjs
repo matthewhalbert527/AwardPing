@@ -174,6 +174,49 @@ describe("complete bounded review packets", () => {
 });
 
 describe("strict program-only result validation", () => {
+  it("asks for concrete, scoped changes and only supported applicant consequences", () => {
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("State what actually changed");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("Preserve the published award, cycle, country, course and applicant-group scope");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("Explain a practical consequence only when the quoted change supports it; otherwise omit the consequence");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("do not claim the portal was deleted, applications closed, or another application route is unavailable solely because the link disappeared");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("Unchanged deadline text or an unchanged rule about when a link appears is context, not a newly observed application-status change");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("retain its time zone and affected applicant group");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("distinguish the changed amount, frequency and covered expense");
+    expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("without assuming whether a particular user qualifies");
+  });
+
+  it.each([
+    {
+      field: "deadline",
+      before: "U.S. applicants: application deadline October 1, 2027, 5:00 p.m. Central Time.",
+      after: "U.S. applicants: application deadline October 15, 2027, 5:00 p.m. Central Time.",
+      summary: "The U.S. application deadline moved from October 1 to October 15, 2027, at 5:00 p.m. Central Time.",
+    },
+    {
+      field: "stipend",
+      before: "Master's scholars receive a monthly stipend of EUR 992.",
+      after: "Master's scholars receive a monthly stipend of EUR 1,100.",
+      summary: "The monthly stipend for master's scholars increased from EUR 992 to EUR 1,100.",
+    },
+    {
+      field: "eligibility",
+      before: "Applicants must be college juniors when they apply.",
+      after: "Applicants must be college juniors or seniors when they apply.",
+      summary: "College seniors may now apply alongside juniors.",
+    },
+  ])("preserves a supported concrete $field summary without changing its evidence", ({ field, before, after, summary }) => {
+    const f = fixture([before], [after]), responses = responsesFor(f.plan), original = structuredClone(responses);
+    responses[0].blocks[0].changes[0].field = field;
+    responses[0].blocks[0].changes[0].summary = summary;
+    const supplied = structuredClone(responses), result = validate(f, responses);
+    expect(result.status).toBe("accepted");
+    expect(result.details.summary).toBe(summary);
+    expect(result.details.program_changes[0]).toMatchObject({ field, summary,
+      previous_quote: { text: before }, current_quote: { text: after } });
+    expect(responses).toEqual(supplied);
+    expect(responses[0].schema).toBe(original[0].schema);
+  });
+
   it("instructs quotations to use the corresponding source-side ID and never a comparison-row ID", () => {
     expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("previous_quote.block_id use the corresponding changed row.previous.id SOURCE block ID");
     expect(PROGRAM_TEXT_REVIEW_INSTRUCTIONS).toContain("current_quote.block_id use the corresponding changed row.current.id SOURCE block ID");

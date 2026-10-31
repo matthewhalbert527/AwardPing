@@ -3,6 +3,7 @@ import { displayChangeSummary } from "@/lib/change-summary";
 import { appConfig } from "@/lib/config";
 import type { PublicDigestChange } from "@/lib/public-updates-core";
 import { formatCentralDate } from "@/lib/time-zone";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 
 let resend: Resend | null = null;
 
@@ -91,6 +92,7 @@ export type ContactFormEmail = {
 
 export async function sendChangeAlertEmail(input: ChangeAlertEmail) {
   const summary = displayChangeSummary(input.summary, input.url, input.changeDetails);
+  const context = programChangePresentation(input.changeDetails)?.context;
 
   if (!appConfig.resendApiKey) {
     logSkippedEmail("alert", {
@@ -112,10 +114,11 @@ export async function sendChangeAlertEmail(input: ChangeAlertEmail) {
         <h1 style="font-size: 22px;">AwardPing found an award page update</h1>
         <p><strong>${escapeHtml(input.label)}</strong> updated.</p>
         <p>${escapeHtml(summary)}</p>
+        ${context ? `<p>${escapeHtml(context)}</p>` : ""}
         <p><a href="${escapeHtml(input.url)}">Open tracked award page</a></p>
       </div>
     `,
-    text: `AwardPing found an award page update\n\n${input.label} updated.\n${summary}\n${input.url}`,
+    text: `AwardPing found an award page update\n\n${input.label} updated.\n${summary}${context ? `\n${context}` : ""}\n${input.url}`,
   });
 }
 
@@ -160,6 +163,7 @@ export async function sendDailyDigestEmail(input: DailyDigestEmail) {
   const changes = input.changes.map((change) => ({
     ...change,
     summary: displayChangeSummary(change.summary, change.url, change.changeDetails),
+    context: programChangePresentation(change.changeDetails)?.context,
   }));
 
   const listHtml = changes
@@ -168,6 +172,7 @@ export async function sendDailyDigestEmail(input: DailyDigestEmail) {
         <li style="margin-bottom: 16px;">
           <strong>${escapeHtml(change.label)}</strong><br />
           ${escapeHtml(change.summary)}<br />
+          ${change.context ? `${escapeHtml(change.context)}<br />` : ""}
           <a href="${escapeHtml(change.url)}">Open tracked page</a>
         </li>
       `,
@@ -177,7 +182,7 @@ export async function sendDailyDigestEmail(input: DailyDigestEmail) {
   const listText = changes
     .map(
       (change) =>
-        `${change.label}\n${change.summary}\n${change.url}\nDetected: ${change.detectedAt}`,
+        `${change.label}\n${change.summary}${change.context ? `\n${change.context}` : ""}\n${change.url}\nDetected: ${change.detectedAt}`,
     )
     .join("\n\n");
 
@@ -259,6 +264,7 @@ export function renderPublicDailyDigestEmail(
           <strong>${escapeHtml(change.awardName)}</strong><br />
           <span>${escapeHtml(change.sourceTitle)}</span><br />
           ${escapeHtml(change.summary)}<br />
+          ${change.context ? `${escapeHtml(change.context)}<br />` : ""}
           <a href="${escapeHtml(change.sourceUrl)}">Open source page</a>
         </li>
       `,
@@ -268,7 +274,7 @@ export function renderPublicDailyDigestEmail(
   const listText = input.changes
     .map(
       (change) =>
-        `${change.awardName}\n${change.sourceTitle}\n${change.summary}\n${change.sourceUrl}\nDetected: ${formatDigestDate(change.detectedAt)}`,
+        `${change.awardName}\n${change.sourceTitle}\n${change.summary}${change.context ? `\n${change.context}` : ""}\n${change.sourceUrl}\nDetected: ${formatDigestDate(change.detectedAt)}`,
     )
     .join("\n\n");
 

@@ -69,7 +69,11 @@ export function isUsefulChangeForAward(change: {
 }) {
   const details = change.changeDetails ?? change.change_details;
   if (!isUsefulChangeSummary(change.summary, details)) return false;
-  const summary = displayChangeSummary(change.summary, change.sourceUrl, details);
+  // Reader wording must not change which award an already reviewed claim
+  // concerns. In particular, generic page-scoped removal text can omit the
+  // program name or hide a reference to an unrelated internship.
+  const program = parseProgramTextChangeDetails(details);
+  const summary = program ? program.summary : displayChangeSummary(change.summary, change.sourceUrl, details);
   if (!isRelevantToAward(summary, change.awardName, change.sourceTitle, change.sourceUrl)) {
     return false;
   }
@@ -82,7 +86,7 @@ export function displayChangeSummary(
   sourceUrl?: string | null,
   changeDetails?: unknown,
 ) {
-  if (hasProgramTextChangeMarker(changeDetails)) return parseProgramTextChangeDetails(changeDetails)?.summary || "";
+  if (hasProgramTextChangeMarker(changeDetails)) return programChangePresentation(changeDetails)?.text || "";
   const clean = rewritePathSourceLabel(
     cleanChangeDisplayText(changeDetailsToSummary(changeDetails, summary)),
     sourceUrl,

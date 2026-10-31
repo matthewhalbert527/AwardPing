@@ -5,6 +5,7 @@ import { buildLegacyParagraphReviewDiff } from "../../scripts/lib/legacy-review-
 import { buildVisualReviewPromptPayload, normalizeVisualBatchResult, changeDetailsFromVisualBatchResult,
   validateVisualBatchReview } from "../../scripts/lib/visual-review-queue.mjs";
 import { parseChangeDetails, FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY } from "@/lib/change-details";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 import {
   changeSummaryDisplayParts,
   changeSummaryPresentation,
@@ -14,6 +15,59 @@ import {
   isUsefulChangeForAward,
   isUsefulChangeSummary,
 } from "@/lib/change-summary";
+
+describe("program-alert plain-string presentation", () => {
+  it("uses the shared clear description while preserving exact facts and alert eligibility", () => {
+    const url = "https://funding.example.org/application#programme=2027";
+    const details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed",
+      summary: "Removed the application portal URL.", program_changes: [{ field: "application_url", operation: "remove",
+        summary: "Removed the application portal URL.", previous_quote: { block_id: "source-link-000061",
+          start_utf16: 0, end_utf16: url.length, text: url }, current_quote: null }] };
+    const before = structuredClone(details);
+    expect(displayChangeSummary(details.summary, "https://example.edu/award/apply", details)).toBe(programChangePresentation(details)?.text);
+    expect(displayChangeSummary(details.summary, "https://example.edu/award/apply", details)).not.toBe(details.summary);
+    expect(isUsefulChangeSummary(details.summary, details)).toBe(true);
+    expect(details).toEqual(before);
+  });
+  it.each([
+    ["disciplines", "The Example Scholarship removed the previous restriction to science disciplines.", "Science disciplines only."],
+    ["academic_levels", "The Example Scholarship removed its previous academic-year restriction.", "Second-year students only."],
+    ["contacts", "The Example Scholarship removed its previously listed contact address.", "scholarships@example.edu"],
+  ])("preserves homepage award relevance for a %s removal despite simpler reader wording", (field, summary, previous) => {
+    const details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed", summary,
+      program_changes: [{ field, operation: "remove", summary, current_quote: null,
+        previous_quote: { block_id: "source-block-1", start_utf16: 0, end_utf16: previous.length, text: previous } }] };
+    const before = structuredClone(details);
+    expect(displayChangeSummary(summary, "https://example.edu/", details)).not.toBe(summary);
+    expect(isUsefulChangeForAward({ summary: "A caller-supplied label must not affect relevance.", change_details: details,
+      awardName: "Example Scholarship", sourceTitle: "Example Scholarship", sourceUrl: "https://example.edu/" })).toBe(true);
+    expect(details).toEqual(before);
+  });
+  it("does not admit an unrelated homepage internship after projecting an application-link removal", () => {
+    const summary = "The Congressional Internship application portal link was removed.";
+    const previous = "https://example.edu/internship/apply";
+    const details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed", summary,
+      program_changes: [{ field: "application_url", operation: "remove", summary, current_quote: null,
+        previous_quote: { block_id: "source-link-1", start_utf16: 0, end_utf16: previous.length, text: previous } }] };
+    expect(displayChangeSummary(summary, "https://www.udall.gov/", details)).not.toContain("Internship");
+    expect(isUsefulChangeForAward({ summary: "The Udall Scholarship application link changed.", changeDetails: details,
+      awardName: "Udall Scholarship", sourceTitle: "Udall Scholarship", sourceUrl: "https://www.udall.gov/" })).toBe(false);
+  });
+  it("deduplicates using source-bound changes even when different removals have identical reader wording", () => {
+    const changes = ["programme-a@example.edu", "programme-b@example.edu"].map((previous, index) => {
+      const summary = `The Example Scholarship removed contact ${previous}.`;
+      const details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed", summary,
+        program_changes: [{ field: "contacts", operation: "remove", summary, current_quote: null,
+          previous_quote: { block_id: "contact", start_utf16: 0, end_utf16: previous.length, text: previous } }] };
+      return { id: `contact-${index}`, shared_award_id: "award-a", source_url: "https://example.edu/", summary, change_details: details };
+    });
+    expect(displayChangeSummary(changes[0].summary, changes[0].source_url, changes[0].change_details)).toBe(
+      displayChangeSummary(changes[1].summary, changes[1].source_url, changes[1].change_details));
+    expect(changeSummaryDedupeKey(changes[0])).not.toBe(changeSummaryDedupeKey(changes[1]));
+    expect(dedupeChangeSummaries(changes)).toEqual(changes);
+    expect(dedupeChangeSummaries([changes[0], { ...changes[0], id: "repeat" }])).toEqual([changes[0]]);
+  });
+});
 
 describe("complete legacy fact sides with shorter stored labels", () => {
   // Public programme wording only. No event/source IDs, accounts, captured

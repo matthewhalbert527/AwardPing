@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { programChangePresentation } from "@/lib/program-change-presentation";
 import {
   buildPublicDigestChanges,
   createPublicUnsubscribeToken,
@@ -12,6 +13,25 @@ import {
 } from "@/lib/public-updates-core";
 
 describe("public update digest helpers", () => {
+  it("carries the same clear description and applicant guidance into new digest batches", () => {
+    const url = "https://funding.example.org/application#programme=2027";
+    const details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed",
+      summary: "Removed the application portal URL.", program_changes: [{ field: "application_url", operation: "remove",
+        summary: "Removed the application portal URL.", previous_quote: { block_id: "source-link-000061",
+          start_utf16: 0, end_utf16: url.length, text: url }, current_quote: null }] };
+    const candidates: PublicDigestCandidate[] = [{ id: "removed-portal", shared_award_id: "award-a",
+      source_title: "Application instructions", source_url: "https://example.edu/award/apply", source_page_type: "application",
+      summary: details.summary, change_details: details, detected_at: "2026-10-30T23:03:00.000Z" }];
+    const before = structuredClone(candidates);
+    const [change] = buildPublicDigestChanges(candidates, new Map([["award-a", "Example Fellowship"]]));
+    const presentation = programChangePresentation(details)!;
+    expect(change.summary).toBe(presentation.text);
+    expect(change.context).toBe(presentation.context);
+    expect(change.summary).not.toBe(details.summary);
+    expect(change.eventId).toBe("removed-portal");
+    expect(candidates).toEqual(before);
+    expect(splitPublicDigestChanges([change])[0][0].context).toBe(presentation.context);
+  });
   it("normalizes subscriber email addresses before storage", () => {
     expect(normalizePublicUpdateEmail("  Advisor@Example.EDU ")).toBe(
       "advisor@example.edu",
