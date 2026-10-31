@@ -54,13 +54,16 @@ describe("program-alert plain-string presentation", () => {
       awardName: "Udall Scholarship", sourceTitle: "Udall Scholarship", sourceUrl: "https://www.udall.gov/" })).toBe(false);
   });
   it("deduplicates using source-bound changes even when different removals have identical reader wording", () => {
-    const changes = ["programme-a@example.edu", "programme-b@example.edu"].map((previous, index) => {
+    const changes = ["programme-a@example.edu", "programme-b@example.edu"]
+      .map(address => `${address}. ${"Contact the programme for current application questions and correspondence instructions. ".repeat(3)}`)
+      .map((previous, index) => {
       const summary = `The Example Scholarship removed contact ${previous}.`;
       const details = { schema: "awardping.program-change.v1", event_kind: "program_details_changed", summary,
         program_changes: [{ field: "contacts", operation: "remove", summary, current_quote: null,
           previous_quote: { block_id: "contact", start_utf16: 0, end_utf16: previous.length, text: previous } }] };
       return { id: `contact-${index}`, shared_award_id: "award-a", source_url: "https://example.edu/", summary, change_details: details };
     });
+    expect(changes.every(change => change.change_details.program_changes[0].previous_quote.text.length > 180)).toBe(true);
     expect(displayChangeSummary(changes[0].summary, changes[0].source_url, changes[0].change_details)).toBe(
       displayChangeSummary(changes[1].summary, changes[1].source_url, changes[1].change_details));
     expect(changeSummaryDedupeKey(changes[0])).not.toBe(changeSummaryDedupeKey(changes[1]));
