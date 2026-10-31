@@ -118,6 +118,21 @@ export type PublicAwardPageResolution =
   | { kind: "unavailable" }
   | { kind: "missing" };
 
+type PublicAwardIdentityResolution =
+  | {
+      kind: "published";
+      award: SharedAwardRow;
+      publication: Stage1PublicationEntry;
+      publicationIndex: Stage1PublicationIndex;
+      canonicalPath: string;
+      redirectPath: string | null;
+    }
+  | Exclude<PublicAwardPageResolution, { kind: "published" }>;
+
+export type PublicAwardMetadataResolution =
+  | { kind: "published"; data: { awardName: string; canonicalPath: string; metaDescription: string } }
+  | Exclude<PublicAwardPageResolution, { kind: "published" }>;
+
 export async function getPublicAwardPageBySlug(
   slug: string,
   options: PublicAwardPageOptions = {},
@@ -130,6 +145,32 @@ export async function getPublicAwardPageResolutionBySlug(
   slug: string,
   options: PublicAwardPageOptions = {},
 ): Promise<PublicAwardPageResolution> {
+  const identity = await resolvePublicAwardIdentityBySlug(slug);
+  if (identity.kind !== "published") return identity;
+  const data = await loadPublicAwardPageData(
+    identity.award,
+    identity.publication,
+    identity.publicationIndex,
+    identity.redirectPath,
+    options,
+  );
+  return data ? { kind: "published", data } : { kind: "under_verification" };
+}
+
+/** Metadata uses the current publication identity and approved shared facts.
+ * It does not need source cards, change history, unread state or route details.
+ * The page body independently repeats its full current publication checks.
+ */
+export async function getPublicAwardMetadataResolutionBySlug(slug: string): Promise<PublicAwardMetadataResolution> {
+  const identity = await resolvePublicAwardIdentityBySlug(slug);
+  if (identity.kind !== "published") return identity;
+  const facts = publicAwardFactsFromAward({ publicFacts: identity.publication.publishedFacts, completeSnapshot: true });
+  return { kind: "published", data: { awardName: identity.award.name, canonicalPath: identity.canonicalPath,
+    metaDescription: publicAwardMetaDescription(identity.award.name, facts) } };
+}
+
+/** Shared identity/alias resolution stays fresh for each independent caller. */
+async function resolvePublicAwardIdentityBySlug(slug: string): Promise<PublicAwardIdentityResolution> {
   const normalizedSlug = normalizeAwardSlug(slug);
   if (!normalizedSlug) return { kind: "missing" };
 
@@ -184,14 +225,8 @@ export async function getPublicAwardPageResolutionBySlug(
   const shouldRedirect =
     wasSlugAlias || requestedAward.id !== publication.canonicalAwardId;
 
-  const data = await loadPublicAwardPageData(
-    canonicalAward,
-    publication,
-    publicationIndex,
-    shouldRedirect ? canonicalPath : null,
-    options,
-  );
-  return data ? { kind: "published", data } : { kind: "under_verification" };
+  return { kind: "published", award: canonicalAward, publication, publicationIndex,
+    canonicalPath, redirectPath: shouldRedirect ? canonicalPath : null };
 }
 
 export async function getPublicAwardSitemapRows(limit = 50000) {

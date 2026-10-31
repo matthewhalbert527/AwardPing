@@ -6,6 +6,7 @@ import type { PublicAwardPageData } from "@/lib/public-award-pages";
 const mocks = vi.hoisted(() => ({
   getCurrentUser: vi.fn(),
   getPublicAwardPageResolutionBySlug: vi.fn(),
+  getPublicAwardMetadataResolutionBySlug: vi.fn(),
   hasSupabaseAdminConfig: vi.fn(),
   notFound: vi.fn(),
   redirect: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock("@/lib/auth", () => ({
 }));
 vi.mock("@/lib/public-award-pages", () => ({
   getPublicAwardPageResolutionBySlug: mocks.getPublicAwardPageResolutionBySlug,
+  getPublicAwardMetadataResolutionBySlug: mocks.getPublicAwardMetadataResolutionBySlug,
 }));
 // The config module imports "server-only", which cannot load under vitest,
 // so the page tree gets exactly the exports it uses.
@@ -185,6 +187,9 @@ describe("public award page", () => {
       kind: "published",
       data: makeAwardPage(),
     });
+    mocks.getPublicAwardMetadataResolutionBySlug.mockResolvedValue({ kind: "published", data: {
+      awardName: "Example Fellowship", metaDescription: "A fellowship for testing.", canonicalPath: "/example-fellowship",
+    } });
   });
 
   it("opens Updates and marks the linked change with its source for an anonymous visitor", async () => {
@@ -296,9 +301,9 @@ describe("public award page", () => {
 
   it.each(["unavailable", "thrown"])("uses generic non-indexable metadata for an %s load", async (failure) => {
     if (failure === "thrown") {
-      mocks.getPublicAwardPageResolutionBySlug.mockRejectedValue(new Error("Private metadata diagnostic"));
+      mocks.getPublicAwardMetadataResolutionBySlug.mockRejectedValue(new Error("Private metadata diagnostic"));
     } else {
-      mocks.getPublicAwardPageResolutionBySlug.mockResolvedValue({ kind: "unavailable" });
+      mocks.getPublicAwardMetadataResolutionBySlug.mockResolvedValue({ kind: "unavailable" });
     }
 
     const metadata = await generateMetadata({ params: Promise.resolve({ slug: "example-fellowship" }) });
@@ -311,7 +316,6 @@ describe("public award page", () => {
 
   it("keeps an unavailable body non-indexable even when its separate metadata load succeeded", async () => {
     mocks.getPublicAwardPageResolutionBySlug
-      .mockResolvedValueOnce({ kind: "published", data: makeAwardPage() })
       .mockResolvedValueOnce({ kind: "unavailable" });
 
     const metadata = await generateMetadata({ params: Promise.resolve({ slug: "example-fellowship" }) });
@@ -321,6 +325,15 @@ describe("public award page", () => {
     expect(html).toContain('<meta name="robots" content="noindex, nofollow"/>');
     expect(html).toContain("Award details are unavailable right now. Please try again.");
     expect(mocks.notFound).not.toHaveBeenCalled();
+  });
+
+  it("uses the metadata-only resolver without loading award sources or updates a second time", async () => {
+    const metadata = await generateMetadata({ params: Promise.resolve({ slug: "example-fellowship" }) });
+    expect(metadata.title).toBe("Example Fellowship");
+    expect(metadata.alternates?.canonical).toBe("https://awardping.example/example-fellowship");
+    expect(mocks.getPublicAwardMetadataResolutionBySlug).toHaveBeenCalledExactlyOnceWith("example-fellowship");
+    expect(mocks.getPublicAwardPageResolutionBySlug).not.toHaveBeenCalled();
+    expect(mocks.getCurrentUser).not.toHaveBeenCalled();
   });
 
   it("opens Updates with the change's own source attribution when only the change id is linked", async () => {

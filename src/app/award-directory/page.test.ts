@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
 import { load } from "cheerio";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PublicChangeEventRow } from "@/lib/public-change-events";
@@ -46,7 +47,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 vi.mock("@/components/site-header", () => ({
-  SiteHeader: () => null,
+  SiteHeader: () => createElement("header", { "data-session-header": "" }),
 }));
 
 import AwardDirectoryPage from "@/app/award-directory/page";
@@ -270,7 +271,9 @@ describe("award directory page", () => {
     const signedIn = await renderDirectory();
 
     expect(signedIn).toBe(anonymous);
-    expect(mocks.getOfficeContext).toHaveBeenCalledWith({ id: "user-1", email: "person@example.edu" });
+    expect(mocks.getCurrentUser).not.toHaveBeenCalled();
+    expect(mocks.getOfficeContext).not.toHaveBeenCalled();
+    expect(load(signedIn)("[data-session-header]")).toHaveLength(1);
   });
 
   it("shows the unavailable notice, not a zero count or search, when the publication index is unavailable", async () => {
@@ -297,7 +300,7 @@ describe("award directory page", () => {
     expect(mocks.loadFirstPublishedCaptureDates).not.toHaveBeenCalled();
   });
 
-  it("keeps the page up with the unavailable notice, and the session lookup intact, when a catalog load throws", async () => {
+  it("keeps the page up with its authenticated header and unavailable notice when a catalog load throws", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     mocks.loadStage1PublicationIndex.mockRejectedValue(new Error("connection refused"));
@@ -306,7 +309,8 @@ describe("award directory page", () => {
     expect(indexFailure).not.toContain(EMPTY_NOTICE);
     expect(indexFailure).not.toContain("connection refused");
     expectNoticeFrame(indexFailure);
-    expect(mocks.getCurrentUser).toHaveBeenCalledTimes(1);
+    expect(mocks.getCurrentUser).not.toHaveBeenCalled();
+    expect(load(indexFailure)("[data-session-header]")).toHaveLength(1);
 
     mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex());
     mocks.loadEligiblePublicChangeEvents.mockRejectedValue(new Error("timeout"));
@@ -352,18 +356,25 @@ describe("award directory page", () => {
     expect(mocks.loadStage1PublicationIndex).not.toHaveBeenCalled();
   });
 
-  it("propagates a configured session lookup failure instead of showing a notice", async () => {
+  it("does not run a duplicate session lookup for public browse results", async () => {
     mocks.getCurrentUser.mockRejectedValue(new Error("session store unavailable"));
 
-    await expect(renderDirectory()).rejects.toThrow("session store unavailable");
-    // The session is resolved before the catalog is requested.
-    expect(mocks.loadStage1PublicationIndex).not.toHaveBeenCalled();
+    const html = await renderDirectory();
+    expect(html).toContain("Example Fellowship");
+    expect(load(html)("[data-session-header]")).toHaveLength(1);
+    expect(mocks.getCurrentUser).not.toHaveBeenCalled();
+    expect(mocks.loadStage1PublicationIndex).toHaveBeenCalledTimes(1);
   });
 
-  it("propagates a configured office lookup failure for a signed-in visitor", async () => {
+  it("does not query unused office memberships or tracking rows for a signed-in visitor", async () => {
     mocks.getCurrentUser.mockResolvedValue({ id: "user-1", email: "person@example.edu" });
     mocks.getOfficeContext.mockRejectedValue(new Error("office lookup failed"));
 
-    await expect(renderDirectory()).rejects.toThrow("office lookup failed");
+    const html = await renderDirectory();
+    expect(html).toContain("Example Fellowship");
+    expect(mocks.getOfficeContext).not.toHaveBeenCalled();
+    // The mock admin client rejects table reads: the public catalog still
+    // succeeds, without reading the office's private awards/tracking table.
+    expect(load(html)("[data-session-header]")).toHaveLength(1);
   });
 });

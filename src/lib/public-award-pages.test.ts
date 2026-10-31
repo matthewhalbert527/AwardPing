@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   sourceRows: [] as unknown[],
   queriedTables: [] as string[],
   sourceQueryError: null as { message: string } | null,
+  identityRows: {} as Record<string, Array<Record<string, unknown>>>,
+  identityQueryError: null as { message: string } | null,
 }));
 
 // Only the loader is replaced; the exact newest-first comparator the merge
@@ -38,6 +40,22 @@ vi.mock("@/lib/supabase/admin", () => ({
   createSupabaseAdminClient: () => ({
     from(table: string) {
       mocks.queriedTables.push(table);
+      if (["shared_awards", "shared_award_slug_aliases"].includes(table)) {
+        const filters: Array<[string, unknown]> = [];
+        const builder = {
+          select() { return builder; },
+          eq(key: string, value: unknown) { filters.push([key, value]); return builder; },
+          async maybeSingle() {
+            const rows = (mocks.identityRows[table] || []).filter(row => filters.every(([key, expected]) => {
+              const actual = key.split(".").reduce<unknown>((value, name) => value && typeof value === "object"
+                ? (value as Record<string, unknown>)[name] : undefined, row);
+              return actual === expected;
+            }));
+            return { data: rows[0] || null, error: mocks.identityQueryError };
+          },
+        };
+        return builder;
+      }
       if (table !== "shared_award_sources") throw new Error(`Unexpected table ${table}`);
       const builder: Record<string, unknown> = {
         then(resolve: (value: unknown) => unknown) {
@@ -54,6 +72,7 @@ import { PublicAwardWorkspace } from "@/components/public-award-workspace";
 import {
   getPublicAwardPageBySlug,
   getPublicAwardPageResolutionBySlug,
+  getPublicAwardMetadataResolutionBySlug,
   mergeRequestedPublicChangeEvents,
 } from "@/lib/public-award-pages";
 import type { EligiblePublicChangeEvent } from "@/lib/public-change-events";
@@ -176,6 +195,8 @@ describe("public award page deep links", () => {
     mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex());
     mocks.queriedTables = [];
     mocks.sourceQueryError = null;
+    mocks.identityRows = {};
+    mocks.identityQueryError = null;
     mocks.sourceRows = [
       sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
       sourceRow(SOURCE_APPLY, "https://example.edu/fellowship/apply", "Application Instructions", "application"),
@@ -205,6 +226,66 @@ describe("public award page deep links", () => {
   it("keeps an empty slug missing without loading the publication index", async () => {
     expect(await getPublicAwardPageResolutionBySlug("")).toEqual({ kind: "missing" });
     expect(mocks.loadStage1PublicationIndex).not.toHaveBeenCalled();
+  });
+
+  it("loads approved metadata without source cards, change history or unread queries", async () => {
+    const entry = publication();
+    entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027", overview: "Current source-backed details.", deadline: "January 31, 2027" };
+    entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-28T12:00:00.000Z" };
+    mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex(entry));
+    mocks.sourceQueryError = { message: "Source cards are unavailable." };
+    const result = await getPublicAwardMetadataResolutionBySlug("example-fellowship");
+    expect(result).toMatchObject({ kind: "published", data: { awardName: "Example Fellowship", canonicalPath: "/example-fellowship" } });
+    if (result.kind !== "published") throw Error("Expected approved metadata identity.");
+    expect(result.data.metaDescription).toContain("Current source-backed details.");
+    expect(result.data.metaDescription).toContain("January 31, 2027");
+    expect(mocks.queriedTables).toEqual([]);
+    expect(mocks.loadEligiblePublicChangeEvents).not.toHaveBeenCalled();
+    expect(mocks.unreadSharedChangeIdsForUser).not.toHaveBeenCalled();
+    // Metadata never supplies stale page content after its separate body load.
+    await expect(getPublicAwardPageResolutionBySlug("example-fellowship")).rejects.toThrow("Public award source query failed");
+  });
+
+  it("rechecks current publication for each metadata request without caching an earlier approval", async () => {
+    mocks.loadStage1PublicationIndex.mockResolvedValueOnce(publicationIndex())
+      .mockResolvedValueOnce({ ...publicationIndex(), available: false });
+    expect((await getPublicAwardMetadataResolutionBySlug("example-fellowship")).kind).toBe("published");
+    expect(await getPublicAwardMetadataResolutionBySlug("example-fellowship")).toEqual({ kind: "unavailable" });
+    expect(mocks.loadStage1PublicationIndex).toHaveBeenCalledTimes(2);
+    expect(mocks.queriedTables).toEqual([]);
+  });
+
+  it.each(["member", "slug alias"])("keeps canonical metadata for a reviewed %s without reading its sources", async kind => {
+    const aliasId = "10000000-0000-4000-8000-000000000002";
+    const entry = publication(), index = publicationIndex(entry);
+    entry.memberAwardIds.push(aliasId); index.entryByMemberAwardId.set(aliasId, entry);
+    entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027", overview: "Canonical approved description." };
+    mocks.loadStage1PublicationIndex.mockResolvedValue(index);
+    const member = { id: aliasId, name: "Old award name", slug: "old-award-name", status: "active", public_facts: { overview: "Unapproved old row facts." } };
+    if (kind === "member") mocks.identityRows.shared_awards = [member];
+    else mocks.identityRows.shared_award_slug_aliases = [{ slug: "old-award-name", shared_awards: member }];
+    const result = await getPublicAwardMetadataResolutionBySlug("old-award-name");
+    expect(result).toMatchObject({ kind: "published", data: { awardName: "Example Fellowship", canonicalPath: "/example-fellowship" } });
+    if (result.kind !== "published") throw Error("Expected canonical metadata.");
+    expect(result.data.metaDescription).toContain("Canonical approved description.");
+    expect(result.data.metaDescription).not.toMatch(/Old award|Unapproved/);
+    expect(mocks.queriedTables).toEqual(kind === "member" ? ["shared_awards"] : ["shared_awards", "shared_award_slug_aliases"]);
+    expect(mocks.loadEligiblePublicChangeEvents).not.toHaveBeenCalled();
+  });
+
+  it.each(["unverified", "inactive alias", "foreign alias", "unavailable index", "empty slug"])("keeps metadata closed for an %s", async kind => {
+    const entry = publication();
+    if (kind === "unverified") entry.effectivelyVerified = false;
+    mocks.loadStage1PublicationIndex.mockResolvedValue(kind === "unavailable index"
+      ? { ...publicationIndex(entry), available: false } : publicationIndex(entry));
+    if (kind.endsWith("alias")) mocks.identityRows.shared_award_slug_aliases = [{ slug: "old-award-name", shared_awards: {
+      id: kind === "foreign alias" ? "10000000-0000-4000-8000-000000000099" : AWARD_ID,
+      status: kind === "inactive alias" ? "inactive" : "active",
+    } }];
+    const result = await getPublicAwardMetadataResolutionBySlug(kind === "empty slug" ? "" : kind.endsWith("alias") ? "old-award-name" : "example-fellowship");
+    expect(result.kind).toBe(kind === "unverified" ? "under_verification" : kind === "unavailable index" ? "unavailable" : "missing");
+    expect(result).not.toHaveProperty("data");
+    expect(mocks.loadEligiblePublicChangeEvents).not.toHaveBeenCalled();
   });
 
   it("does not call legacy registry or full-review timestamps a current basic-details check", async () => {

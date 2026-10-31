@@ -2,13 +2,11 @@ import type { ReactNode } from "react";
 import { AwardDiscoveryWorkspace } from "@/components/award-discovery-workspace";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { getCurrentUser } from "@/lib/auth";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
 import { canonicalAwardPath } from "@/lib/award-slugs";
 import { dedupeChangeSummaries } from "@/lib/change-summary";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
-import { canManageOffice, getOfficeContext } from "@/lib/offices";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -16,10 +14,8 @@ import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
 
 export const dynamic = "force-dynamic";
 
-type AwardRow = Database["public"]["Tables"]["awards"]["Row"];
 type SharedAwardRow = Database["public"]["Tables"]["shared_awards"]["Row"];
 type SharedChangeRow = Database["public"]["Tables"]["shared_award_change_events"]["Row"];
-type OfficeAwardTrackingRow = Pick<AwardRow, "shared_award_id">;
 type SharedAwardDirectoryRow = Pick<
   SharedAwardRow,
   "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts" | "public_facts_generated_at"
@@ -48,7 +44,6 @@ type DirectoryCatalog =
   | {
       status: "ready";
       awards: ReturnType<typeof mapSharedAwards>;
-      canonicalAwardIdByMember: Map<string, string>;
     }
   | { status: "empty" }
   | { status: "unavailable" };
@@ -58,9 +53,8 @@ const DIRECTORY_UNAVAILABLE_NOTICE =
   "The award directory is unavailable right now. Please check back soon.";
 
 export default async function AwardDirectoryPage() {
-  // Missing configuration short-circuits before any session or office lookup,
-  // exactly as before; the visitor sees the same frame and notice as for any
-  // other unavailable catalog.
+  // Missing configuration uses the same frame and unavailable notice without
+  // attempting to load the catalog.
   if (!hasSupabaseConfig() || !hasSupabaseAdminConfig()) {
     return (
       <DirectoryFrame>
@@ -69,13 +63,9 @@ export default async function AwardDirectoryPage() {
     );
   }
 
-  // The session and office lookups are not caught: a configured failure there
-  // still propagates. Only the catalog load degrades to a notice.
-  const user = await getCurrentUser();
-  const [officeContext, catalog] = await Promise.all([
-    user ? getOfficeContext(user) : Promise.resolve(null),
-    loadDirectoryCatalog(),
-  ]);
+  // Browse results are identical for every visitor. The shared header handles
+  // authentication; the directory does not need office membership or follows.
+  const catalog = await loadDirectoryCatalog();
   if (catalog.status !== "ready") {
     return (
       <DirectoryFrame>
@@ -84,19 +74,13 @@ export default async function AwardDirectoryPage() {
     );
   }
 
-  const sharedCatalog = withTrackedSharedAwards(
-    catalog.awards,
-    await trackedOfficeAwards(officeContext),
-    catalog.canonicalAwardIdByMember,
-  );
-
   return (
     <DirectoryFrame>
       <AwardDiscoveryWorkspace
-        sharedAwards={sharedCatalog}
+        sharedAwards={catalog.awards}
         presentationAsOf={new Date().toISOString()}
-        canManage={officeContext ? canManageOffice(officeContext.current.role) : false}
-        isAuthenticated={Boolean(user)}
+        canManage={false}
+        isAuthenticated={false}
       />
     </DirectoryFrame>
   );
@@ -140,27 +124,9 @@ async function loadDirectoryCatalog(): Promise<DirectoryCatalog> {
   }
 }
 
-// The office's active tracking rows, only when there is an office to scope to.
-async function trackedOfficeAwards(
-  officeContext: Awaited<ReturnType<typeof getOfficeContext>>,
-): Promise<OfficeAwardTrackingRow[]> {
-  if (!officeContext) return [];
-  const { data } = await createSupabaseAdminClient()
-    .from("awards")
-    .select("shared_award_id")
-    .eq("office_id", officeContext.current.officeId)
-    .eq("status", "active");
-  return data || [];
-}
-
 async function getSharedCatalog(): Promise<DirectoryCatalog> {
   const admin = createSupabaseAdminClient();
   const publicationIndex = await loadStage1PublicationIndex();
-  const canonicalAwardIdByMember = new Map(
-    [...publicationIndex.entryByMemberAwardId.entries()].map(
-      ([memberAwardId, entry]) => [memberAwardId, entry.canonicalAwardId],
-    ),
-  );
   if (!publicationIndex.available) return { status: "unavailable" };
   if (publicationIndex.verifiedEntries.length === 0) return { status: "empty" };
 
@@ -189,16 +155,13 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
     awards: mapSharedAwards(
       sharedAwards,
       groupBySharedAwardId(canonicalChanges),
-      new Set<string>(),
     ),
-    canonicalAwardIdByMember,
   };
 }
 
 function mapSharedAwards(
   sharedAwards: SharedAwardDirectoryRow[],
   sharedChangesByAwardId: Map<string, SharedChangeDirectoryRow[]>,
-  trackedSharedIds: Set<string>,
 ) {
   return sharedAwards.map((award) => {
     const facts = publicAwardFactsFromAward({
@@ -231,30 +194,12 @@ function mapSharedAwards(
       // Eligible public events are loaded newest-first before canonical deduplication.
       latestUpdateAt: changes[0]?.detected_at ?? null,
       detailsCheckedAt: award.detailsCheckedAt,
-      tracked: trackedSharedIds.has(award.id),
+      tracked: false,
       detailsLoaded: false,
       sources: [],
       changes: [],
     };
   });
-}
-
-function withTrackedSharedAwards(
-  sharedAwards: ReturnType<typeof mapSharedAwards>,
-  officeAwards: OfficeAwardTrackingRow[],
-  canonicalAwardIdByMember: Map<string, string>,
-) {
-  const trackedSharedIds = new Set(
-    officeAwards
-      .map((award) => award.shared_award_id)
-      .filter((id): id is string => Boolean(id))
-      .map((id) => canonicalAwardIdByMember.get(id) || id),
-  );
-
-  if (trackedSharedIds.size === 0) return sharedAwards;
-  return sharedAwards.map((award) =>
-    trackedSharedIds.has(award.id) ? { ...award, tracked: true } : award,
-  );
 }
 
 function groupBySharedAwardId<Row extends { shared_award_id: string }>(rows: Row[]) {

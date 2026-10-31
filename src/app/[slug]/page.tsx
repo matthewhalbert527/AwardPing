@@ -9,6 +9,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
 import {
   getPublicAwardPageResolutionBySlug,
+  getPublicAwardMetadataResolutionBySlug,
   type PublicAwardPageData,
 } from "@/lib/public-award-pages";
 import { publicAwardHref, publicAwardQueryId, publicAwardSection, publicAwardVariantId } from "@/lib/public-award-links";
@@ -43,7 +44,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 
   if (!hasSupabaseAdminConfig()) return AWARD_UNAVAILABLE_METADATA;
-  const resolution = await getPublicAwardPageResolutionBySlug(slug).catch(
+  const resolution = await getPublicAwardMetadataResolutionBySlug(slug).catch(
     () => ({ kind: "unavailable" as const }),
   );
   if (resolution.kind === "unavailable") return AWARD_UNAVAILABLE_METADATA;
@@ -58,7 +59,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const awardPage = resolution.data;
 
   return {
-    title: awardPage.award.name,
+    title: awardPage.awardName,
     description: awardPage.metaDescription,
     alternates: {
       canonical: `${appConfig.url}${awardPage.canonicalPath}`,

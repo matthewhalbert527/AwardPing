@@ -25,8 +25,10 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const user = await getCurrentUser();
-  const profile = user ? await getUserProfile(user.id) : null;
-  const officeContext = user ? await getOfficeContext(user) : null;
+  const [profile, officeContext] = await Promise.all([
+    user ? getUserProfile(user.id) : null,
+    user ? getOfficeContext(user) : null,
+  ]);
   const isSiteAdmin = isSiteAdminEmail(user?.email);
   const officeOptions =
     officeContext?.memberships.map((membership) => ({

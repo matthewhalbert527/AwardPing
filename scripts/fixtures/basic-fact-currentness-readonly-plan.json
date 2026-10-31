@@ -1,0 +1,181 @@
+{
+  "schema": "awardping.basic-currentness-readonly-plan.v1",
+  "checked_at": "2026-10-31T22:56:05.970Z",
+  "selected_awards": 35,
+  "database_mutations": 0,
+  "origin": "Actual PostgreSQL EXPLAIN ANALYZE in a repeatable-read read-only transaction; rolled back. Only plan structure/expressions/counts retained, no result-row facts or credentials.",
+  "query_sha256": "cc2fcdbd611e942df69d92b6aee7e7b7893e31b3a3fe8628449023cf7bb114fa",
+  "raw_result_sha256": "188d3adda600f72d20d216d3fdff7a78f72fea8481219b8d0a5f30c9f2b825ae",
+  "explain": [
+    {
+      "Plan": {
+        "Node Type": "Result",
+        "Actual Rows": 1,
+        "Actual Loops": 1,
+        "Output": [
+          "COALESCE((InitPlan 4).col1, '[]'::jsonb)"
+        ],
+        "Plans": [
+          {
+            "Node Type": "Aggregate",
+            "Parent Relationship": "InitPlan",
+            "Subplan Name": "CTE selected_ids",
+            "Actual Rows": 1,
+            "Actual Loops": 1,
+            "Output": [
+              "array_agg(program_award_registry.canonical_shared_award_id ORDER BY program_award_registry.cohort_key)"
+            ],
+            "Plans": [
+              {
+                "Node Type": "Index Scan",
+                "Parent Relationship": "Outer",
+                "Alias": "program_award_registry",
+                "Actual Rows": 35,
+                "Actual Loops": 1,
+                "Output": [
+                  "program_award_registry.cohort_key",
+                  "program_award_registry.launch_rank",
+                  "program_award_registry.canonical_name",
+                  "program_award_registry.canonical_shared_award_id",
+                  "program_award_registry.canonical_slug",
+                  "program_award_registry.official_homepage",
+                  "program_award_registry.publication_state",
+                  "program_award_registry.state_reason",
+                  "program_award_registry.policy_version",
+                  "program_award_registry.fact_ledger_batch_id",
+                  "program_award_registry.release_epoch",
+                  "program_award_registry.evidence_checked_at",
+                  "program_award_registry.last_verified_at",
+                  "program_award_registry.created_at",
+                  "program_award_registry.updated_at"
+                ]
+              }
+            ]
+          },
+          {
+            "Node Type": "Aggregate",
+            "Parent Relationship": "InitPlan",
+            "Subplan Name": "InitPlan 4",
+            "Actual Rows": 1,
+            "Actual Loops": 1,
+            "Output": [
+              "jsonb_agg(jsonb_build_object('award_id', s_1.award_id, 'cohort_key', s_1.cohort_key, 'snapshot_id', s_1.id, 'kind', s_1.kind, 'current', s_1.current, 'public_facts', CASE WHEN s_1.current THEN s_1.public_facts ELSE 'null'::jsonb END, 'verified_at', s_1.verified_at) ORDER BY s_1.cohort_key)"
+            ],
+            "Plans": [
+              {
+                "Node Type": "Hash Join",
+                "Parent Relationship": "InitPlan",
+                "Subplan Name": "CTE scoped_current",
+                "Actual Rows": 35,
+                "Actual Loops": 1,
+                "Output": [
+                  "s.award_id",
+                  "s.cohort_key",
+                  "s.id",
+                  "s.kind",
+                  "s.public_facts",
+                  "(s.receipt -> 'reviewed_at'::text)",
+                  "private.awardping_basic_fact_current(s.id)"
+                ],
+                "Plans": [
+                  {
+                    "Node Type": "CTE Scan",
+                    "Parent Relationship": "InitPlan",
+                    "Subplan Name": "InitPlan 2",
+                    "CTE Name": "selected_ids",
+                    "Alias": "selected_ids",
+                    "Actual Rows": 1,
+                    "Actual Loops": 1,
+                    "Output": [
+                      "selected_ids.ids"
+                    ]
+                  },
+                  {
+                    "Node Type": "Seq Scan",
+                    "Parent Relationship": "Outer",
+                    "Alias": "h",
+                    "Actual Rows": 35,
+                    "Actual Loops": 1,
+                    "Output": [
+                      "h.cohort_key",
+                      "h.snapshot_id",
+                      "h.updated_at"
+                    ]
+                  },
+                  {
+                    "Node Type": "Hash",
+                    "Parent Relationship": "Inner",
+                    "Actual Rows": 64,
+                    "Actual Loops": 1,
+                    "Output": [
+                      "s.award_id",
+                      "s.cohort_key",
+                      "s.id",
+                      "s.kind",
+                      "s.public_facts",
+                      "s.receipt"
+                    ],
+                    "Plans": [
+                      {
+                        "Node Type": "Seq Scan",
+                        "Parent Relationship": "Outer",
+                        "Alias": "s",
+                        "Actual Rows": 64,
+                        "Actual Loops": 1,
+                        "Output": [
+                          "s.award_id",
+                          "s.cohort_key",
+                          "s.id",
+                          "s.kind",
+                          "s.public_facts",
+                          "s.receipt"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "Node Type": "Sort",
+                "Parent Relationship": "Outer",
+                "Actual Rows": 35,
+                "Actual Loops": 1,
+                "Output": [
+                  "s_1.award_id",
+                  "s_1.cohort_key",
+                  "s_1.id",
+                  "s_1.kind",
+                  "s_1.current",
+                  "s_1.public_facts",
+                  "s_1.verified_at"
+                ],
+                "Plans": [
+                  {
+                    "Node Type": "CTE Scan",
+                    "Parent Relationship": "Outer",
+                    "CTE Name": "scoped_current",
+                    "Alias": "s_1",
+                    "Actual Rows": 35,
+                    "Actual Loops": 1,
+                    "Output": [
+                      "s_1.award_id",
+                      "s_1.cohort_key",
+                      "s_1.id",
+                      "s_1.kind",
+                      "s_1.current",
+                      "s_1.public_facts",
+                      "s_1.verified_at"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "Execution Time": 1485.423
+    }
+  ],
+  "original_execution_ms": 2875.022,
+  "materialized_execution_ms": 1485.423
+}
