@@ -49,7 +49,21 @@ describe("permanent first-observation discovery schedule", () => {
     expect(launcher).not.toContain("`$BaselineRefresh");
     expect(launcher).not.toContain("`$CompleteMissingBaselines");
     expect(launcher).not.toContain("--discovery-mode=false");
-    expect(installer).toContain("New discovery and historical new-page reviews remain deferred");
+    expect(launcher).toContain("Collection uses approved required sources only; new discovery is deferred.");
+    expect(installer).toContain("Discovery and legacy mutation lanes remain on hold.");
+    expect(installer).toContain("Historical logs and deferred queues are preserved.");
+    const registrationStart = installer.indexOf("function Register-DownstreamLaneTasks");
+    const registrationEnd = installer.indexOf("\nfunction ", registrationStart + 1);
+    expect(registrationStart).toBeGreaterThan(0);
+    const registration = installer.slice(registrationStart, registrationEnd < 0 ? undefined : registrationEnd);
+    expect([...registration.matchAll(/Key = "([^"]+)"; TaskName = "([^"]+)"/g)].map(match => [match[1], match[2]]))
+      .toEqual([
+        ["changed_page_review", "AwardPing Changed Page Review Lane"],
+        ["page_audit", "AwardPing Page Audit Lane"],
+        ["nightly_report", "AwardPing Coverage Report"],
+      ]);
+    expect(installer).toContain("function Remove-LegacySourceTask");
+    expect(installer).toContain("Removed retired scheduled task:");
   });
 
   it("validates the scheduled contract in the capture process before work starts", () => {

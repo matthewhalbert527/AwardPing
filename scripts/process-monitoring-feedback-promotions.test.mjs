@@ -40,6 +40,7 @@ import {
   workerRunMatchesIdentity,
 } from "./process-monitoring-feedback-promotions.mjs";
 import { buildVisualSourceInventoryProof } from "./lib/visual-source-inventory-proof.mjs";
+import { commandForDownstreamLane, downstreamLaneDefinitions } from "./run-downstream-lane.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -1382,11 +1383,19 @@ describe("verified monitoring-feedback promotion worker", () => {
     expect(capture).toContain(
       "localBaselineEvidenceCache.clear();\n  observedVisualReviewCandidateIds.clear();",
     );
-    expect(downstream).toContain("feedback_promotion: {");
+    expect(Object.keys(downstreamLaneDefinitions)).toEqual([
+      "changed_page_review", "page_audit", "nightly_report",
+    ]);
+    for (const retiredLane of ["new_page_review", "feedback_promotion", "suppression", "reconciliation", "manual_quarantine"]) {
+      expect(downstreamLaneDefinitions).not.toHaveProperty(retiredLane);
+      expect(() => commandForDownstreamLane(retiredLane)).toThrow("Unknown downstream lane");
+    }
+    expect(() => commandForDownstreamLane("not-a-worker-lane")).toThrow("Unknown downstream lane");
     expect(downstream).not.toContain("scripts/process-monitoring-feedback-promotions.mjs");
-    expect(downstream).toContain("suppression: {");
     expect(downstream).not.toContain("scripts/cleanup-change-event-noise.mjs");
-    expect(downstream).toContain('args: ["--mode=legacy_hold", "--apply=true"]');
+    expect(downstream).not.toContain("--mode=legacy_hold");
+    expect(commandForDownstreamLane("changed_page_review").args).toContain("--mode=review");
+    expect(commandForDownstreamLane("nightly_report").args).toContain("--mode=report");
     expect(downstream).toContain("page_audit: {");
     expect(downstream).toContain("scripts/evaluate-public-page-audit-canaries.mjs");
     expect(downstream).not.toContain("scripts/process-page-audit-batch.mjs");
