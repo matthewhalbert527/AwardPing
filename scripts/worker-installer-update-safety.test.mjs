@@ -316,6 +316,7 @@ describe("Windows worker update safety", () => {
       validator,
       "$script:root = 'C:\\AwardPingWorker'",
       "$script:badTask = ''",
+      "$script:exportOffset = 0",
       "$script:lanes = @{",
       "  'AwardPing Changed Page Review Lane'=@('changed_page_review',2,10); 'AwardPing Page Audit Lane'=@('page_audit',10,6); 'AwardPing Coverage Report'=@('nightly_report',14,4)",
       "}",
@@ -330,8 +331,9 @@ describe("Windows worker update safety", () => {
       "    return '<Task xmlns=\"' + $ns + '\"><Triggers><CalendarTrigger><StartBoundary>2026-07-16T' + $hour.ToString('00') + ':00:00-05:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers><Actions><Exec><Command>powershell.exe</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>'",
       "  }",
       "  $lane = $script:lanes[$TaskName]; $arguments = '-NoProfile -File \"' + $script:root + '\\Run-AwardPingDownstreamLane.ps1\" -InstallRoot \"' + $script:root + '\" -Lane ' + $lane[0] + ' -TimeoutMinutes ' + $lane[2]",
-      "  if ($TaskName -eq 'AwardPing Coverage Report') { $minute=if($script:badTask -eq $TaskName){29}else{30}; $trigger='<CalendarTrigger><StartBoundary>2026-07-16T23:' + $minute + ':00Z</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>' }",
-      "  else { $interval=if($TaskName -eq 'AwardPing Page Audit Lane' -and $script:badTask -ne $TaskName){'PT1H'}else{'PT15M'}; $trigger='<TimeTrigger><StartBoundary>2026-07-16T12:' + ([int]$lane[1]).ToString('00') + ':00Z</StartBoundary><Repetition><Interval>'+$interval+'</Interval><Duration>P3650D</Duration></Repetition></TimeTrigger>' }",
+      "  $zone=if($script:exportOffset -eq 0){'Z'}else{'-'+$script:exportOffset.ToString('00')+':00'}",
+      "  if ($TaskName -eq 'AwardPing Coverage Report') { $minute=if($script:badTask -eq $TaskName){29}else{30}; $hour=23-$script:exportOffset; $trigger='<CalendarTrigger><StartBoundary>2026-07-16T'+$hour.ToString('00')+':' + $minute + ':00'+$zone+'</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>' }",
+      "  else { $interval=if($TaskName -eq 'AwardPing Page Audit Lane' -and $script:badTask -ne $TaskName){'PT1H'}else{'PT15M'}; $hour=12-$script:exportOffset; $trigger='<TimeTrigger><StartBoundary>2026-07-16T'+$hour.ToString('00')+':' + ([int]$lane[1]).ToString('00') + ':00'+$zone+'</StartBoundary><Repetition><Interval>'+$interval+'</Interval><Duration>P3650D</Duration></Repetition></TimeTrigger>' }",
       "  return '<Task xmlns=\"' + $ns + '\"><Triggers>'+$trigger+'</Triggers><Actions><Exec><Command>powershell.exe</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>'",
       "}",
       "$clean = @(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root)",
@@ -342,6 +344,8 @@ describe("Windows worker update safety", () => {
       "'BAD=' + ($bad -join ' | ')",
       "$script:badTask = 'AwardPing Page Audit Lane'; 'BAD_AUDIT=' + (@(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root).Count)",
       "$script:badTask = 'AwardPing Coverage Report'; 'BAD_REPORT=' + (@(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root).Count)",
+      "$script:badTask='';$script:exportOffset=5;'SUMMER_EXPORT=' + (@(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root).Count)",
+      "$script:exportOffset=6;'WINTER_EXPORT=' + (@(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root).Count)",
     ].join("\n");
     const result = runPowerShellCommand(simulation);
     expect(result.status).toBe(0);
@@ -350,6 +354,8 @@ describe("Windows worker update safety", () => {
     expect(result.stdout).toContain("BAD_COUNT=2");
     expect(result.stdout).toContain("BAD_AUDIT=1");
     expect(result.stdout).toContain("BAD_REPORT=1");
+    expect(result.stdout).toContain("SUMMER_EXPORT=0");
+    expect(result.stdout).toContain("WINTER_EXPORT=0");
     expect(result.stdout).toContain(
       "noncanonical visual trigger for AwardPing Visual Snapshot Worker Shard 2",
     );

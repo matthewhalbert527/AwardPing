@@ -1278,7 +1278,7 @@ function Get-AwardPingManagedTaskScheduleProblems {
           $trigger.LocalName -ne "CalendarTrigger" -or
           -not $daysNode -or [string]$daysNode.InnerText -ne "1" -or
           $trigger.SelectSingleNode("./task:Repetition", $namespace) -or
-          [string]$startNode.InnerText -notmatch "(?:Z|[+-]00:00)$" -or
+          [string]$startNode.InnerText -notmatch "(?:Z|[+-]\d{2}:\d{2})$" -or
           -not [DateTimeOffset]::TryParse([string]$startNode.InnerText, [ref]$coverageStart) -or
           $coverageStart.UtcDateTime.TimeOfDay -ne $expectedCoverage.UtcDateTime.TimeOfDay
         ) {
@@ -1294,7 +1294,7 @@ function Get-AwardPingManagedTaskScheduleProblems {
           [string]$intervalNode.InnerText -ne $(if ($definition.IntervalMinutes -eq 60) { "PT1H" } else { "PT15M" }) -or
           -not $durationNode -or
           [string]$durationNode.InnerText -ne "P3650D" -or
-          ($definition.IntervalMinutes -eq 60 -and [string]$startNode.InnerText -notmatch "(?:Z|[+-]00:00)$") -or
+          ($definition.IntervalMinutes -eq 60 -and [string]$startNode.InnerText -notmatch "(?:Z|[+-]\d{2}:\d{2})$") -or
           ($cadenceStart.Minute % [int]$definition.IntervalMinutes) -ne [int]$definition.StaggerMinutes -or
           $cadenceStart.Second -ne 0
         ) {
