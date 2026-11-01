@@ -273,7 +273,7 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(browseRowHrefs(anonymous)).toEqual(["/goldwater-scholarship"]);
     expect(browseRowHrefs(signedIn)).toEqual(["/goldwater-scholarship"]);
     expect(signedIn).toBe(anonymous);
-    expect(anonymous).toContain("<span>Goldwater Scholarship</span>");
+    expect(load(anonymous)(".award-row-grid > div").first().text()).toBe("Goldwater Scholarship");
     expect(anonymous).not.toContain(dashboardPath);
   });
 
@@ -290,7 +290,7 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(searchOptionHrefs(anonymous)).toEqual(["/goldwater-scholarship"]);
     expect(searchOptionHrefs(signedIn)).toEqual(["/goldwater-scholarship"]);
     expect(signedIn).toBe(anonymous);
-    expect(anonymous).toContain('<span class="award-search-option-title">Goldwater Scholarship</span>');
+    expect(load(anonymous)(".award-search-option .award-row-grid > div").first().text()).toBe("Goldwater Scholarship");
     expect(anonymous).not.toContain(dashboardPath);
     // The browse list is hidden while results are shown.
     expect(browseRowHrefs(anonymous)).toEqual([]);
@@ -788,19 +788,19 @@ describe("AwardDiscoveryWorkspace search-card consistency", () => {
     expect(searchOptionHrefs(html)).toEqual([gates.publicPath]);
     expect(browseRowHrefs(html)).toEqual([]);
     expect(result.find(".award-row-deadline").html()).toBe(browse(".award-row-deadline").html());
-    expect(result.find(".award-row-deadline > strong")).toHaveLength(2);
-    expect(result.find(".award-row-deadline").text()).toContain("Application deadlines");
+    expect(result.find(".award-row-deadline > div")).toHaveLength(2);
+    expect(result.find(".award-row-deadline dt").map((_index, element) => $(element).text()).get()).toEqual(["Application", "Application"]);
     expect(result.text()).toContain("US citizens resident in the USA round");
     expect(result.text()).toContain("14 October 2026 at 11:59 p.m. GMT");
     expect(result.text()).toContain("All other eligible applicants round");
     expect(result.text()).toContain("8 December 2026 or Wednesday 6 January 2027");
     expect(result.text()).toContain("(dependent on course)");
-    const past = result.find('.award-row-deadline > strong[data-deadline-status="past"]');
-    expect(result.find(".award-row-deadline > strong").map((_index, element) => $(element).attr("data-deadline-status")).get()).toEqual(["listed", "past"]);
+    const past = result.find('.award-row-deadline > div[data-deadline-status="past"]');
+    expect(result.find(".award-row-deadline > div").map((_index, element) => $(element).attr("data-deadline-status")).get()).toEqual(["listed", "past"]);
     expect(past).toHaveLength(1);
     expect(past.find('[class*="pastDeadline"]')).toHaveLength(1);
     expect(past.find(".sr-only").text()).toBe(" (deadline has passed)");
-    expect(result.find('.award-row-deadline > strong:not([data-deadline-status="past"]) [class*="pastDeadline"]')).toHaveLength(0);
+    expect(result.find('.award-row-deadline > div:not([data-deadline-status="past"]) [class*="pastDeadline"]')).toHaveLength(0);
     expect(result.find(".award-row-deadline small")).toHaveLength(0);
     expect(result.text()).not.toContain("Past date");
     expect(result.text()).not.toMatch(/Not listed|Notification|Postgraduate|Citizens of any country/);
@@ -870,8 +870,12 @@ const deadlineRows: SharedAwardCard[] = [
 ];
 function deadlineCells(html: string) {
   const $ = load(html);
-  return $(".award-row-deadline").filter((_index, row) => $(row).children("span").text() === "Deadline")
-    .map((_index, row) => $(row).children("strong").text()).get();
+  return $(".award-row-deadline > div").map((_index, row) => {
+    const date = $(row).children("dd").first().clone();
+    date.find(".sr-only").remove();
+    const time = $(row).children('dd[class*="deadlineTime"]').text();
+    return date.text() + (time ? ` at ${time}` : "");
+  }).get();
 }
 
 describe("AwardDiscoveryWorkspace deadline wording", () => {
@@ -900,19 +904,22 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     { raw: "2026-03-27T09:30:00+05:30", text: "March 27, 2026 at 9:30 a.m. (UTC+05:30)", zone: "(UTC+05:30)" },
     { raw: "2026-03-27T17:00:00Z", text: "March 27, 2026 at 5:00 p.m. (UTC)", zone: "(UTC)" },
     { raw: "Last Friday in January, 5:00 p.m. (UTC-05:00)", text: "Last Friday in January at 5:00 p.m. (UTC-05:00)", zone: "(UTC-05:00)" },
-  ])("groups only the directory UTC token for $raw with unchanged ASCII text", ({ raw, text, zone }) => {
+  ])("retains the directory UTC token and exact ASCII text in separate date/time lines for $raw", ({ raw, text, zone }) => {
     const row = { ...gaither, deadline: raw, summary: text };
     const before = structuredClone(row);
     const html = renderRows([row]);
     const $ = load(html);
-    const cell = $(".award-row-deadline > strong");
+    const cell = $(".award-row-deadline > div");
     expect(cell.length).toBe(1);
-    expect(cell.text()).toBe(text);
-    expect(cell.find("span.award-date-zone").length).toBe(1);
+    expect(deadlineCells(html)).toEqual([text]);
+    expect(cell.children('dd[class*="deadlineTime"]').text()).toContain(zone);
+    expect(cell.find("span.award-date-zone")).toHaveLength(1);
     expect(cell.find("span.award-date-zone").text()).toBe(zone);
+    expect(cell.children("dd").first().text()).not.toContain(zone);
     expect(cell.text()).not.toMatch(/[\u00a0\u2011]/);
     // The summary stays in data for search, but the card does not repeat it.
     expect($(".award-row-one-line-description")).toHaveLength(0);
+    expect(cell.children('dd[class*="deadlineTime"]')).toHaveLength(1);
     expect($(".award-row-card .award-date-zone")).toHaveLength(1);
     expect(browseRowHrefs(html)).toEqual([gaither.publicPath]);
     expect(row).toEqual(before);
@@ -921,20 +928,27 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
   it("does not group a UTC-looking token in an unsupported directory deadline", () => {
     const deadline = "March 27, 2026 at 5:00 p.m. (UTC-05:00) (tentative)";
     const $ = load(renderRows([{ ...gaither, deadline }]));
-    const cell = $(".award-row-deadline > strong");
-    expect(cell.text()).toBe(deadline);
+    const cell = $(".award-row-deadline > div");
+    expect(cell.children("dd").first().text()).toBe(deadline);
     expect(cell.find(".award-date-zone").length).toBe(0);
   });
 
-  it("gives every desktop deadline the same local grid track and stacks it on mobile without clipping", () => {
+  it("uses a common flexible desktop track and stacks the deadline panel within narrow card containers", () => {
     const css = readFileSync(new URL("./award-discovery-workspace.module.css", import.meta.url), "utf8");
     const desktopRule = css.split(".rowGrid:global(.award-row-grid) {")[1]?.split("}")[0] ?? "";
-    expect(desktopRule).toContain("grid-template-columns: minmax(0, 1fr) minmax(0, 18rem);");
+    expect(desktopRule).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, [\d.]+rem\);/);
     expect(desktopRule).toContain("min-width: 0;");
-    expect(css).toMatch(/@media \(max-width: 640px\)\s*\{\s*\.rowGrid:global\(\.award-row-grid\)\s*\{\s*grid-template-columns: minmax\(0, 1fr\);/);
-    expect(css).toContain(".rowGrid:global(.award-row-grid) > :global(.award-row-deadline)");
+    expect(css).toContain("container: award-cards / inline-size;");
+    const narrowContainer = css.split(/@container award-cards \(max-width: \d+px\)\s*\{/)[1] ?? "";
+    expect(narrowContainer).toMatch(/\.rowGrid:global\(\.award-row-grid\)\s*\{\s*grid-template-columns: minmax\(0, 1fr\);/);
+    expect(narrowContainer).toMatch(/\.cardList\s*\{\s*grid-auto-rows: auto;/);
+    expect(css).toContain(".deadlines:global(.award-row-deadline)");
     expect(css).toContain("overflow-wrap: anywhere;");
-    expect(css).not.toMatch(/overflow:\s*(?:hidden|clip)|white-space:\s*nowrap|font-size:/);
+    expect(css).not.toMatch(/overflow:\s*(?:hidden|clip)|(?:^|[;{]\s*)height:\s*\d+(?:px|rem)/m);
+    for (const name of ["title", "deadlineDate", "deadlineTime"]) {
+      const rule = css.split(`.${name} {`)[1]?.split("}")[0] ?? "";
+      expect(rule).not.toMatch(/white-space:\s*nowrap|text-overflow:\s*ellipsis|line-clamp:/);
+    }
 
     const html = renderRows([gaither, gates]);
     const gridClasses = [...html.matchAll(/<div class="award-row-grid ([^"]+)">/g)].map((match) => match[1]);
@@ -985,8 +999,8 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     const before = JSON.stringify(row);
     const html = renderRows([row]);
     const $ = load(html);
-    expect($(".award-row-deadline > span").text()).toBe("Scholarships deadline");
-    expect($(".award-row-deadline > strong").text()).toBe("January 27, 2027");
+    expect($(".award-row-deadline dt").text()).toBe("Scholarships deadline");
+    expect($(".award-row-deadline dd").first().text()).toBe("January 27, 2027");
     expect(html).not.toContain("(Boren Scholarships)");
     expect(JSON.stringify(row)).toBe(before);
   });
@@ -1036,6 +1050,106 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
       expect(html).toBe(anonymous);
     }
     expect(deadlineRows).toEqual(before);
+  });
+});
+
+describe("AwardDiscoveryWorkspace tinted deadline cards", () => {
+  it.each([
+    { name: "Barry Goldwater Scholarship", deadline: "National nomination: Last Friday in January at 5:00 p.m. (Central Time)", label: "National nomination", date: "Last Friday in January", time: "5:00 p.m. (Central Time)" },
+    { name: "Beinecke Scholarship", deadline: "2027 institutional nomination: March 26, 2027 at 5:00 p.m. (Eastern Time)", label: "2027 institutional nomination", date: "March 26, 2027", time: "5:00 p.m. (Eastern Time)" },
+  ])("retains $name's nomination scope, full date and explicit clock in browse and search", ({ name, deadline, label, date, time }) => {
+    const row = { ...goldwater, name, deadline };
+    const before = structuredClone(row);
+    const browse = load(renderRows([row]));
+    const search = load(renderRows([row], [name, true]));
+    for (const $ of [browse, search]) {
+      const panel = $("dl.award-row-deadline");
+      expect(panel).toHaveLength(1);
+      expect(panel.find("dt").text()).toBe(label);
+      expect(panel.find("dd").first().text()).toBe(date);
+      expect(panel.find('dd[class*="deadlineTime"]').text()).toBe(time);
+      expect(panel.find('[data-deadline-status="past"]')).toHaveLength(0);
+    }
+    expect(search(".award-row-grid").html()).toBe(browse(".award-row-grid").html());
+    expect(row).toEqual(before);
+  });
+
+  it.each([
+    { suffix: " — closed cycle", expectedNote: "Closed cycle", forbiddenNote: "Deadline passed" },
+    { suffix: "", expectedNote: "Deadline passed", forbiddenNote: "Closed cycle" },
+  ])("keeps both Gilman cycles and displays $expectedNote only from the corresponding evidence", ({ suffix, expectedNote, forbiddenNote }) => {
+    const row: SharedAwardCard = {
+      ...gilman, name: "Benjamin A. Gilman International Scholarship", deadline: null,
+      importantDates: [
+        "Application deadline — Fall 2026 cycle: October 1, 2026 at 11:59 p.m. (Pacific Time)" + suffix,
+        "Application deadline — Spring 2027 cycle: February 25, 2027 at 11:59 p.m. (Pacific Time)",
+      ],
+    };
+    const before = structuredClone(row);
+    for (const presets of [[], ["Gilman", true]]) {
+      const $ = load(renderRows([row], presets, false, "2026-11-01T15:00:00Z"));
+      const entries = $(".award-row-deadline > div");
+      expect(entries).toHaveLength(2);
+      expect(entries.map((_index, item) => $(item).attr("data-deadline-status")).get()).toEqual(["listed", "past"]);
+      expect(entries.find("dt").map((_index, item) => $(item).text()).get()).toEqual([
+        "Application · Spring 2027", "Application · Fall 2026",
+      ]);
+      expect(deadlineCells($.html())).toEqual([
+        "February 25, 2027 at 11:59 p.m. (Pacific Time)", "October 1, 2026 at 11:59 p.m. (Pacific Time)",
+      ]);
+      expect(entries.first().find('dd[class*="deadlineStatus"]')).toHaveLength(0);
+      expect(entries.last().find('dd[class*="deadlineStatus"]').text()).toBe(expectedNote);
+      expect(entries.last().text()).not.toContain(forbiddenNote);
+      expect(entries.last().find('[class*="pastDeadline"]')).toHaveLength(1);
+      expect(entries.last().find(".sr-only").text()).toBe(" (deadline has passed)");
+    }
+    expect(row).toEqual(before);
+  });
+
+  it("keeps both Boren tracks while omitting unstated time fields", () => {
+    const row: SharedAwardCard = {
+      ...goldwater, name: "Boren Scholarships and Fellowships",
+      deadline: "Application deadline — Undergraduate Scholarships: January 27, 2027",
+      importantDates: ["Application deadline — Graduate Fellowships: January 20, 2027"],
+    };
+    for (const presets of [[], ["Boren", true]]) {
+      const $ = load(renderRows([row], presets));
+      expect($(".award-row-deadline dt").map((_index, element) => $(element).text()).get()).toEqual([
+        "Application · Undergraduate Scholarships", "Application · Graduate Fellowships",
+      ]);
+      expect(deadlineCells($.html())).toEqual(["January 27, 2027", "January 20, 2027"]);
+      expect($('.award-row-deadline dd[class*="deadlineTime"]')).toHaveLength(0);
+      expect($(".award-row-deadline").text()).not.toMatch(/midnight|noon|a\.m\.|p\.m\.|Time not/);
+    }
+  });
+
+  it.each([false, true])("preserves unconfirmed and route-specific fallbacks without inventing facts (routes: %s)", (hasApplicationRoutes) => {
+    const row: SharedAwardCard = { ...goldwater, name: "Tillman Scholars Program", deadline: null, importantDates: [], hasApplicationRoutes };
+    for (const presets of [[], ["Tillman", true]]) {
+      const $ = load(renderRows([row], presets));
+      const panel = $(".award-row-deadline");
+      expect(panel.find("dt").text()).toBe(hasApplicationRoutes ? "Route deadlines" : "Deadline · Unconfirmed");
+      expect(panel.find("dd").text()).toBe(hasApplicationRoutes ? "View route deadlines" : "Not listed");
+      expect(panel.find('dd[class*="deadlineTime"], dd[class*="deadlineStatus"]')).toHaveLength(0);
+      expect(panel.find("[data-deadline-status]")).toHaveLength(0);
+    }
+  });
+
+  it.each([false, true])("makes the full browse/search card one real award link with one visual action (signed in: %s)", (isAuthenticated) => {
+    const row = { ...goldwater, name: "Goldwater Scholarship with a complete long institutional program title", deadline: "January 27, 2027" };
+    const browse = load(renderRows([row], [], isAuthenticated));
+    const search = load(renderRows([row], ["Goldwater", true], isAuthenticated));
+    for (const [$, selector] of [[browse, "a.award-row-summary"], [search, "a.award-search-option"]] as const) {
+      const link = $(selector);
+      expect(link).toHaveLength(1);
+      expect(link.attr("href")).toBe(row.publicPath);
+      expect(link.find("button, a, [role='button'], [role='link']")).toHaveLength(0);
+      expect(link.find(".button-primary")).toHaveLength(1);
+      expect(link.find(".button-primary").prop("tagName")).toBe("SPAN");
+      expect(link.find(".button-primary").text()).toBe("View award");
+      expect(link.find(".award-row-grid > div").first().text()).toBe(row.name);
+    }
+    expect(search(".award-row-grid").html()).toBe(browse(".award-row-grid").html());
   });
 });
 
