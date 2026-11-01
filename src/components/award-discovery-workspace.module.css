@@ -2,6 +2,10 @@
   container: award-cards / inline-size;
 }
 
+.cardContainer:global(.award-search-results) {
+  max-height: min(32rem, 65dvh);
+}
+
 .cardList {
   display: grid;
   grid-auto-rows: 1fr;
