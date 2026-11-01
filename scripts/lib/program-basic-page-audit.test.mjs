@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { parse } from "libpg-query";
-import { auditProgramBasicPage, inspectProgramBasicPageAudit, loadProgramBasicPageAuditAwards, persistProgramBasicPageAudit } from "./program-basic-page-audit.mjs";
+import { auditProgramBasicPage, inspectProgramBasicPageAudit, loadProgramBasicPageAuditAwards, loadLegacyPageAuditAwards, persistProgramBasicPageAudit } from "./program-basic-page-audit.mjs";
 import { buildProgramTextCapture } from "./program-text-capture-contract.mjs";
 import { programTextReference } from "./program-text-artifacts.mjs";
 import { basicAwardFactPublicValues, BASIC_AWARD_FACT_SCHEMA } from "./basic-award-facts.mjs";
@@ -103,6 +103,62 @@ describe("current published basic-details page audit", () => {
   });
 });
 
+describe("legacy page audit selection beside the modern journal", () => {
+  const id = index => `aaaaaaaa-aaaa-4aaa-8aaa-${index.toString(16).padStart(12, "0")}`;
+  function database(modernCount, legacyCount) {
+    const modern = Array.from({ length: modernCount }, (_, index) => ({ id: id(index + 1), created: index }));
+    const legacy = Array.from({ length: legacyCount }, (_, index) => ({ id: id(index + 1000), created: modernCount + index,
+      regression_evaluation: { revision: `saved-${index}`, sources: [] } }));
+    const attempted = new Map();
+    const rpc = vi.fn(async (_name, parameters) => ({ data: [...modern, ...legacy].sort((left, right) => {
+      const leftAt = attempted.get(left.id) ?? Number.NEGATIVE_INFINITY, rightAt = attempted.get(right.id) ?? Number.NEGATIVE_INFINITY;
+      return (leftAt === rightAt ? 0 : leftAt < rightAt ? -1 : 1) || left.created - right.created;
+    }).slice(0, parameters.p_limit), error: null }));
+    return { modern, legacy, attempted, rpc };
+  }
+  it("returns a full legacy batch past 35 untouched modern cursors and keeps rotating legacy awards", async () => {
+    const db = database(35, 50), scope = { limit: 25, registeredAwardIds: db.modern.map(row => row.id) };
+    const first = await loadLegacyPageAuditAwards(db, scope);
+    expect(first).toHaveLength(25); expect(db.rpc.mock.calls[0]).toEqual(["list_shared_awards_for_regression_audit", {
+      p_limit: 60, p_slugs: null, p_include_deferred: false,
+    }]);
+    for (const row of first) db.attempted.set(row.id, 1);
+    const second = await loadLegacyPageAuditAwards(db, scope);
+    expect(second).toHaveLength(25); expect(new Set([...first, ...second].map(row => row.id)).size).toBe(50);
+    for (const row of second) db.attempted.set(row.id, 2);
+    expect((await loadLegacyPageAuditAwards(db, scope)).map(row => row.id)).toEqual(first.map(row => row.id));
+    expect(db.modern.every(row => !db.attempted.has(row.id))).toBe(true);
+    expect(first[0]).toBe(db.legacy[0]); // Keep immutable evaluation envelopes untouched.
+  });
+  it("still reaches 25 legacy awards when a future 100-program roster leads the selector", async () => {
+    const db = database(100, 50);
+    const rows = await loadLegacyPageAuditAwards(db, { registeredAwardIds: db.modern.map(row => row.id) });
+    expect(rows.map(row => row.id)).toEqual(db.legacy.slice(0, 25).map(row => row.id));
+    expect(db.rpc.mock.calls[0][1].p_limit).toBe(125);
+  });
+  it("caps the selector response and returned legacy batch at the existing 250-row boundary", async () => {
+    const db = database(100, 300);
+    const rows = await loadLegacyPageAuditAwards(db, { limit: 250, registeredAwardIds: db.modern.map(row => row.id) });
+    expect(db.rpc.mock.calls[0][1].p_limit).toBe(250); expect(rows.length).toBeLessThanOrEqual(250);
+    expect(rows.every(row => !db.modern.some(modern => modern.id === row.id))).toBe(true);
+  });
+  it.each([false, true])("preserves explicit canary slugs and deferred selection: %s", async includeDeferred => {
+    const canary = { id: id(1000), slug: "legacy-canary", deferred: true, regression_evaluation: { sources: [] } };
+    const rpc = vi.fn(async (_name, parameters) => ({ data: parameters.p_include_deferred ? [canary] : [], error: null }));
+    const rows = await loadLegacyPageAuditAwards({ rpc }, { limit: 1, slugs: ["legacy-canary"], includeDeferred, registeredAwardIds: [id(1)] });
+    expect(rpc).toHaveBeenCalledExactlyOnceWith("list_shared_awards_for_regression_audit", {
+      p_limit: 2, p_slugs: ["legacy-canary"], p_include_deferred: includeDeferred,
+    });
+    expect(rows).toEqual(includeDeferred ? [canary] : []);
+  });
+  it("rejects malformed or duplicate selector rows and retains transport failures", async () => {
+    for (const data of [null, [{ id: "foreign" }], [{ id: id(1) }, { id: id(1) }]]) {
+      await expect(loadLegacyPageAuditAwards({ rpc: async () => ({ data, error: null }) })).rejects.toThrow("invalid bounded award array");
+    }
+    await expect(loadLegacyPageAuditAwards({ rpc: async () => ({ error: { message: "selector unavailable" } }) })).rejects.toThrow("selector unavailable");
+  });
+});
+
 describe("basic page audit database boundary", () => {
   const sql = readFileSync(new URL("../../supabase/migrations/20261101061309_program_basic_page_audit_observations.sql", import.meta.url), "utf8");
   it("parses all additive journal and CAS functions", async () => { expect((await parse(sql)).stmts.length).toBeGreaterThan(5); });
@@ -117,7 +173,8 @@ describe("basic page audit database boundary", () => {
   });
   it("routes modern programs away from the legacy fact reconciler", () => {
     const runner = readFileSync(new URL("../evaluate-public-page-audit-canaries.mjs", import.meta.url), "utf8");
-    expect(runner).toContain("...data.filter(award => !basic.registered_award_ids.includes(award.id))");
+    expect(runner).toContain("registeredAwardIds: basic.registered_award_ids");
+    expect(runner).toContain("const legacy = await loadLegacyPageAuditAwards(supabase");
     expect(runner).toContain('purpose: "current_published_basic_details"');
     expect(runner).toContain("if (apply && !award.basic_page_audit_target)");
   });

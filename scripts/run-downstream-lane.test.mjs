@@ -46,8 +46,9 @@ describe("independent downstream lane runner", () => {
       "utf8",
     );
 
-    expect(source).toContain('supabase.rpc("list_shared_awards_for_regression_audit"');
-    expect(source).toContain("p_include_deferred: dryRun || slugs.length > 0");
+    const helper = readFileSync(resolve(import.meta.dirname, "lib/program-basic-page-audit.mjs"), "utf8");
+    expect(helper).toContain('supabase.rpc("list_shared_awards_for_regression_audit"');
+    expect(source).toContain("includeDeferred: dryRun || slugs.length > 0");
     expect(source).toContain("await persistAuditResult(award, reconciliation, audit)");
     expect(source).toContain('supabase.rpc("record_shared_award_regression_audit"');
     expect(source).toContain("observation_only: true");

@@ -136,6 +136,24 @@ export async function loadProgramBasicPageAuditAwards(supabase, { limit = 25, sl
   return data;
 }
 
+/** Modern programs keep their own cursor. Include enough extra legacy-selector
+ * rows to get past those unchanged modern cursors before applying our own bound.
+ * Preserve the service selector's ordering, explicit scope and retry/backoff.
+ */
+export async function loadLegacyPageAuditAwards(supabase, { limit = 25, slugs = null, includeDeferred = false, registeredAwardIds = [] } = {}) {
+  check(Number.isSafeInteger(limit) && limit > 0 && Array.isArray(registeredAwardIds) && registeredAwardIds.every(uuid) &&
+    new Set(registeredAwardIds).size === registeredAwardIds.length && typeof includeDeferred === "boolean", "invalid_legacy_audit_scope");
+  const requested = Math.min(limit, 250), excluded = new Set(registeredAwardIds);
+  const overfetch = Math.min(250, requested + excluded.size);
+  const { data, error } = await supabase.rpc("list_shared_awards_for_regression_audit", {
+    p_limit: overfetch, p_slugs: slugs, p_include_deferred: includeDeferred,
+  });
+  if (error) throw new Error(`Load awards failed: ${error.message}`);
+  if (!Array.isArray(data) || data.length > overfetch || data.some(row => !uuid(row?.id)) ||
+      new Set(data.map(row => row.id)).size !== data.length) throw new Error("Load awards failed: selector returned an invalid bounded award array.");
+  return data.filter(award => !excluded.has(award.id)).slice(0, requested);
+}
+
 /** Inspect one selected identity at a time so neither SQL nor the worker holds
  * an entire batch of expensive currentness/evidence payloads in memory. */
 export async function inspectProgramBasicPageAudit(supabase, target) {

@@ -15,6 +15,7 @@ import {
   auditProgramBasicPage,
   inspectProgramBasicPageAudit,
   loadProgramBasicPageAuditAwards,
+  loadLegacyPageAuditAwards,
   persistProgramBasicPageAudit,
 } from "./lib/program-basic-page-audit.mjs";
 import {
@@ -268,20 +269,19 @@ async function loadAwards() {
   const basic = await loadProgramBasicPageAuditAwards(supabase, {
     limit: slugs.length || sampleSize, slugs: slugs.length ? slugs : null,
   });
-  const { data, error } = await supabase.rpc("list_shared_awards_for_regression_audit", {
-    p_limit: slugs.length || sampleSize,
-    p_slugs: slugs.length ? slugs : null,
-    p_include_deferred: dryRun || slugs.length > 0,
+  const legacy = await loadLegacyPageAuditAwards(supabase, {
+    limit: slugs.length || sampleSize,
+    slugs: slugs.length ? slugs : null,
+    includeDeferred: dryRun || slugs.length > 0,
+    registeredAwardIds: basic.registered_award_ids,
   });
-  if (error) throw new Error(`Load awards failed: ${error.message}`);
   // `--all=true` selects from the whole active catalog, but each leased run is
   // intentionally bounded. The service-only selector keeps its cursor and
   // retry/backoff state outside shared_awards so operational scans cannot
   // perturb public facts, structure freshness, or Stage 1 review hashes.
-  if (!Array.isArray(data)) throw new Error("Load awards failed: selector returned no award array.");
   return [
     ...basic.awards.map(target => ({ id: target.award_id, name: target.name, slug: target.slug, basic_page_audit_target: target })),
-    ...data.filter(award => !basic.registered_award_ids.includes(award.id)),
+    ...legacy,
   ];
 }
 

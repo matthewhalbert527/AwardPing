@@ -449,7 +449,7 @@ describe("Stage 1 regression audit observations", () => {
     expect(runner).toContain("applied_to_public: false");
     expect(runner).not.toContain("async function publishReconciledFacts");
     expect(runner).not.toContain("public_facts: reconciliation.selectedFacts");
-    expect(runner).toContain(
+    expect(readFileSync(new URL("./lib/program-basic-page-audit.mjs", import.meta.url), "utf8")).toContain(
       'supabase.rpc("list_shared_awards_for_regression_audit"',
     );
     expect(runner).toContain("requireRegressionEvaluation(award)");
