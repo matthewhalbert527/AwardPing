@@ -161,7 +161,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-bold" id="release-lanes-title">Three downstream lanes</h3>
           <span className="text-xs font-bold text-[var(--muted)]">
-            {summary.lanes.filter((lane) => lane.status === "pass").length}/8 healthy
+            {summary.lanes.filter((lane) => lane.status === "pass").length}/{summary.lanes.length} healthy
           </span>
         </div>
         <ul className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">

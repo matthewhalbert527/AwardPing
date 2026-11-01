@@ -5,6 +5,20 @@ import { AdminStage1ReleaseGate } from "@/components/admin-stage1-release-gate";
 import type { Stage1ReleaseGateSummary } from "@/lib/stage1-release-gate-summary";
 
 describe("AdminStage1ReleaseGate", () => {
+  it("counts the configured downstream lanes", () => {
+    const summary = summaryFixture();
+    summary.lanes = [
+      { laneKey: "changed_page_review", label: "Changed page review", status: "pass", paid: true, expectedPaid: true, queueDepth: 0, detail: "Healthy" },
+      { laneKey: "page_audit", label: "Page audit", status: "pass", paid: false, expectedPaid: false, queueDepth: 0, detail: "Healthy" },
+      { laneKey: "nightly_report", label: "Coverage report", status: "hold", paid: false, expectedPaid: false, queueDepth: 0, detail: "Awaiting report" },
+    ];
+
+    const html = renderToStaticMarkup(createElement(AdminStage1ReleaseGate, { summary }));
+
+    expect(html).toContain("2/3 healthy");
+    expect(html).not.toContain("2/8 healthy");
+  });
+
   it("shows authoritative failures, Vault controls, and exact artifact bindings", () => {
     const html = renderToStaticMarkup(createElement(AdminStage1ReleaseGate, {
       summary: summaryFixture(),
