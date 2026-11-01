@@ -61,15 +61,18 @@ describe("downstream schedule cadence", () => {
       "function Copy-Item { param($LiteralPath,$Destination,[switch]$Force,$ErrorAction) }",
       "function New-ScheduledTaskAction { param($Execute,$Argument);[pscustomobject]@{Execute=$Execute;Argument=$Argument} }",
       "function New-ScheduledTaskTrigger { param([switch]$Daily,[switch]$Once,$At,$RepetitionInterval,$RepetitionDuration);[pscustomobject]@{StartBoundary=$At.ToString('o');Daily=[bool]$Daily;Once=[bool]$Once;Interval=if($RepetitionInterval){$RepetitionInterval.TotalMinutes}else{0}} }",
-      "function New-ScheduledTaskSettingsSet { param($MultipleInstances,[switch]$StartWhenAvailable,$ExecutionTimeLimit);[pscustomobject]@{ExecutionMinutes=$ExecutionTimeLimit.TotalMinutes;DisallowStartIfOnBatteries=$true;StopIfGoingOnBatteries=$true;Hidden=$false;Enabled=$true} }",
+      "function New-ScheduledTaskSettingsSet { param($MultipleInstances,[switch]$StartWhenAvailable,$ExecutionTimeLimit);[pscustomobject]@{MultipleInstances=$MultipleInstances;ExecutionMinutes=$ExecutionTimeLimit.TotalMinutes;DisallowStartIfOnBatteries=$true;StopIfGoingOnBatteries=$true;Hidden=$false;Enabled=$true} }",
       "$script:registered=@()",
-      "function Register-ScheduledTask { param($TaskName,$Action,$Trigger,$Settings,$Description,[switch]$Force);$script:registered+=[pscustomobject]@{Name=$TaskName;Trigger=$Trigger;Execution=$Settings.ExecutionMinutes;Enabled=$Settings.Enabled} }",
+      "function Register-ScheduledTask { param($TaskName,$Action,$Trigger,$Settings,$Description,[switch]$Force);$script:registered+=[pscustomobject]@{Name=$TaskName;Trigger=$Trigger;Execution=$Settings.ExecutionMinutes;Enabled=$Settings.Enabled;Instances=$Settings.MultipleInstances;Arguments=$Action.Argument} }",
       "Register-DownstreamLaneTasks -InstallRoot 'C:\\Fixture' -RegisterDisabled $true",
-      "$script:registered | ForEach-Object { 'TASK='+$_.Name+';INTERVAL='+$_.Trigger.Interval+';DAILY='+$_.Trigger.Daily+';START='+$_.Trigger.StartBoundary+';EXEC='+$_.Execution+';ENABLED='+$_.Enabled }",
+      "$script:registered | ForEach-Object { 'TASK='+$_.Name+';INTERVAL='+$_.Trigger.Interval+';DAILY='+$_.Trigger.Daily+';START='+$_.Trigger.StartBoundary+';EXEC='+$_.Execution+';ENABLED='+$_.Enabled+';INSTANCES='+$_.Instances+';ARGS='+$_.Arguments }",
     ].join("\n");
     const output = run(script);
     expect(output).toMatch(/TASK=AwardPing Changed Page Review Lane;INTERVAL=15;DAILY=False;START=.*;EXEC=12;ENABLED=False/);
     expect(output).toMatch(/TASK=AwardPing Page Audit Lane;INTERVAL=60;DAILY=False;START=.*T\d{2}:10:00Z;EXEC=8;ENABLED=False/);
     expect(output).toMatch(/TASK=AwardPing Coverage Report;INTERVAL=0;DAILY=True;START=.*T23:30:00Z;EXEC=6;ENABLED=False/);
+    expect(output).toMatch(/TASK=AwardPing Coverage Report;.*;INSTANCES=Queue;ARGS=.*-RunTrigger scheduled/);
+    expect(output).toMatch(/TASK=AwardPing Changed Page Review Lane;.*;INSTANCES=IgnoreNew/);
+    expect(output).toMatch(/TASK=AwardPing Page Audit Lane;.*;INSTANCES=IgnoreNew/);
   }, 20_000);
 });

@@ -84,7 +84,7 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
     `, 120000);
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(result.stdout);
-    expect(value.files).toHaveLength(38);
+    expect(value.files).toHaveLength(47);
     expect(value.files).toContain("scripts\\lib\\program-text-canonical-url-admission.mjs");
     for (const relative of ["scripts\\lib\\program-text-collection-quality.mjs", "scripts\\lib\\program-text-smart-guide-profiles.mjs",
       "scripts\\lib\\program-text-smart-guide-reviewed-model.mjs", "scripts\\lib\\program-text-smart-body-link.mjs"]) expect(value.files).toContain(relative);
@@ -148,6 +148,7 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
     const path = fixture(), env = join(path, "worker.env");
     writeFileSync(env, "INERT_FIXTURE=yes\r\n");
     const result = run(`${definitions(["ConvertTo-AwardPingSecurityIdentifier", "Get-AwardPingWorkerEnvAllowedSecurityIdentifiers", "Get-AwardPingProgramTextArchiveProblems", "Set-AwardPingProgramTextEnvironment"])}
+      function Get-AwardPingDailyCoverageBoundaryUtc { [DateTimeOffset]'2026-11-01T23:30:00Z' }
       Set-AwardPingProgramTextEnvironment -Path ${quote(env)} -InstallRoot ${quote(path)} -TaskSnapshots @()
       $archive = Join-Path ${quote(path)} 'runtime\\program-text-archive'
       $positive = @(Get-AwardPingProgramTextArchiveProblems -Path $archive -TaskSnapshots @())
@@ -166,7 +167,7 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
     expect(value.inherited).toBeGreaterThan(0);
     expect(value.protected).toBe(true);
     expect(value.tampered.join(" ")).toContain("unapproved SID S-1-1-0");
-    expect(readFileSync(env, "utf8")).toBe(`INERT_FIXTURE=yes\r\nAWARDPING_PROGRAM_TEXT_ARCHIVE=${join(path, "runtime/program-text-archive")}\r\n`);
+    expect(readFileSync(env, "utf8")).toBe(`INERT_FIXTURE=yes\r\nAWARDPING_PROGRAM_TEXT_ARCHIVE=${join(path, "runtime/program-text-archive")}\r\nAWARDPING_WORKER_DATA_ROOT=${join(path, "data")}\r\nAWARDPING_COLLECTION_ANCHOR_MINUTE_UTC=1380\r\n`);
   }, 60000);
 
   it("rejects a redirected archive ancestor before creating files or binding the environment", () => {

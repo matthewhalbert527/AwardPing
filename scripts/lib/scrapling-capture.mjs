@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { normalizePublicHttpUrl, startPublicNetworkProxy } from "./public-network-safety.mjs";
 import { finalizeCaptureNetworkBoundary } from "./capture-resource-limits.mjs";
+export { createScraplingBrowserSessionPool } from "./scrapling-session-process.mjs";
 import { scraplingPublisherJsonProfile, scraplingPublisherJsonObservationSchema, smartPublisherOwner,
   smartPublisherSources, validateScraplingPublisherJsonObservation } from "./program-text-publisher-json.mjs";
 export { scraplingPublisherJsonProfile, scraplingPublisherJsonObservationSchema, validateScraplingPublisherJsonObservation };
@@ -277,7 +278,7 @@ export function compareScraplingCaptures(previous, current) {
 
 /** Explicit finite opt-in; retains the same DNS/proxy/TLS/browser transport boundary. */
 export async function captureScraplingPublisherJson(source, { pythonPath, executablePath, timeoutMs = 90000,
-  publisherJsonProfile } = {}) {
+  publisherJsonProfile, browserSessionPool } = {}) {
   const spec = smartPublisherSources[source?.id];
   const expectedType = spec?.page_type ?? (spec?.request_page_id === null ? "homepage" : "eligibility");
   if (!spec || source.url !== spec.url || source.shared_award_id !== (spec.shared_award_id ?? smartPublisherOwner) ||
@@ -291,7 +292,7 @@ export async function captureScraplingPublisherJson(source, { pythonPath, execut
   let result, failure;
   try {
     result = await runCollectorProcess({ pythonPath, executablePath, source, proxyUrl: proxy.url, timeoutMs,
-      captureProfile: scraplingCaptureProfile, browserDiagnostics: false, publisherJsonProfile });
+      captureProfile: scraplingCaptureProfile, browserDiagnostics: false, publisherJsonProfile, browserSessionPool });
     result = validateScraplingPublisherJsonObservation(result, { source });
   } catch (error) { failure = error; }
   finally {
@@ -304,7 +305,7 @@ export async function captureScraplingPublisherJson(source, { pythonPath, execut
 
 /** Scrapling owns fetching/extraction; this small bridge retains the existing egress boundary. */
 export async function captureScraplingSource(source, { pythonPath, executablePath, timeoutMs = 90000, captureProfile = scraplingCaptureProfile,
-  browserDiagnostics = false } = {}) {
+  browserDiagnostics = false, browserSessionPool } = {}) {
   publicUrl(source.url);
   const sourceOnly = captureProfile === scraplingSourceHtmlProfile;
   if (!pythonPath || (!sourceOnly && !executablePath) || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000 ||
@@ -317,7 +318,7 @@ export async function captureScraplingSource(source, { pythonPath, executablePat
   let result;
   let failure;
   try {
-    result = await runCollectorProcess({ pythonPath, executablePath, source, proxyUrl: proxy.url, timeoutMs, captureProfile, browserDiagnostics });
+    result = await runCollectorProcess({ pythonPath, executablePath, source, proxyUrl: proxy.url, timeoutMs, captureProfile, browserDiagnostics, browserSessionPool });
     result = validateScraplingCapture(result, { source });
     if (result.capture_profile !== captureProfile) fail("capture_profile_mismatch");
   } catch (error) { failure = error; }
@@ -329,7 +330,16 @@ export async function captureScraplingSource(source, { pythonPath, executablePat
   return result;
 }
 
-function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, timeoutMs, captureProfile, browserDiagnostics, publisherJsonProfile }) {
+function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, timeoutMs, captureProfile, browserDiagnostics, publisherJsonProfile, browserSessionPool }) {
+  const request = { url: source.url, source_id: source.id, proxy_url: proxyUrl, executable_path: executablePath || "",
+    ...(captureProfile !== scraplingCaptureProfile ? { capture_profile: captureProfile } : {}),
+    ...(publisherJsonProfile ? { publisher_json_profile: publisherJsonProfile, shared_award_id: source.shared_award_id,
+      ...(smartPublisherSources[source.id]?.title ? { source_title: source.title, source_page_type: source.page_type } : {}) } : {}),
+    ...(browserDiagnostics ? { diagnostic_mode: "browser-transport-v1" } : {}) };
+  if (browserSessionPool && captureProfile !== scraplingSourceHtmlProfile) {
+    if (typeof browserSessionPool.capture !== "function") fail("invalid_collector_session_state");
+    return browserSessionPool.capture({ pythonPath, executablePath, timeoutMs, request, publisherJsonProfile });
+  }
   return new Promise((resolve, reject) => {
     const env = Object.fromEntries(["SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PATH", "COMSPEC", "PATHEXT"]
       .filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
@@ -374,10 +384,6 @@ function runCollectorProcess({ pythonPath, executablePath, source, proxyUrl, tim
         resolve(value);
       } catch (error) { reject(error?.pilotReason ? error : Object.assign(new Error("invalid_collector_output"), { pilotReason: "invalid_collector_output" })); }
     });
-    child.stdin.end(JSON.stringify({ url: source.url, source_id: source.id, proxy_url: proxyUrl, executable_path: executablePath || "",
-      ...(captureProfile !== scraplingCaptureProfile ? { capture_profile: captureProfile } : {}),
-      ...(publisherJsonProfile ? { publisher_json_profile: publisherJsonProfile, shared_award_id: source.shared_award_id,
-        ...(smartPublisherSources[source.id]?.title ? { source_title: source.title, source_page_type: source.page_type } : {}) } : {}),
-      ...(browserDiagnostics ? { diagnostic_mode: "browser-transport-v1" } : {}) }));
+    child.stdin.end(JSON.stringify(request));
   });
 }

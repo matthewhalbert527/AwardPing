@@ -8,7 +8,9 @@ param(
   )]
   [string]$Lane,
   [ValidateRange(2, 120)]
-  [int]$TimeoutMinutes = 10
+  [int]$TimeoutMinutes = 10,
+  [ValidateSet("scheduled", "manual")]
+  [string]$RunTrigger = "manual"
 )
 
 $ErrorActionPreference = "Stop"
@@ -268,6 +270,7 @@ try {
       "`"$LaneScript`"",
       "--env=.env.worker.local",
       "--lane=$Lane",
+      "--run-trigger=$RunTrigger",
       "--time-budget-ms=$timeBudgetMs"
     ) `
     -WorkingDirectory $AppDir `

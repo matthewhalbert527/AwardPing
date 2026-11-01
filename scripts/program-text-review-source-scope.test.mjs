@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const shared = vi.hoisted(() => ({ sources: [], roles: [], config: null, db: null, repository: null,
-  captures: [], submissions: [], polls: [], destroyed: 0, closed: 0 }));
+  captures: [], submissions: [], polls: [], destroyed: 0, closed: 0, probeRows: [] }));
 vi.mock("node:fs", async original => {
   const actual = await original();
   return { ...actual,
@@ -19,6 +19,7 @@ vi.mock("./lib/program-text-repository.mjs", () => ({ createProgramTextRepositor
 vi.mock("./lib/program-text-provider.mjs", () => ({
   submitProgramTextBatch: async row => { shared.submissions.push(row); throw new Error("No paid submission is allowed"); },
   pollProgramTextBatch: async row => { shared.polls.push(row); throw new Error("No provider poll is allowed"); } }));
+vi.mock("./lib/program-text-host-pacing.mjs", () => ({ createProgramTextHostPacer: () => ({ run: async (_urls, action) => action() }) }));
 vi.mock("./lib/program-text-monitor.mjs", () => ({
   monitorProgramTextSource: async ({ source }) => { shared.captures.push(source.id); return { status: "baseline_ready", initial_coverage: true }; },
   finalizeProgramTextReview: async () => { throw new Error("Unexpected review finalization in empty-queue fixture"); } }));
@@ -41,6 +42,12 @@ function readonlyDatabase() {
     if (name === "get_program_variation_admin_batch") return { data: emptyVariationBatchFixture() };
     if (name !== "get_program_text_fact_review_batch") throw new Error("Unexpected RPC"); return { data: [] };
   }, from(table) {
+    if (table === "shared_award_visual_review_candidates") {
+      calls.push({ table, probe: true });
+      const query = { select() { return query; }, eq() { return query; }, is() { return query; }, in() { return query; }, limit() { return query; },
+        then(yes, no) { return Promise.resolve({ data: shared.probeRows }).then(yes, no); } };
+      return query;
+    }
     if (!["program_text_source_roster", "shared_award_sources"].includes(table)) throw new Error("Unexpected database table");
     const call = { table, ids: null }; calls.push(call);
     const query = { select() { return query; }, order() { return query; }, limit() { return query; },
@@ -57,6 +64,7 @@ beforeEach(() => {
     evidence: { schema: "awardping.program-text-source-role.v1", source_bindings: { [source.id]: { source_url: source.url, shared_award_id: source.shared_award_id } } } }));
   shared.config = { schema: "awardping.program-text-monitoring.v1", epoch, enabled: true, sources: {} };
   shared.db = readonlyDatabase(); shared.repository = { listCandidates: vi.fn(async () => []) };
+  shared.probeRows = [{ id: owner }];
   shared.captures = []; shared.submissions = []; shared.polls = []; shared.destroyed = 0; shared.closed = 0;
   for (const [key, value] of Object.entries({ NEXT_PUBLIC_SUPABASE_URL: "https://fixture.invalid", SUPABASE_SERVICE_ROLE_KEY: "fake-never-sent",
     R2_BUCKET: "private-bucket", R2_ENDPOINT: "https://fixture.invalid", R2_ACCESS_KEY_ID: "fake-never-sent",
@@ -66,6 +74,16 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("review candidate limit is not a required-source limit", () => {
+  it("exits an empty queue before roster enumeration, storage setup or provider configuration", async () => {
+    shared.probeRows = [];
+    for (const key of ["R2_BUCKET", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "GEMINI_API_KEY"]) vi.stubEnv(key, "");
+    const report = await runProgramTextWorker(["--mode=review", "--apply=true"]);
+    expect(report).toMatchObject({ queue_state: "idle", roster_checked: false, selected_sources: 0, roster_seal: null, coverage: [], results: [] });
+    expect(shared.db.calls).toEqual([{ table: "shared_award_visual_review_candidates", probe: true }]);
+    expect(shared.repository.listCandidates).not.toHaveBeenCalled();
+    expect(shared.destroyed).toBe(0); expect(shared.closed).toBe(1);
+    expect(shared.captures).toEqual([]); expect(shared.submissions).toEqual([]); expect(shared.polls).toEqual([]); expect(fetch).not.toHaveBeenCalled();
+  });
   it.each([1, 100, 50000])("reviews the complete124-source scope while capping candidates for --limit=%i", async limit => {
     const report = await runProgramTextWorker(["--mode=review", "--apply=true", `--limit=${limit}`]);
     expect(shared.repository.listCandidates).toHaveBeenCalledExactlyOnceWith(["pending", "submitted", "succeeded"], Math.min(limit, 100),

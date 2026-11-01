@@ -290,7 +290,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Coverage Report",
     label: "Coverage Report",
     detail:
-      "Daily, 30 minutes after the scheduled collection start: reports approved-source coverage and current core details. Also available on demand; late or incomplete collection remains visible.",
+      "After all three scheduled collectors finish: reports approved-source coverage and current core details once per cycle. A daily recovery check reports expired incomplete cycles. Also available on demand.",
     cost: "$0 direct AI/API cost.",
   },
   {

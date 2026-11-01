@@ -73,6 +73,29 @@ describe("Scrapling runtime startup binding", () => {
     expect(Object.isFrozen(result)).toBe(true);
   });
 
+  it("reuses a raw-bound runtime for equivalent pins while retaining both exact raw hashes", () => {
+    const f = fixture(), receiptBefore = readFileSync(f.receiptPath);
+    const changed = Buffer.from("# same exact dependencies, different layout\r\nplaywright==1.64.0\r\nscrapling[fetchers]==0.4.15\r\n");
+    put(join(f.appDir, "scripts/scrapling/requirements.txt"), changed);
+    Object.assign(f.binding, { schema: "awardping.scrapling-installation.v2", requirements_sha256: hash(changed),
+      runtime_requirements_sha256: f.receipt.requirements_sha256,
+      requirements_pins_sha256: hash("playwright==1.64.0\nscrapling[fetchers]==0.4.15\n") });
+    json(f.bindingPath, f.binding);
+    expect(f.verify().runtimeRoot).toBe(f.runtimeRoot);
+    expect(readFileSync(f.receiptPath)).toEqual(receiptBefore);
+    f.binding.requirements_pins_sha256 = "f".repeat(64); json(f.bindingPath, f.binding);
+    expect(() => f.verify()).toThrow("dependency identity mismatch");
+  });
+
+  it.each(["scrapling[other]==0.4.15\nplaywright==1.64.0\n", "scrapling[fetchers]==0.4.14\nplaywright==1.64.0\n"])("rejects reused runtime after a real dependency specification change", changed => {
+    const f = fixture();
+    put(join(f.appDir, "scripts/scrapling/requirements.txt"), changed);
+    Object.assign(f.binding, { schema: "awardping.scrapling-installation.v2", requirements_sha256: hash(changed),
+      runtime_requirements_sha256: f.receipt.requirements_sha256, requirements_pins_sha256: "f".repeat(64) });
+    json(f.bindingPath, f.binding);
+    expect(() => f.verify()).toThrow(/dependency identity mismatch|package pin mismatch/);
+  });
+
   it("rejects a different configured interpreter even if its bytes match", () => {
     const f = fixture();
     const other = join(f.root, "other-python.exe");

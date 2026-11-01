@@ -69,6 +69,13 @@ describe("independent downstream lane runner", () => {
     expect(changed.args).toContain("--limit=100");
   });
 
+  it("gates scheduled coverage reports while keeping explicit manual reporting available", () => {
+    expect(commandForDownstreamLane("nightly_report").args).toContain("--run-trigger=manual");
+    expect(commandForDownstreamLane("nightly_report", { runTrigger: "scheduled" }).args).toContain("--run-trigger=scheduled");
+    expect(commandForDownstreamLane("changed_page_review", { runTrigger: "scheduled" }).args).not.toContain("--run-trigger=scheduled");
+    expect(() => commandForDownstreamLane("nightly_report", { runTrigger: "unknown" })).toThrow("run trigger");
+  });
+
   it("all text lane arguments are accepted by the real strict CLI parser", () => {
     for (const lane of Object.keys(downstreamLaneDefinitions).filter(key => key !== "page_audit")) {
       const command = commandForDownstreamLane(lane, { envFile: "fixture.env", timeBudgetMs: 600_000 });

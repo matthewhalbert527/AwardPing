@@ -198,12 +198,30 @@ function Get-CommandPath {
   return $null
 }
 
+function Assert-AwardPingNodeRuntime {
+  param([string]$NodePath)
+  $version = @(& $NodePath --version 2>$null) | Select-Object -First 1
+  if ($LASTEXITCODE -ne 0 -or [string]$version -notmatch '^v(\d+)\.(\d+)\.(\d+)$' -or
+      [int]$Matches[1] -lt 22 -or ([int]$Matches[1] -eq 22 -and [int]$Matches[2] -lt 13)) {
+    throw "AwardPing requires Node.js 22.13 or newer with built-in SQLite support. Update Node.js LTS before installing worker code."
+  }
+  $probe = "import { DatabaseSync } from 'node:sqlite'; const db=new DatabaseSync(':memory:'); db.exec('select 1'); db.close();"
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $null = & $NodePath --no-warnings --input-type=module -e $probe 2>$null
+    $probeExit = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $previousPreference }
+  if ($probeExit -ne 0) { throw "This Node.js runtime cannot use built-in SQLite without flags. Update Node.js LTS before installing worker code." }
+}
+
 function Ensure-Node {
   Write-Step "Checking Node.js"
   $nodePath = Get-CommandPath "node.exe"
   $npmPath = Get-CommandPath "npm.cmd"
 
   if ($nodePath -and $npmPath) {
+    Assert-AwardPingNodeRuntime -NodePath $nodePath
     $version = (& node --version)
     Write-Host "Found Node.js $version"
     return
@@ -230,6 +248,8 @@ function Ensure-Node {
   if (-not $nodePath -or -not $npmPath) {
     throw "Node.js installed, but this terminal cannot see node/npm yet. Close this window and run the installer again."
   }
+
+  Assert-AwardPingNodeRuntime -NodePath $nodePath
 
   Write-Host "Installed Node.js $(& node --version)"
 }
@@ -805,11 +825,25 @@ function Set-AwardPingProgramTextEnvironment {
   [IO.Directory]::SetAccessControl($archive, $acl)
   $problems = @(Get-AwardPingProgramTextArchiveProblems -Path $archive -TaskSnapshots $TaskSnapshots)
   if ($problems.Count -gt 0) { throw "Private program text archive did not validate: $($problems -join ' | ')" }
+  $dataRoot = Join-Path ([IO.Path]::GetFullPath($InstallRoot)) "data"
+  $cursor = $dataRoot
+  while ($cursor) {
+    if ((Test-Path -LiteralPath $cursor) -and ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Worker data root traverses a reparse point: $cursor" }
+    $cursor = Split-Path -Parent $cursor
+  }
+  [void](New-Item -ItemType Directory -Path $dataRoot -Force -ErrorAction Stop)
+  [IO.Directory]::SetAccessControl($dataRoot, $acl)
+  # Read the actual installed collector clock, including equivalent offset XML.
+  $coverageBoundary = Get-AwardPingDailyCoverageBoundaryUtc -InstallRoot $InstallRoot
+  $anchorMinute = ([int]$coverageBoundary.UtcDateTime.TimeOfDay.TotalMinutes + 1440 - 30) % 1440
   $content = [IO.File]::ReadAllText($Path)
-  $line = "AWARDPING_PROGRAM_TEXT_ARCHIVE=$archive"
-  if ($content -match '(?m)^AWARDPING_PROGRAM_TEXT_ARCHIVE=') {
-    $content = [regex]::Replace($content, '(?m)^AWARDPING_PROGRAM_TEXT_ARCHIVE=[^\r\n]*', [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $line })
-  } else { $content = $content.TrimEnd("`r", "`n") + "`r`n$line`r`n" }
+  foreach ($setting in @("AWARDPING_PROGRAM_TEXT_ARCHIVE=$archive", "AWARDPING_WORKER_DATA_ROOT=$dataRoot", "AWARDPING_COLLECTION_ANCHOR_MINUTE_UTC=$anchorMinute")) {
+    $key = ($setting -split '=', 2)[0]
+    if ($content -match "(?m)^$key=") {
+      $line = $setting
+      $content = [regex]::Replace($content, "(?m)^$key=[^\r\n]*", [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $line })
+    } else { $content = $content.TrimEnd("`r", "`n") + "`r`n$setting`r`n" }
+  }
   [IO.File]::WriteAllText($Path, $content, [Text.UTF8Encoding]::new($false))
 }
 
@@ -1303,6 +1337,10 @@ function Get-AwardPingManagedTaskScheduleProblems {
       }
 
       $actions = @($document.SelectNodes("/task:Task/task:Actions/task:Exec", $namespace))
+      if ($definition.Kind -eq "coverage") {
+        $instances = $document.SelectSingleNode("/task:Task/task:Settings/task:MultipleInstancesPolicy", $namespace)
+        if (-not $instances -or $instances.InnerText -ne "Queue") { $problems += "coverage report must queue completion requests behind its recovery check" }
+      }
       if ($actions.Count -ne 1) {
         $problems += "noncanonical action count for $($definition.TaskName): expected 1, found $($actions.Count)"
         continue
@@ -1324,7 +1362,8 @@ function Get-AwardPingManagedTaskScheduleProblems {
         if (
           $arguments.IndexOf($expectedWrapper, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -or
           $arguments -notmatch "(?i)(?:^|\s)-Lane\s+$([regex]::Escape([string]$definition.Lane))(?:\s|$)" -or
-          $arguments -notmatch "(?i)(?:^|\s)-TimeoutMinutes\s+$([int]$definition.TimeoutMinutes)(?:\s|$)"
+          $arguments -notmatch "(?i)(?:^|\s)-TimeoutMinutes\s+$([int]$definition.TimeoutMinutes)(?:\s|$)" -or
+          $arguments -notmatch "(?i)(?:^|\s)-RunTrigger\s+scheduled(?:\s|$)"
         ) {
           $problems += "noncanonical lane action for $($definition.TaskName)"
         }
@@ -1374,6 +1413,15 @@ function Get-AwardPingProgramTextRuntimeRelativePaths {
     "scripts\lib\program-text-monitor.mjs",
     "scripts\lib\program-text-collection-quality.mjs",
     "scripts\lib\program-text-repository.mjs",
+    "scripts\lib\program-text-review-queue.mjs",
+    "scripts\lib\program-text-cycle-runner.mjs",
+    "scripts\lib\program-text-collection-cycle.mjs",
+    "scripts\lib\program-text-host-pacing.mjs",
+    "scripts\lib\scrapling-session-process.mjs",
+    "scripts\lib\program-basic-page-audit.mjs",
+    "scripts\lib\basic-award-facts.mjs",
+    "scripts\lib\program-text-facts.mjs",
+    "scripts\lib\current-basic-source-proof.mjs",
     "scripts\lib\program-text-provider.mjs",
     "scripts\lib\gemini-worker-policy.mjs",
     "scripts\lib\lane-failure-receipt.mjs"
@@ -1529,6 +1577,14 @@ function Get-AwardPingInstalledRuntimeProblems {
     $workerEnv = Read-WorkerEnvValues -Path $workerEnvPath
     if ($RequireManagedRuntime) {
       $problems += @(Get-AwardPingProgramTextArchiveProblems -Path ([string]$workerEnv["AWARDPING_PROGRAM_TEXT_ARCHIVE"]) -TaskSnapshots $TaskSnapshots)
+      $expectedDataRoot = Join-Path ([IO.Path]::GetFullPath($InstallRoot)) 'data'
+      if ([string]$workerEnv['AWARDPING_WORKER_DATA_ROOT'] -ine $expectedDataRoot) { $problems += 'worker data root must be the installed durable data directory' }
+      else { $problems += @(Get-AwardPingProgramTextArchiveProblems -Path $expectedDataRoot -TaskSnapshots $TaskSnapshots) }
+      try {
+        $coverageBoundary = Get-AwardPingDailyCoverageBoundaryUtc -InstallRoot $InstallRoot
+        $anchorMinute = ([int]$coverageBoundary.UtcDateTime.TimeOfDay.TotalMinutes + 1440 - 30) % 1440
+        if ([string]$workerEnv['AWARDPING_COLLECTION_ANCHOR_MINUTE_UTC'] -cne [string]$anchorMinute) { $problems += 'collection cycle anchor does not match the installed collector clock' }
+      } catch { $problems += "could not verify collection cycle anchor: $($_.Exception.Message)" }
     }
     if ($workerEnv["AWARDPING_SCRAPLING_MANIFEST"] -or $workerEnv["AWARDPING_SCRAPLING_PYTHON"]) {
       try {
@@ -1945,30 +2001,66 @@ function Copy-AwardPingMutableAppState {
     [string]$StagingAppDir
   )
 
-  Copy-Item `
+  $currentApp = [IO.Path]::GetFullPath($CurrentAppDir).TrimEnd('\', '/')
+  $stagingApp = [IO.Path]::GetFullPath($StagingAppDir).TrimEnd('\', '/')
+  $install = Split-Path -Parent $currentApp
+  if ((Split-Path -Parent $stagingApp) -cne $install -or $currentApp -ceq $install) { throw "Mutable app migration requires sibling app directories inside one installation." }
+  foreach ($appPath in @($currentApp, $stagingApp) | Select-Object -Unique) {
+    $appEntry = Get-Item -LiteralPath $appPath -Force -ErrorAction Stop
+    if (-not $appEntry.PSIsContainer -or ($appEntry.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Mutable app migration requires ordinary app directories: $appPath" }
+  }
+  $dataRoot = Join-Path $install 'data'
+  # Validate all computed targets before any move. Same-volume renames preserve
+  # history once; both app generations keep their familiar relative paths.
+  $cursor = $dataRoot
+  while ($cursor) {
+    if ((Test-Path -LiteralPath $cursor) -and ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Durable app state traverses a reparse point: $cursor" }
+    $cursor = Split-Path -Parent $cursor
+  }
+  $plans = @()
+  foreach ($directoryName in @('reports', 'tmp', 'AwardPingVisualSnapshots', 'visual-snapshots', 'visual-snapshot-archive')) {
+    $target = [IO.Path]::GetFullPath((Join-Path $dataRoot $directoryName))
+    $source = [IO.Path]::GetFullPath((Join-Path $currentApp $directoryName))
+    $destination = [IO.Path]::GetFullPath((Join-Path $stagingApp $directoryName))
+    foreach ($path in @($target, $source, $destination)) {
+      if (-not $path.StartsWith($install + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Mutable app state escaped the installation: $path" }
+    }
+    if (Test-Path -LiteralPath $target) {
+      $item = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+      if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Durable app state target must be an ordinary directory: $target" }
+    }
+    foreach ($path in @($source, $destination) | Select-Object -Unique) {
+      if (-not (Test-Path -LiteralPath $path)) { continue }
+      $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+      if (-not $item.PSIsContainer) { throw "Mutable app state must be a directory: $path" }
+      if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        $targets = @($item.Target)
+        if ($item.LinkType -ne 'Junction' -or $targets.Count -ne 1 -or -not ([IO.Path]::GetFullPath([string]$targets[0])).Equals($target, [StringComparison]::OrdinalIgnoreCase)) { throw "Mutable app state junction has an unexpected target: $path" }
+      } elseif ($path -eq $destination -and $destination -ne $source) { throw "Staged app unexpectedly contains mutable history: $path" }
+      elseif (Test-Path -LiteralPath $target) { throw "Both legacy and durable app history exist; refusing to merge or overwrite: $path" }
+    }
+    $plans += [pscustomobject]@{ Source = $source; Destination = $destination; Target = $target }
+  }
+  if ($currentApp -ne $stagingApp) { Copy-Item `
     -LiteralPath (Join-Path $CurrentAppDir ".env.worker.local") `
     -Destination (Join-Path $StagingAppDir ".env.worker.local") `
     -Force `
-    -ErrorAction Stop
-
-  foreach ($directoryName in @(
-    "reports",
-    "tmp",
-    "AwardPingVisualSnapshots",
-    "visual-snapshots",
-    "visual-snapshot-archive"
-  )) {
-    $currentPath = Join-Path $CurrentAppDir $directoryName
-    if (-not (Test-Path -LiteralPath $currentPath)) {
-      continue
+    -ErrorAction Stop }
+  [void](New-Item -ItemType Directory -Path $dataRoot -Force -ErrorAction Stop)
+  foreach ($plan in $plans) {
+    if ((Test-Path -LiteralPath $plan.Source) -and -not ((Get-Item -LiteralPath $plan.Source -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+      Move-Item -LiteralPath $plan.Source -Destination $plan.Target -ErrorAction Stop
+      try { [void](New-Item -ItemType Junction -Path $plan.Source -Target $plan.Target -ErrorAction Stop) }
+      catch {
+        if (-not (Test-Path -LiteralPath $plan.Source)) { Move-Item -LiteralPath $plan.Target -Destination $plan.Source -ErrorAction Stop }
+        throw
+      }
+    } elseif (-not (Test-Path -LiteralPath $plan.Target)) {
+      [void](New-Item -ItemType Directory -Path $plan.Target -ErrorAction Stop)
     }
-
-    Copy-Item `
-      -LiteralPath $currentPath `
-      -Destination (Join-Path $StagingAppDir $directoryName) `
-      -Recurse `
-      -Force `
-      -ErrorAction Stop
+    foreach ($path in @($plan.Source, $plan.Destination) | Select-Object -Unique) {
+      if (-not (Test-Path -LiteralPath $path)) { [void](New-Item -ItemType Junction -Path $path -Target $plan.Target -ErrorAction Stop) }
+    }
   }
 }
 
@@ -2617,8 +2709,9 @@ $InstallRoot
 Monitoring schedules:
   Three source collection shards run daily at 6 PM.
   Changed Page Review runs every 15 minutes; Page Audit runs hourly.
-  Coverage Report runs daily, 30 minutes after the three collectors' scheduled start.
-  Coverage Report can also be run on demand from Windows Task Scheduler.
+  Coverage Report runs after all three scheduled collectors finish, once per cycle.
+  Its daily recovery check waits for unfinished collection and reports expired incomplete cycles.
+  For a fresh manual report, run: .\Run-AwardPingDownstreamLane.ps1 -Lane nightly_report
   Coverage Report replaces the duplicate legacy coverage-report schedules.
   The separate Daily Runtime Re-sign maintenance task keeps its existing schedule.
   Historical logs and deferred queues are preserved.
@@ -2698,9 +2791,32 @@ function Remove-DirectoryWithRetry {
     return
   }
 
+  $resolvedTarget = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+  if ($resolvedTarget -eq [IO.Path]::GetPathRoot($resolvedTarget).TrimEnd('\', '/')) { throw "Refusing to remove a filesystem root." }
+  if ($InstallRoot) {
+    $resolvedInstall = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\', '/')
+    if (-not $resolvedTarget.StartsWith($resolvedInstall + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Cleanup target is outside the installation: $resolvedTarget" }
+  }
+  # Unlink shared history junctions with a nonrecursive API before PowerShell
+  # removes the ordinary app tree. Never enumerate a reparse point's target.
+  $directories = [Collections.Generic.Stack[string]]::new()
+  $directories.Push($resolvedTarget)
+  while ($directories.Count) {
+    $directory = $directories.Pop()
+    $entry = Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+    if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { [IO.Directory]::Delete($directory); continue }
+    foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+      $child = [IO.Path]::GetFullPath($item.FullName)
+      if (-not $child.StartsWith($resolvedTarget + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Cleanup descendant escaped its target." }
+      if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($item.PSIsContainer) { [IO.Directory]::Delete($child) } else { [IO.File]::Delete($child) }
+      } elseif ($item.PSIsContainer) { $directories.Push($child) }
+    }
+  }
+
   for ($attempt = 1; $attempt -le 5; $attempt += 1) {
     try {
-      Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+      if (Test-Path -LiteralPath $resolvedTarget) { Remove-Item -LiteralPath $resolvedTarget -Recurse -Force -ErrorAction Stop }
       return
     } catch {
       if ($attempt -eq 5) {
@@ -2871,7 +2987,7 @@ function Register-DownstreamLaneTasks {
   $laneDefinitions = @(
     [pscustomobject]@{ Key = "changed_page_review"; TaskName = "AwardPing Changed Page Review Lane"; StaggerMinutes = 2; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; CadenceMinutes = 15; Description = "Reviews new program-text comparisons every 15 minutes under the existing `$5/day changed-page review limit." },
     [pscustomobject]@{ Key = "page_audit"; TaskName = "AwardPing Page Audit Lane"; StaggerMinutes = 10; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; CadenceMinutes = 60; Description = "Runs deterministic public-page audit checks hourly. This lane never submits pages to Gemini." },
-    [pscustomobject]@{ Key = "nightly_report"; TaskName = "AwardPing Coverage Report"; StaggerMinutes = 30; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; CadenceMinutes = 1440; Description = "Reports reviewed-source coverage daily, 30 minutes after the collectors' scheduled start, or on demand. Incomplete coverage remains visible if collection is late; historical queues remain deferred." }
+    [pscustomobject]@{ Key = "nightly_report"; TaskName = "AwardPing Coverage Report"; StaggerMinutes = 30; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; CadenceMinutes = 1440; Description = "Reports coverage once all three scheduled collectors finish. Daily recovery checks wait for collection or report expired incomplete cycles; manual reports remain available; historical queues remain deferred." }
   )
 
   $now = Get-Date
@@ -2898,9 +3014,9 @@ function Register-DownstreamLaneTasks {
     $hiddenLauncher = Join-Path $InstallRoot "Launch-Hidden.vbs"
     $action = New-ScheduledTaskAction `
       -Execute "wscript.exe" `
-      -Argument "//B //Nologo `"$hiddenLauncher`" powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Lane $($lane.Key) -TimeoutMinutes $($lane.TimeoutMinutes)"
+      -Argument "//B //Nologo `"$hiddenLauncher`" powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Lane $($lane.Key) -TimeoutMinutes $($lane.TimeoutMinutes) -RunTrigger scheduled"
     $settings = New-ScheduledTaskSettingsSet `
-      -MultipleInstances IgnoreNew `
+      -MultipleInstances $(if ($lane.Key -eq "nightly_report") { 'Queue' } else { 'IgnoreNew' }) `
       -StartWhenAvailable `
       -ExecutionTimeLimit (New-TimeSpan -Minutes $lane.ExecutionTimeLimitMinutes)
     $settings.DisallowStartIfOnBatteries = $false
@@ -3040,7 +3156,7 @@ try {
     $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
     $r2Configuration = Read-R2WorkerConfiguration
     $runTest = Read-YesNo "Run a one-page program text collection check after install?" $true
-    Write-Host "The three 6 PM text-collection shards continue alongside Changed Page Review every 15 minutes, hourly Page Audit, and daily Coverage Report 30 minutes after the collectors' scheduled start. Only Changed Page Review can make paid AI calls, under the existing daily limit. Discovery and legacy mutation lanes remain on hold. Initial coverage is not a website change."
+    Write-Host "The three 6 PM text-collection shards continue alongside Changed Page Review every 15 minutes, hourly Page Audit, and Coverage Report after all three collectors finish. A daily recovery check reports expired incomplete cycles. Only Changed Page Review can make paid AI calls, under the existing daily limit. Discovery and legacy mutation lanes remain on hold. Initial coverage is not a website change."
     Write-EnvFile `
       -Path $envPath `
       -SupabaseUrl $SupabaseUrl `
@@ -3064,6 +3180,7 @@ try {
     }
   }
 
+  if (-not $UpdateOnly) { Copy-AwardPingMutableAppState -CurrentAppDir $appDir -StagingAppDir $appDir }
   Write-UninstallScript -InstallRoot $InstallRoot
   Write-LauncherScripts -InstallRoot $InstallRoot
   Register-VisualSnapshotTask -InstallRoot $InstallRoot -RegisterDisabled $true
@@ -3124,6 +3241,9 @@ try {
         $finalizationSnapshots = @(Get-AwardPingTaskSnapshotsForFinalization `
           -InitialSnapshots $taskSnapshots `
           -InstallRoot $InstallRoot)
+        # Registration can change the UTC clock at a local DST boundary. Bind
+        # cycle identities to the final installed triggers, not the prior task.
+        Set-AwardPingProgramTextEnvironment -Path $envPath -InstallRoot $InstallRoot -TaskSnapshots $finalizationSnapshots
         $runtimeProblems = @(Get-AwardPingInstalledRuntimeProblems `
           -InstallRoot $InstallRoot `
           -AppDir $appDir `

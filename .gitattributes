@@ -8,7 +8,9 @@
 scripts/*.mjs text eol=lf
 scripts/lib/*.mjs text eol=lf
 scripts/lib/fixtures/** -text
+scripts/fixtures/** -text
 supabase/migrations/*.sql text eol=lf
 scripts/sql/*.sql text eol=lf
+scripts/scrapling/requirements.txt text eol=lf
 src/**/*.ts text eol=lf
 src/**/*.tsx text eol=lf

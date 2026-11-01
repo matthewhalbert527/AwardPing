@@ -13,12 +13,62 @@ from unittest.mock import patch
 
 from playwright.sync_api import Page, WebSocketRoute, sync_playwright
 
-from collector import BrowserDiagnostics, CaptureFailure, DIAGNOSTIC_MODE, EVIDENCE_PROFILE, capture, checked_screenshot_dimensions, collect_stable, diagnostic_url, discover_html_links, jpeg_dimensions, main, observe, parse_projection, require_document_response_url, screenshot_bounds, validate_url
+from collector import BrowserDiagnostics, CaptureBrowserSession, CaptureFailure, DIAGNOSTIC_MODE, EVIDENCE_PROFILE, capture, checked_screenshot_dimensions, collect_stable, diagnostic_url, discover_html_links, jpeg_dimensions, main, observe, parse_projection, require_document_response_url, screenshot_bounds, validate_url
 from html_document import extract_html_document
 
 
 BROWSER = "C:/Program Files/Google/Chrome/Application/chrome.exe"
 REQUEST = {"url": "https://example.com/award", "source_id": "fixture", "proxy_url": "http://127.0.0.1:1", "executable_path": BROWSER}
+
+
+class ReusableBrowserSessionTests(unittest.TestCase):
+    def test_reuses_browser_but_not_cookies_storage_routes_or_contexts(self):
+        pool = CaptureBrowserSession()
+        contexts = []
+
+        def fixture(route):
+            contexts.append(route.request.frame.page.context)
+            body = ('<h1>Example award</h1><p>Apply January 1, 2027. U.S. citizens may apply.</p>'
+                    '<script>if(document.cookie||localStorage.getItem("previous"))document.body.append("LEAKED");'
+                    'document.cookie="previous=capture";localStorage.setItem("previous","capture");</script>')
+            return route.fulfill(status=200, content_type="text/html", body=body)
+
+        try:
+            legacy = capture(REQUEST, fixture=fixture)
+            first = capture(REQUEST, fixture=fixture, browser_pool=pool)
+            browser = pool.session.browser
+            self.assertEqual(browser.contexts, [])
+            # A new capture has a different proxy and context; no prior route or
+            # capture's state can service this request.
+            second = capture(dict(REQUEST, proxy_url="http://127.0.0.1:2"), fixture=fixture, browser_pool=pool)
+            self.assertIs(pool.session.browser, browser)
+            self.assertEqual(browser.contexts, [])
+            self.assertIsNot(contexts[-2], contexts[-1])
+            self.assertNotIn("LEAKED", first["text"] + second["text"])
+            self.assertEqual(first["document"], second["document"])
+            self.assertEqual(first["html"], second["html"])
+            # The optimization must retain the former isolated single-capture
+            # extraction result, independent of capture timestamps/readiness.
+            for field in ("html", "visible_html", "text", "document", "engine", "content_type", "status_code", "capture_profile"):
+                self.assertEqual(first[field], legacy[field], field)
+            self.assertEqual(pool.session._browser_options["ignore_default_args"], [])
+            self.assertEqual(pool.session._build_context_with_proxy("http://127.0.0.1:3")["proxy"]["bypass"], "<-loopback>")
+        finally:
+            pool.close()
+        self.assertIsNone(pool.session)
+
+    def test_failure_closes_the_capture_context_before_reuse(self):
+        pool = CaptureBrowserSession()
+        try:
+            with self.assertRaisesRegex(CaptureFailure, "http_503"):
+                capture(REQUEST, fixture=lambda route: route.fulfill(status=503, content_type="text/html", body="Unavailable"), browser_pool=pool)
+            self.assertEqual(pool.session.browser.contexts, [])
+            result = capture(REQUEST, fixture=lambda route: route.fulfill(status=200, content_type="text/html",
+                body='<h1>Example award</h1><p>Apply January 1, 2027. U.S. citizens may apply.</p>'), browser_pool=pool)
+            self.assertIn("U.S. citizens", result["text"])
+            self.assertEqual(pool.session.browser.contexts, [])
+        finally:
+            pool.close()
 
 
 class BrowserDiagnosticsTests(unittest.TestCase):

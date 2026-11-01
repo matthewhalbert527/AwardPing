@@ -34,16 +34,18 @@ export function normalizeDownstreamLaneKey(value) {
   return String(value || "").trim().toLowerCase().replaceAll("-", "_");
 }
 
-export function commandForDownstreamLane(laneKey, { envFile = ".env.worker.local" } = {}) {
+export function commandForDownstreamLane(laneKey, { envFile = ".env.worker.local", runTrigger = "manual" } = {}) {
   const normalized = normalizeDownstreamLaneKey(laneKey);
   const definition = downstreamLaneDefinitions[normalized];
   if (!definition) throw new Error(`Unknown downstream lane: ${laneKey || "(missing)"}`);
+  if (!["manual", "scheduled", "maintenance"].includes(runTrigger)) throw new Error("Invalid downstream run trigger");
   const args = [resolve(root, definition.script)];
   // Use the inline form because a few of the older deterministic workers only
   // accept --key=value arguments. Keeping one canonical form prevents a lane
   // from silently falling back to .env.local on the installed worker.
   if (definition.includeEnv !== false) args.push(`--env=${envFile}`);
   args.push(...definition.args);
+  if (normalized === "nightly_report") args.push(`--run-trigger=${runTrigger}`);
   return { laneKey: normalized, command: process.execPath, args };
 }
 
@@ -121,6 +123,8 @@ async function main() {
   }
 
   const requestedTimeBudgetMs = positiveInt(args["time-budget-ms"], 10 * 60_000);
+  const runTrigger = args["run-trigger"] || "manual";
+  if (!["manual", "scheduled", "maintenance"].includes(runTrigger)) throw new Error("Invalid downstream run trigger");
   const workerId = cleanText(args["worker-id"]) || `${hostname()}:${process.pid}:${randomUUID()}`;
   const workerRevision = cleanText(env.AWARDPING_WORKER_REVISION || env.VERCEL_GIT_COMMIT_SHA) || "local";
   const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
@@ -149,7 +153,7 @@ async function main() {
     ? Math.min(requestedTimeBudgetMs, Math.max(1_000, policyTimeoutMs - 15_000))
     : requestedTimeBudgetMs;
   const startedAt = new Date().toISOString();
-  const command = commandForDownstreamLane(laneKey, { envFile: envArg, timeBudgetMs });
+  const command = commandForDownstreamLane(laneKey, { envFile: envArg, timeBudgetMs, runTrigger });
   console.log(`LANE_RUNNER_START lane=${laneKey} worker=${workerId} started=${startedAt}`);
 
   let heartbeatError = null;

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,11 +14,14 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 const quote = value => `'${String(value).replaceAll("'", "''")}'`;
 
 function treeHashes(directory) {
-  return Object.fromEntries(readdirSync(directory, { recursive: true, withFileTypes: true })
-    .filter(entry => entry.isFile()).map(entry => {
-      const path = join(entry.parentPath, entry.name);
-      return [path.slice(directory.length + 1), hash(readFileSync(path))];
-    }).sort(([a], [b]) => a.localeCompare(b)));
+  const paths = [], visit = path => {
+    for (const name of readdirSync(path)) {
+      const child = join(path, name);
+      if (statSync(child).isDirectory()) visit(child); else paths.push(child);
+    }
+  };
+  visit(directory);
+  return Object.fromEntries(paths.map(path => [path.slice(directory.length + 1), hash(readFileSync(path))]).sort(([a], [b]) => a.localeCompare(b)));
 }
 
 describe.skipIf(process.platform !== "win32")("Scrapling staged update rollback (temporary files only)", () => {
@@ -38,6 +41,7 @@ describe.skipIf(process.platform !== "win32")("Scrapling staged update rollback 
         mkdirSync(join(runtime, "Scripts"), { recursive: true });
         writeFileSync(python, "inert fixture, never executed");
         writeFileSync(receipt, "inert receipt fixture");
+        writeFileSync(join(runtime, "requirements.txt"), requirements);
         writeFileSync(join(app, "package.json"), '{"version":"old-release"}');
         writeFileSync(join(stage, "package.json"), '{"version":"candidate-release"}');
         writeFileSync(join(stage, "scripts/scrapling/requirements.txt"), requirements);
@@ -60,7 +64,7 @@ describe.skipIf(process.platform !== "win32")("Scrapling staged update rollback 
           $tokens = $null; $parseErrors = $null
           $ast = [System.Management.Automation.Language.Parser]::ParseFile(${quote(installer)}, [ref]$tokens, [ref]$parseErrors)
           if (@($parseErrors).Count) { throw 'Installer parse failed' }
-          foreach ($name in @('Copy-AwardPingMutableAppState', 'Switch-ToStagedAwardPingApp', 'Restore-AwardPingAppAfterFailedUpdate')) {
+          foreach ($name in @('Copy-AwardPingMutableAppState', 'Switch-ToStagedAwardPingApp', 'Restore-AwardPingAppAfterFailedUpdate', 'Remove-DirectoryWithRetry')) {
             $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
             . ([scriptblock]::Create($definition.Extent.Text))
           }
@@ -71,11 +75,6 @@ describe.skipIf(process.platform !== "win32")("Scrapling staged update rollback 
           }
           function Install-AwardPingScraplingRuntime {
             return [pscustomobject]@{ PythonExecutable = ${quote(python)}; RuntimeRoot = ${quote(runtime)}; RequirementsSha256 = ${quote(hash(requirements))}; ReceiptPath = ${quote(receipt)}; ReceiptSha256 = ${quote(receiptHash)}; Reused = $true }
-          }
-          function Remove-DirectoryWithRetry {
-            param([string]$Path)
-            if ([IO.Path]::GetFullPath($Path) -cne ${quote(join(install, "failed"))}) { throw 'Unexpected fixture cleanup target' }
-            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
           }
           $binding = Initialize-AwardPingScraplingInstallation -InstallRoot ${quote(install)} -AppDir ${quote(stage)} -ManifestPath ${quote(manifest)} -ManifestSha256 ${quote(manifestHash)}
           Copy-AwardPingMutableAppState -CurrentAppDir ${quote(app)} -StagingAppDir ${quote(stage)}

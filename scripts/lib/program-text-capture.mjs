@@ -58,7 +58,7 @@ async function extractPdf(raw, timeoutMs) {
 /** One explicit acquisition mode per source; no automatic browser/OCR fallback. */
 export async function captureProgramTextSource({ source, acquisition = source?.page_type === "pdf" ? "pdf_text" : "http_html",
   pythonPath, executablePath, timeoutMs = programTextCaptureLimits.processTimeoutMs, allowedFinalUrls = [], pdf_transport = "http", publisher_json_profile,
-  ocrOptions = {}, adapters = {} } = {}) {
+  ocrOptions = {}, adapters = {}, browserSessionPool } = {}) {
   sourceIdentity(source);
   const reviewedPdfProfile = reviewedVisiblePdfProfile(source);
   if (isReviewedVisiblePdfSourceId(source) && (!reviewedPdfProfile || acquisition !== "pdf_text")) fail("invalid_reviewed_pdf_mode_or_identity");
@@ -76,7 +76,7 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
     if (!profile || publisher_json_profile !== scraplingPublisherJsonProfile || allowedFinalUrls.length || pdf_transport !== "http")
       fail("invalid_publisher_json_mode");
     const observation = validateScraplingPublisherJsonObservation(await (adapters.publisherJson || captureScraplingPublisherJson)(source,
-      { pythonPath, executablePath, timeoutMs: remaining(), publisherJsonProfile: publisher_json_profile }), { source });
+      { pythonPath, executablePath, timeoutMs: remaining(), publisherJsonProfile: publisher_json_profile, browserSessionPool }), { source });
     const raw = Buffer.from(observation.raw_json), projection = projectSmartPublisherJson(raw, { source });
     const capture = buildProgramTextCapture({ source, final_url: observation.navigation.final_url, captured_at: observation.captured_at, acquisition,
       extractor: { name: "smart-publisher-json", version: profile.version }, raw_bytes: raw, content_type: "application/json",
@@ -87,7 +87,7 @@ export async function captureProgramTextSource({ source, acquisition = source?.p
   if (publisher_json_profile !== undefined) fail("unexpected_publisher_json_mode");
   if (acquisition === "rendered_html") {
     const record = await (adapters.renderedHtml || captureScraplingSource)(source,
-      { pythonPath, executablePath, timeoutMs: remaining(), captureProfile: scraplingCaptureProfile });
+      { pythonPath, executablePath, timeoutMs: remaining(), captureProfile: scraplingCaptureProfile, browserSessionPool });
     if (record.capture_profile !== scraplingCaptureProfile || record.screenshot || record.status_code !== 200 || typeof record.html !== "string") fail("invalid_rendered_adapter");
     checkFinalUrl(source, record.final_url, allowedFinalUrls);
     const raw = Buffer.from(record.html);

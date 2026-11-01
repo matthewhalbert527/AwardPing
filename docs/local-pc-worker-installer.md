@@ -3,7 +3,7 @@
 ## What It Does
 
 - Installs the AwardPing worker under `%LOCALAPPDATA%\AwardPingWorker`.
-- Installs Node.js LTS with `winget` if Node is missing.
+- Installs Node.js LTS with `winget` if Node is missing. Existing Node must be at least 22.13 and pass the built-in SQLite probe before staging worker code; current LTS is recommended.
 - Prompts for a dedicated Supabase `sb_secret_...` key, Gemini API key, and the complete
   Cloudflare R2 bucket/account/access-key configuration used to retain immutable
   published evidence.
@@ -176,7 +176,7 @@ A collection failure exits once and does not restart automatically.
 | --- | --- | --- |
 | `AwardPing Changed Page Review Lane` | Every 15 minutes: reviews saved program-text comparisons; never auto-retries failed paid reviews. | Existing **$5/day** maximum. |
 | `AwardPing Page Audit Lane` | Hourly: runs deterministic public-page checks; never submits to Gemini. | **$0** |
-| `AwardPing Coverage Report` | Daily, 30 minutes after the collectors' scheduled UTC start: reports required-source coverage; keeps the internal `nightly_report` lane key. Also available on demand. | **$0** |
+| `AwardPing Coverage Report` | After all three scheduled collectors finish, once per cycle. A daily recovery check 30 minutes after the scheduled UTC start waits for unfinished collection and reports expired incomplete cycles. Completion requests queue behind a running recovery check. Keeps `nightly_report`; manual reporting uses the wrapper with `-RunTrigger manual`. | **$0** |
 
 Currently the collectors start at 23:00 UTC and Coverage Report runs at 23:30 UTC.
 The report follows the scheduled start with a buffer; it does not wait indefinitely

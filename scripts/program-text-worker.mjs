@@ -14,6 +14,10 @@ import { programTextDeterministicNoChange } from "./lib/program-text-determinist
 import { hasProgramTextSourceAccess } from "./lib/program-text-source-access.mjs";
 import { assertCurrentCanonicalUrlAdmission } from "./lib/program-text-canonical-url-admission.mjs";
 import { validateProgramTextCollectionQuality, hasUnclearedProgramTextCollectionFailure } from "./lib/program-text-collection-quality.mjs";
+import { hasPotentialProgramTextReview } from "./lib/program-text-review-queue.mjs";
+import { createProgramTextHostPacer } from "./lib/program-text-host-pacing.mjs";
+import { createScraplingBrowserSessionPool } from "./lib/scrapling-capture.mjs";
+import { scheduledCollectionCycleStore, requestInstalledCoverageReport } from "./lib/program-text-cycle-runner.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
@@ -29,6 +33,7 @@ export function parseProgramTextArgs(argv) {
   const allowed = new Set(["mode", "env", "config", "apply", "pilot", "source-id", "cohort", "shard-count", "shard-index", "limit", "domain-delay-ms", "run-trigger"]);
   if (Object.keys(args).some(k => !allowed.has(k)) || !modes.has(args.mode || "plan")) throw new Error("Unknown text worker option");
   for (const key of ["apply", "pilot"]) if (args[key] !== undefined && !["true", "false"].includes(args[key])) throw new Error("Invalid worker boolean");
+  if (args["run-trigger"] !== undefined && !["scheduled", "maintenance", "manual"].includes(args["run-trigger"])) throw new Error("Invalid worker run trigger");
   const shardCount = Number(args["shard-count"] || 1), shardIndex = Number(args["shard-index"] || 0);
   const limit = Number(args.limit || 50000), delay = Number(args["domain-delay-ms"] || 1500);
   if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 32 || !Number.isInteger(shardIndex) || shardIndex < 0 || shardIndex >= shardCount ||
@@ -230,9 +235,30 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
   if (config.schema !== "awardping.program-text-monitoring.v1" || !uuid(config.epoch)) throw new Error("Invalid text monitoring configuration");
   if (args.apply && ["collect", "review"].includes(args.mode) && !config.enabled && !args.pilot) throw new Error("Text monitoring activation has not been approved in the reviewed release configuration");
   const supabase = createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-  let client;
+  let client, browserSessionPool, cycleStore, collectionHandle, reportClaim, completedReport;
+  let collectionSucceeded = false, reportSucceeded = false;
   try {
+    // The scheduled reviewer is unscoped. Explicit source/cohort/shard requests
+    // still enumerate and validate their requested roster, including empty or
+    // invalid scopes, before querying any candidate queue.
+    if (args.apply && args.mode === "review" && !args["source-id"] && !args.cohort && args.shardCount === 1 &&
+        !await hasPotentialProgramTextReview(supabase, { epoch: config.epoch })) {
+      return { schema: "awardping.program-text-run.v1", mode: args.mode, epoch: config.epoch, apply: true,
+        selected_sources: 0, roster_seal: null, checked_at: new Date().toISOString(), coverage: [], results: [],
+        queue_state: "idle", roster_checked: false };
+    }
     const roster = await loadProgramTextSources(supabase, { epoch: config.epoch });
+    const scopedSources = roster.sources.filter((source, index) => index % args.shardCount === args.shardIndex &&
+      (!args["source-id"] || source.id === args["source-id"]) && (!args.cohort || source.cohorts.includes(args.cohort)));
+    cycleStore = scheduledCollectionCycleStore({ env, args, root, epoch: config.epoch, rosterSeal: roster.roster_seal,
+      scopedSourceCount: scopedSources.length });
+    if (cycleStore && args.mode === "collect") collectionHandle = await cycleStore.begin(args.shardIndex);
+    if (cycleStore && args.mode === "report") {
+      reportClaim = await cycleStore.claimReport({ allowExpired: true });
+      if (!reportClaim) return { schema: "awardping.program-text-run.v1", mode: args.mode, epoch: config.epoch, apply: true,
+        selected_sources: 0, roster_seal: roster.roster_seal, checked_at: new Date().toISOString(), coverage: [], results: [],
+        report_state: "waiting_or_already_reported", roster_checked: true };
+    }
     // Historical complete-program and application-route approvals remain private
     // history. Report the supported basic details across the actual current roster.
     const factReviews = [], variationReviews = [];
@@ -243,15 +269,15 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     const coverage = () => programTextCoverage(roster, config.epoch, factReviews, variationReviews).map(row => ({ ...row,
       ...(basicStatuses ? { basic_details_current: basicStatuses.get(row.cohort).basic_details_current,
         basic_snapshot_id: basicStatuses.get(row.cohort).snapshot_id } : {}) }));
-    const scopedSources = roster.sources.filter((source, index) => index % args.shardCount === args.shardIndex &&
-      (!args["source-id"] || source.id === args["source-id"]) && (!args.cohort || source.cohorts.includes(args.cohort)));
     // Review --limit caps candidates below, not the source roster they may come
     // from. Collection keeps its existing per-run source limit.
     const selected = args.mode === "review" ? scopedSources : scopedSources.slice(0, args.limit);
     if (args["source-id"] && selected.length !== 1) throw new Error("The requested source is not in this shard's required roster");
     const report = { schema: "awardping.program-text-run.v1", mode: args.mode, epoch: config.epoch, apply: args.apply,
       selected_sources: selected.length, roster_seal: roster.roster_seal, checked_at: new Date().toISOString(), coverage: coverage(), results: [] };
-    if (!args.apply || ["plan", "report", "new_page_review", "legacy_hold"].includes(args.mode)) return report;
+    completedReport = report;
+    if (reportClaim) report.collection_cycle = reportClaim.cycle;
+    if (!args.apply || ["plan", "report", "new_page_review", "legacy_hold"].includes(args.mode)) { reportSucceeded = true; return report; }
     const bucket = env.R2_BUCKET, endpoint = env.R2_ENDPOINT || (env.R2_ACCOUNT_ID ? `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null);
     if (!bucket || !endpoint || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY) throw new Error("Private raw/text retention is not configured");
     client = new S3Client({ region: "auto", endpoint, maxAttempts: 1,
@@ -274,7 +300,8 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     const runtimeFile = resolve(root, ".awardping-scrapling-runtime.json");
     const runtime = existsSync(runtimeFile) ? JSON.parse(readFileSync(runtimeFile, "utf8")) : {};
     const pythonPath = env.AWARDPING_SCRAPLING_PYTHON || runtime.python_executable;
-    const lastDomain = new Map();
+    const hostPacer = createProgramTextHostPacer({ directory: resolve(env.AWARDPING_WORKER_DATA_ROOT || resolve(root, "..", "data"), "host-pacing"), delayMs: args.delay });
+    browserSessionPool = createScraplingBrowserSessionPool();
     for (const source of selected) {
       if (!hasProgramTextSourceAccess(source, { epoch: config.epoch }) || !source.manifest_bound) { report.results.push({ source_id: source.id, status: "held", reason: "source_not_approved" }); continue; }
       const override = config.sources?.[source.id] || {};
@@ -282,20 +309,23 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
           (override.source_title !== undefined || override.page_type !== undefined) && (override.source_title !== source.title || override.page_type !== source.page_type)) {
         report.results.push({ source_id: source.id, status: "held", reason: "source_configuration_changed" }); continue;
       }
-      const domain = new URL(source.url).hostname, wait = (lastDomain.get(domain) || 0) + args.delay - Date.now();
-      if (wait > 0) await new Promise(done => setTimeout(done, wait));
-      // Recheck the finite current-roster identity after any domain delay.
-      try { await assertCurrentCanonicalUrlAdmission(supabase, source, { epoch: config.epoch }); }
-      catch { report.results.push({ source_id: source.id, status: "held", reason: "canonical_url_admission_changed" }); continue; }
-      const outcome = await monitorProgramTextSource({ source, epoch: config.epoch, callbacks,
-        packetLimits: { max_blocks_per_packet: 6 }, captureOptions: { pythonPath,
+      let outcome;
+      try { outcome = await hostPacer.run([source.url, ...(override.allowed_final_urls || [])], async () => {
+        // Recheck the finite current-roster identity after the shared host wait.
+        try { await assertCurrentCanonicalUrlAdmission(supabase, source, { epoch: config.epoch }); }
+        catch { return { status: "held", reason: "canonical_url_admission_changed" }; }
+        return monitorProgramTextSource({ source, epoch: config.epoch, callbacks,
+        packetLimits: { max_blocks_per_packet: 6 }, captureOptions: { pythonPath, browserSessionPool,
           executablePath: findProgramTextBrowserExecutable(env),
           acquisition: override.acquisition || (source.page_type === "pdf" || /\.pdf(?:\?|$)/i.test(source.url) ? "pdf_text" : "http_html"),
           pdf_transport: override.pdf_transport || "http",
           ...(override.publisher_json_profile === undefined ? {} : { publisher_json_profile: override.publisher_json_profile }),
           allowedFinalUrls: override.allowed_final_urls || [], ocrOptions: { popplerDirectory: env.AWARDPING_POPPLER_DIRECTORY,
             tempRoot: env.AWARDPING_OCR_TEMP_ROOT } } });
-      lastDomain.set(domain, Date.now());
+      }); } catch { outcome = { status: "held", reason: "shared_collection_transport_failed" }; }
+      if (["canonical_url_admission_changed", "shared_collection_transport_failed"].includes(outcome.reason)) {
+        report.results.push({ source_id: source.id, status: "held", reason: outcome.reason }); continue;
+      }
       if (outcome.state) source.text_monitoring_state = outcome.state;
       if (outcome.collection_failure_recorded === true) source.text_collection_quality = outcome.collection_failure.failure;
       else if (outcome.collection_failure_recorded === false) source.text_collection_quality = undefined;
@@ -305,8 +335,26 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
           collection_failure_journal_reason: outcome.collection_failure_journal_reason || null } : {}) });
     }
     report.coverage = coverage();
+    collectionSucceeded = report.results.every(row => row.status !== "held");
     return report;
-  } finally { client?.destroy(); await closeSupabaseServiceTransport(); }
+  } finally {
+    try {
+      let browserCloseError;
+      try { await browserSessionPool?.close(); }
+      catch (error) { browserCloseError = error; collectionSucceeded = false; }
+      if (collectionHandle) {
+        const finished = await cycleStore.finish(collectionHandle, { status: collectionSucceeded ? "succeeded" : "failed",
+          reason: collectionSucceeded ? null : "collection_incomplete" });
+        if (completedReport) completedReport.collection_cycle = finished.cycle;
+        if (finished.reportReady) {
+          const trigger = await requestInstalledCoverageReport();
+          if (completedReport) completedReport.coverage_report_trigger = trigger;
+        }
+      }
+      if (reportClaim) await cycleStore.finishReport(reportClaim, { status: reportSucceeded ? "succeeded" : "failed" });
+      if (browserCloseError) throw browserCloseError;
+    } finally { client?.destroy(); await closeSupabaseServiceTransport(); }
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

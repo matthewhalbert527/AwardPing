@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { S3Client } from "@aws-sdk/client-s3";
 import {
   auditPublicAwardPage,
   buildAwardSummaryFromFacts,
@@ -9,6 +10,13 @@ import {
 } from "./lib/award-fact-reconciliation.mjs";
 import { isUsableAwardFactSource } from "./lib/source-quality.mjs";
 import { requireRegressionEvaluation } from "./lib/regression-audit-observation.mjs";
+import { loadProgramTextCapture } from "./lib/program-text-artifacts.mjs";
+import {
+  auditProgramBasicPage,
+  inspectProgramBasicPageAudit,
+  loadProgramBasicPageAuditAwards,
+  persistProgramBasicPageAudit,
+} from "./lib/program-basic-page-audit.mjs";
 import {
   closeSupabaseServiceTransport,
   createSupabaseServiceClient,
@@ -45,6 +53,7 @@ if (!supabaseUrl || !serviceRoleKey) {
 }
 
 const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
+let retainedClient;
 const slugFilter = listArg(args.slug);
 const runAll = boolArg(args.all, false);
 const runKnownCanaries = boolArg(args["known-canaries"], !runAll && !slugFilter.length);
@@ -92,6 +101,8 @@ const report = {
   blocked_audits_recorded: 0,
   audit_results_superseded_by_newer_evaluation: 0,
   regression_state_updates: 0,
+  basic_details_checked: 0,
+  basic_details_failed: 0,
   operational_failures_recorded: 0,
   operational_failure_recording_errors: 0,
   applied: 0,
@@ -107,6 +118,27 @@ try {
     let outcomeCounted = false;
     let attemptStage = "evaluation";
     try {
+      if (award.basic_page_audit_target) {
+        attemptStage = "current_basic_evaluation";
+        const context = await inspectProgramBasicPageAudit(supabase, award.basic_page_audit_target);
+        const audit = await auditProgramBasicPage(context, { loadCapture: loadRetainedCapture });
+        report.basic_details_checked += 1;
+        if (audit.audit_status === "passed") report.passed += 1;
+        else { report.failed += 1; report.basic_details_failed += 1; }
+        outcomeCounted = true;
+        const entry = { award_id: award.id, slug: award.slug, award_name: award.name,
+          purpose: "current_published_basic_details", ...audit };
+        report.canaries.push(entry);
+        if (apply) {
+          attemptStage = "current_basic_persistence";
+          const persistence = await persistProgramBasicPageAudit(supabase, context, audit);
+          if (persistence.inserted) report.audit_rows_persisted += 1;
+          else report.audit_rows_deduplicated += 1;
+          entry.persistence = persistence;
+        }
+        if (!json) console.log(`BASIC_PAGE_AUDIT ${audit.audit_status} fields=${audit.field_count} captures=${audit.capture_count} ${award.slug || award.name}`);
+        continue;
+      }
       const evaluation = requireRegressionEvaluation(award);
       const sources = evaluation.sources;
       const usableSources = sources.filter(isUsableAwardFactSource);
@@ -174,7 +206,7 @@ try {
       const message = errorMessage(error);
       let failureState = null;
       let failureStateError = null;
-      if (apply) {
+      if (apply && !award.basic_page_audit_target) {
         try {
           failureState = await persistOperationalFailure(
             award.id,
@@ -218,6 +250,7 @@ try {
     if (json) console.log(JSON.stringify(report, null, 2));
     else console.log(`CANARY_REPORT ${reportPath}`);
   } finally {
+    retainedClient?.destroy();
     await closeSupabaseServiceTransport();
   }
 }
@@ -225,10 +258,16 @@ try {
 if (report.status !== "failed") {
   if (failOnCritical && report.critical_failures > 0) process.exitCode = 1;
   if (failOnPublicFactsUsingRejectedSource && report.public_facts_using_rejected_source > 0) process.exitCode = 1;
+  if (report.basic_details_failed > 0) process.exitCode = 1;
 }
 
 async function loadAwards() {
   const slugs = slugFilter.length ? slugFilter : runKnownCanaries ? knownCanarySlugs : [];
+  // Keep the modern observation journal and legacy regression cursor distinct.
+  // Both scans are bounded; modern programs never fall back to sparse legacy facts.
+  const basic = await loadProgramBasicPageAuditAwards(supabase, {
+    limit: slugs.length || sampleSize, slugs: slugs.length ? slugs : null,
+  });
   const { data, error } = await supabase.rpc("list_shared_awards_for_regression_audit", {
     p_limit: slugs.length || sampleSize,
     p_slugs: slugs.length ? slugs : null,
@@ -240,7 +279,18 @@ async function loadAwards() {
   // retry/backoff state outside shared_awards so operational scans cannot
   // perturb public facts, structure freshness, or Stage 1 review hashes.
   if (!Array.isArray(data)) throw new Error("Load awards failed: selector returned no award array.");
-  return data;
+  return [
+    ...basic.awards.map(target => ({ id: target.award_id, name: target.name, slug: target.slug, basic_page_audit_target: target })),
+    ...data.filter(award => !basic.registered_award_ids.includes(award.id)),
+  ];
+}
+
+async function loadRetainedCapture(reference) {
+  const endpoint = env.R2_ENDPOINT || (env.R2_ACCOUNT_ID ? `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null);
+  if (!env.R2_BUCKET || !endpoint || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY) throw Error("retained_evidence_reader_unavailable");
+  retainedClient ||= new S3Client({ region: "auto", endpoint, maxAttempts: 1,
+    credentials: { accessKeyId: env.R2_ACCESS_KEY_ID, secretAccessKey: env.R2_SECRET_ACCESS_KEY } });
+  return loadProgramTextCapture(reference, { client: retainedClient, bucket: env.R2_BUCKET });
 }
 
 async function persistAuditResult(award, reconciliation, audit) {
@@ -434,7 +484,7 @@ function errorMessage(error) {
 }
 
 function printHelp() {
-  console.log(`Evaluate public page audit canaries with generic reconciliation logic.
+  console.log(`Audit current published basic details and legacy non-program page canaries.
 
 Examples:
   node scripts/evaluate-public-page-audit-canaries.mjs --known-canaries=true --dry-run=true
@@ -444,7 +494,7 @@ Options:
   --slug=a,b
   --all=true                Select a fair oldest-first batch from all active awards
   --known-canaries=true
-  --sample-size=25          Maximum awards per catalog batch; explicit slugs are capped at 250
+  --sample-size=25          Maximum awards per purpose (modern basics and legacy); explicit slugs are capped at 250
   --dry-run=true
   --apply=false
   --json=false

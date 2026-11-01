@@ -129,15 +129,19 @@ function verifyInventory(runtimeRoot, entries, budget) {
 function verifyPins(bytes, packages) {
   if (!packages || typeof packages !== "object" || Array.isArray(packages)) fail("invalid package inventory");
   const pins = new Map();
+  const specifications = [];
   for (const line of bytes.toString("utf8").replace(/^\uFEFF/, "").split(/\r?\n/).map(line => line.trim())) {
     if (!line || line.startsWith("#")) continue;
-    const match = /^([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[A-Za-z0-9_,.-]+\])?==([0-9][A-Za-z0-9.!+_-]*)$/.exec(line);
+    const match = /^([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[([A-Za-z0-9_,.-]+)\])?==([0-9][A-Za-z0-9.!+_-]*)$/.exec(line);
     const name = match?.[1].toLowerCase().replace(/[-_.]+/g, "-");
     if (!match || pins.has(name)) fail("invalid dependency pins");
-    pins.set(name, match[2]);
-    if (packages[name] !== match[2]) fail("package pin mismatch");
+    pins.set(name, match[3]);
+    const extras = [...new Set((match[2] || "").toLowerCase().split(",").filter(Boolean).map(x => x.replace(/[-_.]+/g, "-")))].sort();
+    specifications.push(`${name}${extras.length ? `[${extras.join(",")}]` : ""}==${match[3]}`);
+    if (packages[name] !== match[3]) fail("package pin mismatch");
   }
   if (!pins.has("scrapling") || Object.keys(packages).some(name => !pins.has(name) && !["pip", "setuptools", "wheel"].includes(name))) fail("unexpected package inventory");
+  return hash(specifications.sort().join("\n") + "\n");
 }
 
 /** Verify the installer-produced binding before opting in. No process/network activity.
@@ -154,13 +158,16 @@ export function verifyScraplingRuntimeBinding({ appDir, manifestPath, pythonPath
   const binding = readJson(bindingBytes);
   const manifest = checkedPath(manifestPath);
   const python = checkedPath(pythonPath);
-  if (!samePath(manifest, join(app, ".awardping-scrapling-manifest.json")) || binding.schema !== "awardping.scrapling-installation.v1" ||
+  if (!samePath(manifest, join(app, ".awardping-scrapling-manifest.json")) || !["awardping.scrapling-installation.v1", "awardping.scrapling-installation.v2"].includes(binding.schema) ||
       !digest.test(binding.manifest_sha256) || !digest.test(binding.requirements_sha256) || !digest.test(binding.receipt_sha256) ||
       !Number.isInteger(binding.source_count) || binding.source_count < 1 || binding.source_count > 300) fail("invalid installation binding");
   const requirementsPath = join(app, "scripts", "scrapling", "requirements.txt");
   const requirements = boundedRead(requirementsPath, 65536);
   if (hash(requirements) !== binding.requirements_sha256) fail("application requirements mismatch");
-  const runtimeRoot = checkedPath(join(dirname(app), "runtime", `scrapling-${binding.requirements_sha256}`), true);
+  const reusedPins = binding.schema === "awardping.scrapling-installation.v2";
+  if (reusedPins && (!digest.test(binding.runtime_requirements_sha256) || !digest.test(binding.requirements_pins_sha256))) fail("invalid reused dependency binding");
+  const runtimeRequirementsSha = reusedPins ? binding.runtime_requirements_sha256 : binding.requirements_sha256;
+  const runtimeRoot = checkedPath(join(dirname(app), "runtime", `scrapling-${runtimeRequirementsSha}`), true);
   const receiptPath = join(runtimeRoot, "runtime-receipt.json");
   if (!samePath(localPath(binding.runtime_root), runtimeRoot) || !samePath(localPath(binding.python_executable), python) ||
       !samePath(python, join(runtimeRoot, "Scripts", "python.exe")) || !samePath(localPath(binding.receipt_path), receiptPath)) fail("interpreter or runtime identity mismatch");
@@ -172,13 +179,15 @@ export function verifyScraplingRuntimeBinding({ appDir, manifestPath, pythonPath
   const receiptBytes = boundedRead(receiptPath, 32 * 1024 * 1024);
   if (hash(receiptBytes) !== binding.receipt_sha256) fail("runtime receipt hash mismatch");
   const receipt = readJson(receiptBytes);
-  if (receipt?.schema !== "awardping.scrapling-runtime.v1" || receipt.requirements_sha256 !== binding.requirements_sha256 ||
+  if (receipt?.schema !== "awardping.scrapling-runtime.v1" || receipt.requirements_sha256 !== runtimeRequirementsSha ||
       !samePath(localPath(receipt.runtime_root), runtimeRoot) || !samePath(localPath(receipt.python_executable), python) ||
       !/^3\.(?:1[0-9]|[2-9][0-9])\.\d+$/.test(receipt.python_version) ||
       JSON.stringify(receipt.excluded_generated_files) !== JSON.stringify(excluded)) fail("runtime receipt identity mismatch");
   const runtimeRequirements = boundedRead(join(runtimeRoot, "requirements.txt"), 65536);
-  if (!runtimeRequirements.equals(requirements)) fail("runtime requirements mismatch");
-  verifyPins(requirements, receipt.packages);
+  if (hash(runtimeRequirements) !== runtimeRequirementsSha || !reusedPins && !runtimeRequirements.equals(requirements)) fail("runtime requirements mismatch");
+  const pinsSha = verifyPins(requirements, receipt.packages);
+  const runtimePinsSha = verifyPins(runtimeRequirements, receipt.packages);
+  if (pinsSha !== runtimePinsSha || reusedPins && binding.requirements_pins_sha256 !== pinsSha) fail("dependency identity mismatch");
   const basePython = checkedPath(receipt.base_python_executable);
   const config = boundedRead(join(runtimeRoot, "pyvenv.cfg"), 65536).toString("utf8");
   const homes = [...config.matchAll(/^home\s*=\s*(.+?)\s*$/gm)];

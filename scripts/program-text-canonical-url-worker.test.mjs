@@ -29,6 +29,10 @@ export async function resolve(specifier, context, next) {
 }
 `);
   store(join(runtime, "sdk-stub.mjs"), `export class S3Client { send() { globalThis.forbidden.storage++; throw Error("forbidden_storage"); } destroy() {} }`);
+  store(join(runtime, "scripts/lib/program-text-review-queue.mjs"), `export async function hasPotentialProgramTextReview() { throw Error("forbidden_review_probe"); }`);
+  store(join(runtime, "scripts/lib/program-text-host-pacing.mjs"), `export const createProgramTextHostPacer = () => ({run: async (_urls, action) => action()});`);
+  store(join(runtime, "scripts/lib/scrapling-capture.mjs"), `export const createScraplingBrowserSessionPool = () => ({close: async () => {}});`);
+  store(join(runtime, "scripts/lib/program-text-cycle-runner.mjs"), `export const scheduledCollectionCycleStore = () => null; export async function requestInstalledCoverageReport() { throw Error("forbidden_scheduler"); }`);
   store(join(runtime, "scripts/lib/program-text-monitor.mjs"), `
 export const observed = [];
 export async function monitorProgramTextSource(input) {

@@ -22,6 +22,18 @@
       "scripts/lib/program-text-monitor.mjs",
       "scripts/lib/program-text-collection-quality.mjs",
       "scripts/lib/program-text-repository.mjs",
+      "scripts/lib/program-text-review-queue.mjs",
+      "scripts/lib/program-text-host-pacing.mjs",
+      "scripts/lib/program-text-cycle-runner.mjs",
+      "scripts/lib/program-text-collection-cycle.mjs",
+      "scripts/lib/scrapling-session-process.mjs",
+      "scripts/evaluate-public-page-audit-canaries.mjs",
+      "scripts/lib/program-basic-page-audit.mjs",
+      "scripts/lib/basic-award-facts.mjs",
+      "scripts/lib/program-text-facts.mjs",
+      "scripts/lib/current-basic-source-proof.mjs",
+      "scripts/lib/current-basic-reviewed-repeat.mjs",
+      "scripts/lib/current-basic-technical-probe.mjs",
       "scripts/program-text-worker.mjs",
       "scripts/lib/program-text-source-access.mjs",
       "scripts/lib/program-text-canonical-url-admission.mjs",
@@ -51,7 +63,7 @@
       "src/lib/source-ai-review-status.ts",
       "src/lib/source-url-policy.ts"
     ],
-    "hash": "a8bfee1450288d3915c9008dea10b864ee69c741a3ced0ee25eddfeb2c2e5890"
+    "hash": "68655a75e201dda6e61772e76aa01222766611cfb23435d6d65db32e359028a4"
   },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",

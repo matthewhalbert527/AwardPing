@@ -8,6 +8,7 @@ vi.mock("node:fs", async original => {
 });
 vi.mock("@aws-sdk/client-s3", async original => ({ ...await original(), S3Client: class { destroy() { shared.destroyed++; } } }));
 vi.mock("./supabase-service-client.mjs", () => ({ createSupabaseServiceClient: () => shared.db, closeSupabaseServiceTransport: async () => {} }));
+vi.mock("./lib/program-text-host-pacing.mjs", () => ({ createProgramTextHostPacer: () => ({ run: async (_urls, action) => action() }) }));
 vi.mock("./lib/program-text-storage.mjs", async original => ({ ...await original(),
   loadProgramTextCapture: async ref => shared.captures.get(ref.capture_id) }));
 vi.mock("./lib/program-text-provider.mjs", () => ({ submitProgramTextBatch: async row => { shared.provider.push(row.id); return { status: "submitted" }; },

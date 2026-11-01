@@ -88,6 +88,11 @@ function Initialize-AwardPingScraplingInstallation {
     receipt_path = $runtime.ReceiptPath
     receipt_sha256 = $runtime.ReceiptSha256
   }
+  if ($runtime.PSObject.Properties['RuntimeRequirementsSha256'] -and $runtime.RuntimeRequirementsSha256 -cne $runtime.RequirementsSha256) {
+    $binding.schema = 'awardping.scrapling-installation.v2'
+    $binding.runtime_requirements_sha256 = $runtime.RuntimeRequirementsSha256
+    $binding.requirements_pins_sha256 = $runtime.RequirementsPinsSha256
+  }
   $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($binding | ConvertTo-Json -Depth 4))
   $stream = [IO.File]::Open($bindingTarget, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
   try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
@@ -122,11 +127,16 @@ function Assert-AwardPingScraplingInstalledConfiguration {
   $bindingPath = Resolve-APSLocalPath -Path (Join-Path $app '.awardping-scrapling-runtime.json') -MustExist
   if ((Get-Item -LiteralPath $bindingPath).Length -gt 65536) { throw 'Scrapling installation metadata exceeds its limit.' }
   $binding = Get-Content -LiteralPath $bindingPath -Raw -Encoding UTF8 | ConvertFrom-Json
-  if ($binding.schema -cne 'awardping.scrapling-installation.v1' -or
+  if ($binding.schema -cnotin @('awardping.scrapling-installation.v1', 'awardping.scrapling-installation.v2') -or
       $binding.requirements_sha256 -cnotmatch '^[0-9a-f]{64}$' -or $binding.receipt_sha256 -cnotmatch '^[0-9a-f]{64}$') {
     throw 'Invalid Scrapling installation metadata.'
   }
-  $runtimeRoot = Join-Path (Join-Path $install 'runtime') ('scrapling-' + $binding.requirements_sha256)
+  $runtimeRequirementsSha = $binding.requirements_sha256
+  if ($binding.schema -ceq 'awardping.scrapling-installation.v2') {
+    if ($binding.runtime_requirements_sha256 -cnotmatch '^[0-9a-f]{64}$' -or $binding.requirements_pins_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid reused dependency binding.' }
+    $runtimeRequirementsSha = $binding.runtime_requirements_sha256
+  }
+  $runtimeRoot = Join-Path (Join-Path $install 'runtime') ('scrapling-' + $runtimeRequirementsSha)
   $python = Join-Path $runtimeRoot 'Scripts\python.exe'
   $receipt = Resolve-APSLocalPath -Path (Join-Path $runtimeRoot 'runtime-receipt.json') -MustExist
   if ($binding.runtime_root -cne $runtimeRoot -or $binding.python_executable -cne $python -or
@@ -138,6 +148,9 @@ function Assert-AwardPingScraplingInstalledConfiguration {
   # the matching retained runtime; it must never create a replacement on resume.
   $requirements = Get-APSRequirements -Path (Join-Path $app 'scripts\scrapling\requirements.txt')
   if ($requirements.Sha256 -cne $binding.requirements_sha256) { throw 'Scrapling requirements differ from the installed runtime.' }
+  $runtimeRequirements = Get-APSRequirements -Path (Join-Path $runtimeRoot 'requirements.txt')
+  if ($runtimeRequirements.Sha256 -cne $runtimeRequirementsSha -or $runtimeRequirements.PinsSha256 -cne $requirements.PinsSha256 -or
+      ($binding.schema -ceq 'awardping.scrapling-installation.v2' -and $requirements.PinsSha256 -cne $binding.requirements_pins_sha256)) { throw 'Scrapling dependency identity mismatch.' }
   $verified = Install-AwardPingScraplingRuntime -InstallRoot $install -SourceRoot $app
   if (-not $verified.Reused -or $verified.ReceiptSha256 -cne $binding.receipt_sha256 -or $verified.PythonExecutable -cne $python) {
     throw 'Scrapling runtime reuse verification failed.'

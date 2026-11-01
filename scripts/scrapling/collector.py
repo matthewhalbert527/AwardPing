@@ -17,7 +17,8 @@ import time
 from urllib.parse import urlsplit
 
 from scrapling import Selector
-from scrapling.fetchers import DynamicFetcher, Fetcher
+from scrapling.fetchers import DynamicFetcher, DynamicSession, Fetcher
+from scrapling.engines.toolbelt.proxy_rotation import ProxyRotator
 from curl_cffi.curl import CURL_WRITEFUNC_ERROR
 from html_document import HtmlDocumentError, extract_html_document
 from smart_publisher_json import SmartPublisherJson, PublisherJsonError, PROFILE as PUBLISHER_JSON_PROFILE
@@ -766,7 +767,70 @@ def capture_evidence(page, observed, *, viewport_capture=None, profile=EVIDENCE_
             + (["Content changed during the supplementary screenshot; it must not be presented as matching the primary snapshot."] if mismatches else [])}}
 
 
-def capture(request, fixture=None):
+class CaptureBrowserSession:
+    """Pinned 0.4.15 API: one browser, a NEW proxied context per capture.
+
+    Scrapling's static per-fetch proxy path creates and closes an isolated context.
+    Its ordinary persistent-context/page reuse path must never be used here.
+    """
+    def __init__(self):
+        self.session = None
+        self.executable = None
+
+    def fetch(self, url, **options):
+        executable = options["executable_path"]
+        proxy_url = options["proxy"]
+        if self.session is None:
+            if version("scrapling") != "0.4.15":
+                raise CaptureFailure("unsupported_session_runtime")
+
+            class ExplicitCaptureProxy(ProxyRotator):
+                def get_proxy(self):
+                    # The rotator selects fresh-context mode; every fetch MUST
+                    # supply the current capture's explicit Node-owned proxy.
+                    raise CaptureFailure("capture_proxy_not_explicit")
+
+            class IsolatedDynamicSession(DynamicSession):
+                def _build_context_with_proxy(self, proxy=None):
+                    context = super()._build_context_with_proxy(proxy)
+                    context["proxy"]["bypass"] = "<-loopback>"
+                    return context
+
+            configuration = dict(options)
+            for key in ("proxy", "page_setup", "page_action"):
+                configuration.pop(key)
+            configuration["additional_args"] = dict(configuration["additional_args"])
+            configuration["additional_args"].pop("proxy", None)
+            configuration["additional_args"].pop("ignore_default_args", None)
+            configuration["proxy_rotator"] = ExplicitCaptureProxy([proxy_url])
+            self.session = IsolatedDynamicSession(**configuration)
+            # This pinned field is the launch option, unlike additional_args
+            # which now applies to browser.new_context. Retain automation flags.
+            self.session._browser_options["ignore_default_args"] = []
+            self.session.start()
+            self.executable = executable
+        if self.executable != executable:
+            raise CaptureFailure("session_browser_identity_changed")
+        try:
+            return self.session.fetch(url, proxy=proxy_url, page_setup=options["page_setup"],
+                                      page_action=options["page_action"], google_search=False,
+                                      disable_resources=False, network_idle=False, load_dom=True,
+                                      timeout=30000, wait=0,
+                                      selector_config={"adaptive": False, "huge_tree": False})
+        finally:
+            # Static-proxy fetch closes its context before returning. A leak
+            # prevents capture output from crossing the Node proxy barrier.
+            if self.session.browser.contexts:
+                self.close()
+                raise CaptureFailure("capture_context_shutdown_failed")
+
+    def close(self):
+        if self.session is not None:
+            session, self.session = self.session, None
+            session.close()
+
+
+def capture(request, fixture=None, browser_pool=None):
     """fixture is an in-process test seam, never accepted from CLI JSON."""
     url = validate_url(request["url"])
     profile = request.get("capture_profile", PROFILE)
@@ -964,7 +1028,8 @@ def capture(request, fixture=None):
     # additional_args override Scrapling's browser defaults: no spoofed UA, no
     # anti-automation flags, standard browser automation marker, strict TLS.
     try:
-        DynamicFetcher.fetch(url, headless=True, executable_path=str(executable), retries=1,
+        fetch = browser_pool.fetch if browser_pool is not None else DynamicFetcher.fetch
+        fetch(url, headless=True, executable_path=str(executable), retries=1,
                              google_search=False, disable_resources=False, network_idle=False, load_dom=True,
                              timeout=30000, wait=0, page_setup=page_setup, page_action=page_action,
                              proxy=request["proxy_url"], locale="en-US", timezone_id="America/Chicago",
@@ -1018,6 +1083,20 @@ def capture(request, fixture=None):
     return result
 
 
+def validate_request(request):
+    required = {"url", "source_id", "proxy_url", "executable_path"}
+    if not isinstance(request, dict) or not required <= set(request):
+        raise CaptureFailure("invalid_request")
+    extra = set(request) - required
+    if "publisher_json_profile" in request or "shared_award_id" in request:
+        if extra not in ({"publisher_json_profile", "shared_award_id"},
+                         {"publisher_json_profile", "shared_award_id", "source_title", "source_page_type"}):
+            raise CaptureFailure("invalid_request")
+    elif extra - {"capture_profile", "diagnostic_mode"}:
+        raise CaptureFailure("invalid_request")
+    return request
+
+
 def main():
     logging.disable(logging.CRITICAL)
     diagnostics = None
@@ -1027,16 +1106,7 @@ def main():
         if len(raw) > 16384:
             raise CaptureFailure("request_size_limit")
         request = json.loads(raw)
-        required = {"url", "source_id", "proxy_url", "executable_path"}
-        if not isinstance(request, dict) or not required <= set(request):
-            raise CaptureFailure("invalid_request")
-        extra = set(request) - required
-        if "publisher_json_profile" in request or "shared_award_id" in request:
-            if extra not in ({"publisher_json_profile", "shared_award_id"},
-                             {"publisher_json_profile", "shared_award_id", "source_title", "source_page_type"}):
-                raise CaptureFailure("invalid_request")
-        elif extra - {"capture_profile", "diagnostic_mode"}:
-            raise CaptureFailure("invalid_request")
+        validate_request(request)
         with contextlib.redirect_stdout(sys.stderr):
             result = capture(request)
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
@@ -1052,5 +1122,31 @@ def main():
     return 2
 
 
+def session_main():
+    """Private bounded JSON-lines protocol. No network listener or user browser."""
+    logging.disable(logging.CRITICAL)
+    pool = CaptureBrowserSession()
+    try:
+        for _ in range(100):
+            raw = sys.stdin.buffer.readline(16386)
+            if not raw:
+                return 0
+            if len(raw) > 16385 or not raw.endswith(b"\n"):
+                raise CaptureFailure("request_size_limit")
+            try:
+                request = validate_request(json.loads(raw))
+                with contextlib.redirect_stdout(sys.stderr):
+                    result = capture(request, browser_pool=pool)
+                print(json.dumps(result, ensure_ascii=False, separators=(",", ":")), flush=True)
+            except Exception as error:
+                reason = str(error) if isinstance(error, CaptureFailure) and SAFE_REASON.fullmatch(str(error)) else "invalid_request_or_capture_failure"
+                print(json.dumps({"error": reason}), flush=True)
+                return 2
+        return 0
+    finally:
+        with contextlib.redirect_stdout(sys.stderr):
+            pool.close()
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(session_main() if sys.argv[1:] == ["--session-worker"] else main())

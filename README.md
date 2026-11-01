@@ -68,9 +68,10 @@ npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50
 
 Three approved-source text collectors run daily on the crawler PC. Three
 independently leased downstream jobs run at different cadences: changed-page
-review every 15 minutes, deterministic page audit hourly, and one daily Coverage
-Report 30 minutes after the scheduled collection start. The report also runs on
-demand and shows incomplete collection if the collectors are late. It replaces the six
+review every 15 minutes, deterministic page audit hourly, and one Coverage
+Report after all three scheduled collectors finish. A daily recovery check 30
+minutes after scheduled collection start waits for unfinished collection and
+reports expired incomplete cycles. Manual reporting is also available. It replaces the six
 duplicate coverage-only schedules and retains the internal `nightly_report`
 identity and its history. Discovery and historical promotion, suppression,
 reconciliation and quarantine queues remain deferred. Only changed-page review

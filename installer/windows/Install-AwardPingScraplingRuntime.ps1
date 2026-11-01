@@ -80,21 +80,32 @@ function Get-APSRequirements {
   $utf8 = New-Object Text.UTF8Encoding($false, $true)
   $content = $utf8.GetString($bytes).TrimStart([char]0xfeff)
   $pins = [ordered]@{}
+  $specifications = @()
   foreach ($line in ($content -split '\r?\n')) {
     $line = $line.Trim()
     if (-not $line -or $line.StartsWith('#')) { continue }
-    if ($line -notmatch '^([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[A-Za-z0-9_,.-]+\])?==([0-9][A-Za-z0-9.!+_-]*)$') {
+    if ($line -notmatch '^([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[([A-Za-z0-9_,.-]+)\])?==([0-9][A-Za-z0-9.!+_-]*)$') {
       throw 'Every requirement must be an exact package==version pin; options, markers and URLs are rejected.'
     }
     $name = ($Matches[1].ToLowerInvariant() -replace '[-_.]+', '-')
     if ($pins.Contains($name)) { throw 'Duplicate package pin.' }
-    $pins[$name] = $Matches[2]
+    $version = $Matches[3]
+    $extras = @()
+    if ($Matches[2]) { $extras = [string[]]@($Matches[2].ToLowerInvariant().Split(',') | ForEach-Object { $_ -replace '[-_.]+', '-' } | Select-Object -Unique); [Array]::Sort($extras, [StringComparer]::Ordinal) }
+    $specifications += $name + $(if ($extras.Count) { '[' + ($extras -join ',') + ']' } else { '' }) + '==' + $version
+    $pins[$name] = $version
   }
   if (-not $pins.Contains('scrapling') -or $pins.Count -lt 1) { throw 'Scrapling must be pinned.' }
   $sha = [Security.Cryptography.SHA256]::Create()
   try { $hash = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
   finally { $sha.Dispose() }
-  return [pscustomobject]@{ Path = $full; Bytes = $bytes; Sha256 = $hash; Pins = $pins }
+  $specifications = [string[]]$specifications
+  [Array]::Sort($specifications, [StringComparer]::Ordinal)
+  $identityBytes = $utf8.GetBytes(($specifications -join "`n") + "`n")
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $pinsHash = ([BitConverter]::ToString($sha.ComputeHash($identityBytes))).Replace('-', '').ToLowerInvariant() }
+  finally { $sha.Dispose() }
+  return [pscustomobject]@{ Path = $full; Bytes = $bytes; Sha256 = $hash; Pins = $pins; PinsSha256 = $pinsHash }
 }
 
 function ConvertTo-APSNativeArgument {
@@ -282,9 +293,27 @@ function Install-AwardPingScraplingRuntime {
   $runtimeParent = Resolve-APSLocalPath -Path (Join-Path $install 'runtime') -Directory
   if (-not (Test-Path -LiteralPath $runtimeParent)) { $null = New-Item -ItemType Directory -Path $runtimeParent -ErrorAction Stop }
   $runtime = Resolve-APSLocalPath -Path (Join-Path $runtimeParent ('scrapling-' + $requirements.Sha256)) -Directory
+  $runtimeRequirements = $requirements
+  if (-not (Test-Path -LiteralPath $runtime)) {
+    # Only consider complete owned runtimes. Their exact receipts and full file
+    # inventories are verified below before reuse; matching pins alone is never
+    # sufficient. Comments, ordering and line endings do not install new Python.
+    $candidates = @(Get-ChildItem -LiteralPath $runtimeParent -Directory -ErrorAction Stop | Where-Object { $_.Name -cmatch '^scrapling-[0-9a-f]{64}$' } | Sort-Object Name)
+    if ($candidates.Count -gt 64) { throw 'Too many owned Scrapling runtimes to select safely.' }
+    foreach ($candidate in $candidates) {
+      $candidateRoot = Resolve-APSLocalPath -Path $candidate.FullName -Directory -MustExist
+      if (-not (Test-Path -LiteralPath (Join-Path $candidateRoot 'runtime-receipt.json'))) { continue }
+      $candidateRequirements = Get-APSRequirements -Path (Join-Path $candidateRoot 'requirements.txt')
+      if ($candidateRequirements.PinsSha256 -ceq $requirements.PinsSha256) {
+        if ($candidate.Name -cne ('scrapling-' + $candidateRequirements.Sha256)) { throw 'Owned runtime requirements identity does not match its directory.' }
+        $runtime = $candidateRoot; $runtimeRequirements = $candidateRequirements
+        break
+      }
+    }
+  }
   if (-not $runtime.StartsWith($runtimeParent + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime escaped its installation directory.' }
   $receiptPath = Join-Path $runtime 'runtime-receipt.json'
-  $lockPath = Join-Path $runtimeParent ('.scrapling-' + $requirements.Sha256 + '.install.lock')
+  $lockPath = Join-Path $runtimeParent ('.scrapling-pins-' + $requirements.PinsSha256 + '.install.lock')
   $null = Resolve-APSLocalPath -Path $lockPath
   $lock = $null
   try {
@@ -295,7 +324,7 @@ function Install-AwardPingScraplingRuntime {
       $null = Resolve-APSLocalPath -Path $receiptPath -MustExist
       if ((Get-Item -LiteralPath $receiptPath).Length -gt 33554432) { throw 'Runtime receipt exceeds the limit.' }
       $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-      if ($receipt.schema -cne 'awardping.scrapling-runtime.v1' -or $receipt.requirements_sha256 -cne $requirements.Sha256 -or
+      if ($receipt.schema -cne 'awardping.scrapling-runtime.v1' -or $receipt.requirements_sha256 -cne $runtimeRequirements.Sha256 -or
           $receipt.runtime_root -cne $runtime -or $receipt.python_executable -cne (Join-Path $runtime 'Scripts\python.exe')) {
         throw 'Existing runtime receipt does not match this request.'
       }
@@ -323,7 +352,7 @@ function Install-AwardPingScraplingRuntime {
         'install', '--no-deps', '--only-binary=:all:', '--no-cache-dir', '--no-compile', '--index-url', 'https://pypi.org/simple', '-r', $copiedRequirements) -Phase 'Pinned dependency installation' -TimeoutSeconds 900
     }
     if ((Get-APSSha256 $requirements.Path) -cne $requirements.Sha256 -or
-        (Get-APSSha256 (Join-Path $runtime 'requirements.txt')) -cne $requirements.Sha256) { throw 'Requirements changed during installation.' }
+        (Get-APSSha256 (Join-Path $runtime 'requirements.txt')) -cne $runtimeRequirements.Sha256) { throw 'Requirements changed during installation.' }
     $verified = Test-APSRuntimePython -RuntimeRoot $runtime -Requirements $requirements
     if ($reused) {
       if (($verified.Info.version -join '.') -cne $receipt.python_version) { throw 'Runtime Python version changed.' }
@@ -344,7 +373,8 @@ function Install-AwardPingScraplingRuntime {
     }
     return [pscustomobject]@{
       PythonExecutable = $verified.Python; RuntimeRoot = $runtime
-      RequirementsSha256 = $requirements.Sha256; PythonSha256 = (Get-APSSha256 $verified.Python)
+      RequirementsSha256 = $requirements.Sha256; RuntimeRequirementsSha256 = $runtimeRequirements.Sha256; RequirementsPinsSha256 = $requirements.PinsSha256
+      PythonSha256 = (Get-APSSha256 $verified.Python)
       ReceiptPath = $receiptPath; ReceiptSha256 = (Get-APSSha256 $receiptPath); Reused = [bool]$reused
     }
   } finally {

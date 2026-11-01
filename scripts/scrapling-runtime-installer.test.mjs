@@ -241,13 +241,13 @@ describe.skipIf(process.platform !== "win32")("Scrapling runtime installer temp-
       function Invoke-APSProcess { throw 'MUST_NOT_EXECUTE' }
       $message = ''
       try { $null = Install-AwardPingScraplingRuntime -InstallRoot ${quote(install)} -SourceRoot ${quote(source)} } catch { $message = $_.Exception.Message }
-      [pscustomobject]@{ message = $message; locks = @(Get-ChildItem -LiteralPath ${quote(runtimeParent)} -Filter '*.lock' -Force).Count } | ConvertTo-Json
+      [pscustomobject]@{ message = $message; pinsHash = (Get-APSRequirements -Path ${quote(join(source, "scripts/scrapling/requirements.txt"))}).PinsSha256; locks = @(Get-ChildItem -LiteralPath ${quote(runtimeParent)} -Filter '*.lock' -Force).Count } | ConvertTo-Json
     `);
     expect(parsed.message).not.toContain("MUST_NOT_EXECUTE");
     expect(parsed.message).toContain("does not exist");
     expect(parsed.locks).toBe(0);
     expect(readFileSync(join(runtime, "preserve.txt"), "utf8")).toBe("unfinished");
-    const lock = join(runtimeParent, `.scrapling-${requirementsHash}.install.lock`);
+    const lock = join(runtimeParent, `.scrapling-pins-${parsed.pinsHash}.install.lock`);
     writeFileSync(lock, "owned elsewhere");
     const refused = run(`Install-AwardPingScraplingRuntime -InstallRoot ${quote(install)} -SourceRoot ${quote(source)}`);
     expect(refused.status).not.toBe(0);
@@ -284,6 +284,9 @@ describe.skipIf(process.platform !== "win32")("Scrapling runtime installer temp-
       $first = Install-AwardPingScraplingRuntime -InstallRoot ${quote(install)} -SourceRoot ${quote(source)} -PythonExecutable ${quote(base)}
       $initialReceipt = Get-APSSha256 $first.ReceiptPath
       $second = Install-AwardPingScraplingRuntime -InstallRoot ${quote(install)} -SourceRoot ${quote(source)} -PythonExecutable ${quote(base)}
+      $samePins = [IO.File]::ReadAllText(${quote(join(source, "scripts/scrapling/requirements.txt"))}).Replace("` + "`r`n" + `", "` + "`n" + `")
+      [IO.File]::WriteAllText(${quote(join(source, "scripts/scrapling/requirements.txt"))}, "# layout-only change` + "`r`n" + `" + $samePins.Replace("` + "`n" + `", "` + "`r`n" + `"), [Text.UTF8Encoding]::new($false))
+      $third = Install-AwardPingScraplingRuntime -InstallRoot ${quote(install)} -SourceRoot ${quote(source)} -PythonExecutable ${quote(base)}
       $beforeTamper = $script:operations.Count
       [IO.File]::WriteAllText(${quote(base)}, 'changed base Python')
       $baseMessage = ''
@@ -292,16 +295,22 @@ describe.skipIf(process.platform !== "win32")("Scrapling runtime installer temp-
       [IO.File]::WriteAllText($first.PythonExecutable, 'tampered')
       $message = ''
       try { $null = Install-AwardPingScraplingRuntime -InstallRoot ${quote(install)} -SourceRoot ${quote(source)} } catch { $message = $_.Exception.Message }
-      [pscustomobject]@{ first = $first; second = $second; receiptUnchanged = ($initialReceipt -ceq (Get-APSSha256 $first.ReceiptPath)); operations = $script:operations; executedAfterTamper = ($script:operations.Count -ne $beforeTamper); message = $message; baseMessage = $baseMessage } | ConvertTo-Json -Depth 8
+      [pscustomobject]@{ first = $first; second = $second; third = $third; receiptUnchanged = ($initialReceipt -ceq (Get-APSSha256 $first.ReceiptPath)); operations = $script:operations; executedAfterTamper = ($script:operations.Count -ne $beforeTamper); message = $message; baseMessage = $baseMessage } | ConvertTo-Json -Depth 8
     `);
     expect(parsed.first.Reused).toBe(false);
     expect(parsed.second.Reused).toBe(true);
+    expect(parsed.third.Reused).toBe(true);
+    expect(parsed.third.RuntimeRoot).toBe(parsed.first.RuntimeRoot);
+    expect(parsed.third.ReceiptSha256).toBe(parsed.first.ReceiptSha256);
+    expect(parsed.third.RequirementsSha256).not.toBe(parsed.first.RequirementsSha256);
+    expect(parsed.third.RuntimeRequirementsSha256).toBe(parsed.first.RequirementsSha256);
+    expect(parsed.third.RequirementsPinsSha256).toBe(parsed.first.RequirementsPinsSha256);
     expect(parsed.first.RequirementsSha256).toBe(requirementsHash);
     expect(parsed.first.RuntimeRoot).toBe(join(install, "runtime", `scrapling-${requirementsHash}`));
     expect(parsed.first.ReceiptSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(parsed.first.ReceiptSha256).toBe(parsed.second.ReceiptSha256);
     expect(parsed.receiptUnchanged).toBe(true);
-    expect(parsed.operations).toEqual(["Virtual environment creation", "Pinned dependency installation", "Verified fixture", "Verified fixture"]);
+    expect(parsed.operations).toEqual(["Virtual environment creation", "Pinned dependency installation", "Verified fixture", "Verified fixture", "Verified fixture"]);
     expect(parsed.executedAfterTamper).toBe(false);
     expect(parsed.message).toContain("integrity verification failed");
     expect(parsed.baseMessage).toContain("integrity verification failed");

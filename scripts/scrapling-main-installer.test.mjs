@@ -159,6 +159,7 @@ describe.skipIf(process.platform !== "win32")("Scrapling main installer temp-onl
     writeFileSync(join(app, "scripts/scrapling/requirements.txt"), requirements);
     writeFileSync(python, "inert fixture; never executed");
     writeFileSync(receiptPath, "inert receipt fixture");
+    writeFileSync(join(runtime, "requirements.txt"), requirements);
     writeFileSync(sourceManifest, '{"fixture":true}\n');
     const manifestHash = hash(readFileSync(sourceManifest));
     const receiptHash = hash(readFileSync(receiptPath));

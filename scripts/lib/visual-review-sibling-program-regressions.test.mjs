@@ -142,7 +142,7 @@ describe("generic enrollment clauses are not named sibling programs", () => {
   });
 
   it("does not pretend this candidate gate belongs to the promotion bundle's documented source closure", () => {
-    expect(monitoringPromotionMatcherBundleSources).toHaveLength(43);
+    expect(monitoringPromotionMatcherBundleSources).toHaveLength(55);
     expect(monitoringPromotionMatcherBundleSources).toContain("scripts/lib/program-text-canonical-url-admission.mjs");
     expect(monitoringPromotionMatcherBundleSources).toEqual(expect.arrayContaining([
       "scripts/lib/program-text-deterministic-no-change.mjs", "scripts/lib/program-text-repository.mjs", "scripts/program-text-worker.mjs",
@@ -157,6 +157,9 @@ describe("generic enrollment clauses are not named sibling programs", () => {
       "scripts/lib/program-text-smart-publisher-json.mjs", "scripts/scrapling/smart_publisher_json.py",
       "scripts/lib/program-text-smart-kb-publisher-json.mjs", "scripts/lib/program-text-smart-kb-reviewed-model.mjs",
       "scripts/lib/program-text-source-raw-anchor.mjs", "scripts/scrapling/html_document.py",
+      "scripts/lib/program-text-review-queue.mjs", "scripts/lib/program-text-host-pacing.mjs",
+      "scripts/lib/program-text-cycle-runner.mjs", "scripts/lib/program-text-collection-cycle.mjs",
+      "scripts/lib/scrapling-session-process.mjs", "scripts/lib/program-basic-page-audit.mjs",
     ]));
     expect(monitoringPromotionMatcherBundleSources).not.toContain("scripts/lib/visual-review-queue.mjs");
     const first = buildMonitoringPromotionMatcherBundleManifest(), second = buildMonitoringPromotionMatcherBundleManifest();
