@@ -64,15 +64,28 @@ describe("normalized fact boundaries in full Eligibility & applying details", ()
     expect(load(markup)(".public-award-key-facts li")).toHaveLength(2);
   });
 
-  it.each(["applying", "dates"] as const)("keeps normalized important-date item boundaries in %s", (surface) => {
-    const facts = publicAwardFactsFromAward({ publicFacts: {
-      important_dates: ["Interviews: March 1, 2027; Decisions: April 1, 2027"],
-    } });
-    expect(facts.importantDates).toEqual(["Interviews: March 1, 2027", "Decisions: April 1, 2027"]);
+  it.each(["applying", "dates"] as const)("keeps a reviewed dated event and its qualifier together in %s", (surface) => {
+    const interview = "Interviews: March 1, 2027; only shortlisted applicants are invited, and scheduling changes require prior approval.";
+    const decision = "Decisions: April 1, 2027";
+    const publicFacts = { important_dates: [interview, decision] };
+    const original = structuredClone(publicFacts);
+    const facts = publicAwardFactsFromAward({ completeSnapshot: true, publicFacts });
+    const normalized = structuredClone(facts);
+    expect(facts.importantDates).toEqual([interview, decision]);
     const markup = surface === "applying" ? applying(facts) : renderToStaticMarkup(createElement(AwardFactsPanel, {
       facts, section: "dates", onViewSources: () => {},
     }));
-    expect(values(markup, "Important dates")).toEqual(facts.importantDates);
+    // A semicolon introduces a condition on this interview, not a new event.
+    // The independently reviewed decision remains its own visible list item.
+    expect(values(markup, "Important dates")).toEqual([interview, decision]);
+    const $ = load(markup);
+    const row = $(".public-award-fact-line").filter((_index, node) => $(node).children("dt").text() === "Important dates");
+    const items = row.children("dd").children("ul").children("li");
+    expect(items).toHaveLength(2);
+    expect(items.eq(0).text()).toBe(interview);
+    expect(items.eq(1).text()).toBe(decision);
+    expect(publicFacts).toEqual(original);
+    expect(facts).toEqual(normalized);
   });
 
   it.each(["overview", "applying", "eligibility"] as const)("ignores blank direct array entries without changing nonempty wording in %s", (surface) => {

@@ -8,9 +8,9 @@ import { dedupeChangeSummaries } from "@/lib/change-summary";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
-import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
+import { assertStage1PublicationReleaseCurrent, loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { loadPublicRenderDirectoryPublicationIndex } from "@/lib/public-render-publication";
+import { loadPublicRenderDirectoryPublicationIndex, loadPublicRenderPublicationIndex } from "@/lib/public-render-publication";
 
 export const dynamic = "force-dynamic";
 
@@ -126,9 +126,21 @@ async function loadDirectoryCatalog(): Promise<DirectoryCatalog> {
 
 async function getSharedCatalog(): Promise<DirectoryCatalog> {
   const admin = createSupabaseAdminClient();
-  const publicationIndex = await loadPublicRenderDirectoryPublicationIndex();
+  const authority = await loadPublicRenderPublicationIndex();
+  if (!authority.available) return { status: "unavailable" };
+  if (authority.verifiedEntries.length === 0) return { status: "empty" };
+
+  // Both lanes use the same render-local identity/source authority. Facts do
+  // not grant event permission; the event reader retains every evidence gate.
+  const [publicationIndex, eligibleEvents] = await Promise.all([
+    loadPublicRenderDirectoryPublicationIndex(),
+    loadEligiblePublicChangeEvents({ admin, publicationIndex: authority, limit: null }),
+  ]);
   if (!publicationIndex.available) return { status: "unavailable" };
   if (publicationIndex.verifiedEntries.length === 0) return { status: "empty" };
+  // The event lane can finish first. Recheck after the slower lane too, so a
+  // release suspended during fact hydration never reaches the directory.
+  await assertStage1PublicationReleaseCurrent(admin, authority);
 
   const sharedAwards: SharedAwardDirectoryRow[] = publicationIndex.verifiedEntries.map(
     (publication) => ({
@@ -144,7 +156,6 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
       hasApplicationRoutes: !publication.basicFactSnapshot && !publication.basicFactsUnavailable && (publication.textFactReview?.variationCount || 0) > 0,
     }),
   );
-  const eligibleEvents = await loadEligiblePublicChangeEvents({ admin, publicationIndex, limit: null });
   const canonicalChanges = eligibleEvents.map(({ event, publication }) => ({
     ...event,
     shared_award_id: publication.canonicalAwardId,

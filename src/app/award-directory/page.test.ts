@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   loadEligiblePublicChangeEvents: vi.fn(),
   loadFirstPublishedCaptureDates: vi.fn(),
   loadStage1PublicationIndex: vi.fn(),
+  loadDirectoryPublicationIndex: vi.fn(),
+  assertCurrentRelease: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -32,12 +34,14 @@ vi.mock("@/lib/offices", () => ({
 }));
 vi.mock("@/lib/public-change-events", () => ({
   loadEligiblePublicChangeEvents: mocks.loadEligiblePublicChangeEvents,
+  assertStage1PublicationReleaseCurrent: mocks.assertCurrentRelease,
 }));
 vi.mock("@/lib/award-first-capture", () => ({
   loadFirstPublishedCaptureDates: mocks.loadFirstPublishedCaptureDates,
 }));
 vi.mock("@/lib/public-render-publication", () => ({
-  loadPublicRenderDirectoryPublicationIndex: mocks.loadStage1PublicationIndex,
+  loadPublicRenderPublicationIndex: mocks.loadStage1PublicationIndex,
+  loadPublicRenderDirectoryPublicationIndex: mocks.loadDirectoryPublicationIndex,
 }));
 vi.mock("@/lib/supabase/admin", () => ({
   createSupabaseAdminClient: () => ({
@@ -111,6 +115,12 @@ const UNAVAILABLE_NOTICE = "The award directory is unavailable right now. Please
 
 async function renderDirectory() {
   return renderToStaticMarkup(await AwardDirectoryPage());
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
 }
 
 function expectNoCardDateMetadata(html: string) {
@@ -187,8 +197,90 @@ describe("award directory page", () => {
     mocks.getCurrentUser.mockResolvedValue(null);
     mocks.getOfficeContext.mockResolvedValue(null);
     mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex());
+    // Most presentation fixtures use the same authority and hydrated entries.
+    // Timing/failure tests below supply the two snapshots independently.
+    mocks.loadDirectoryPublicationIndex.mockImplementation(async () => mocks.loadStage1PublicationIndex.mock.results.at(-1)?.value);
+    mocks.assertCurrentRelease.mockResolvedValue("current-release-epoch");
     mocks.loadEligiblePublicChangeEvents.mockResolvedValue([]);
     mocks.loadFirstPublishedCaptureDates.mockResolvedValue(new Map([[AWARD_ID, FIRST_CAPTURE]]));
+  });
+  it("starts one facts hydration and the event lane together only after thin authority completes", async () => {
+    const thin = deferred<Stage1PublicationIndex>(), facts = deferred<Stage1PublicationIndex>();
+    const events = deferred<Array<{ event: PublicChangeEventRow; publication: Stage1PublicationEntry }>>();
+    const authority = publicationIndex(), entry = authority.verifiedEntries[0];
+    entry.publishedFacts = emptyBasicAwardFacts(); entry.basicFactsUnavailable = true;
+    entry.allowedSourceIds = ["30000000-0000-4000-8000-000000000001"];
+    entry.allowedSourceIdSet = new Set(entry.allowedSourceIds);
+    entry.approvedTextAlertSourceBindings = { [entry.allowedSourceIds[0]]: { url: "https://example.edu/fellowship", shared_award_id: AWARD_ID, epoch: "current-epoch" } };
+    const before = structuredClone(authority);
+    const hydrated = structuredClone(authority), approved = hydrated.verifiedEntries[0];
+    approved.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027", overview: "Fresh approved basic details.", deadline: "January 31, 2027" };
+    approved.basicFactsUnavailable = false;
+    approved.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-28T12:00:00.000Z" };
+    const completed: string[] = [];
+    mocks.loadStage1PublicationIndex.mockReturnValue(thin.promise);
+    mocks.loadDirectoryPublicationIndex.mockImplementation(() => facts.promise.then(value => { completed.push("facts"); return value; }));
+    mocks.loadEligiblePublicChangeEvents.mockImplementation(() => events.promise.then(value => { completed.push("events"); return value; }));
+    mocks.assertCurrentRelease.mockImplementation(async () => { completed.push("release"); return "current-release"; });
+    const rendering = renderDirectory();
+    expect(mocks.loadDirectoryPublicationIndex).not.toHaveBeenCalled(); expect(mocks.loadEligiblePublicChangeEvents).not.toHaveBeenCalled();
+    thin.resolve(authority);
+    await vi.waitFor(() => expect(mocks.loadEligiblePublicChangeEvents).toHaveBeenCalledOnce());
+    expect(mocks.loadDirectoryPublicationIndex).toHaveBeenCalledOnce();
+    expect(mocks.loadEligiblePublicChangeEvents.mock.calls[0][0]).toMatchObject({ publicationIndex: authority, limit: null });
+    expect(mocks.loadEligiblePublicChangeEvents.mock.calls[0][0].publicationIndex).toBe(authority);
+    expect(mocks.assertCurrentRelease).not.toHaveBeenCalled();
+    events.resolve([]); await vi.waitFor(() => expect(completed).toEqual(["events"]));
+    expect(mocks.assertCurrentRelease).not.toHaveBeenCalled();
+    facts.resolve(hydrated);
+    const html = await rendering;
+    // Cards intentionally show the name/deadline, not the overview text.
+    expect(html).toContain("January 31, 2027");
+    expect(completed).toEqual(["events", "facts", "release"]);
+    expect(mocks.loadDirectoryPublicationIndex).toHaveBeenCalledOnce();
+    expect(mocks.loadStage1PublicationIndex).toHaveBeenCalledOnce();
+    expect(mocks.assertCurrentRelease).toHaveBeenCalledExactlyOnceWith(expect.anything(), authority);
+    expect(authority).toEqual(before);
+  });
+
+  it.each(["unavailable", "empty"])("starts neither lane for a thin %s publication result", async kind => {
+    mocks.loadStage1PublicationIndex.mockResolvedValue(kind === "unavailable" ? unavailableIndex() : closedIndex());
+    const html = await renderDirectory();
+    expect(html).toContain(kind === "unavailable" ? UNAVAILABLE_NOTICE : EMPTY_NOTICE);
+    expect(mocks.loadDirectoryPublicationIndex).not.toHaveBeenCalled();
+    expect(mocks.loadEligiblePublicChangeEvents).not.toHaveBeenCalled();
+    expect(mocks.assertCurrentRelease).not.toHaveBeenCalled();
+  });
+
+  it("fails closed if the release is suspended after events finish but while facts are loading", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const facts = deferred<Stage1PublicationIndex>();
+      mocks.loadDirectoryPublicationIndex.mockReturnValue(facts.promise);
+      const rendering = renderDirectory();
+      await vi.waitFor(() => expect(mocks.loadEligiblePublicChangeEvents).toHaveBeenCalledOnce());
+      expect(mocks.assertCurrentRelease).not.toHaveBeenCalled();
+      mocks.assertCurrentRelease.mockRejectedValue(Error("Stage 1 public release changed while updates were loading."));
+      facts.resolve(publicationIndex());
+      const html = await rendering;
+      expect(html).toContain(UNAVAILABLE_NOTICE); expect(html).not.toContain(EMPTY_NOTICE);
+      expect(html).not.toContain("Example Fellowship"); expect(html).not.toContain("Stage 1 public release changed");
+      expect(mocks.assertCurrentRelease).toHaveBeenCalledOnce();
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it("preserves source authority and shows unavailable basic fields without reviving retired facts", async () => {
+    const authority = publicationIndex(), hydrated = structuredClone(authority);
+    for (const entry of hydrated.entries) {
+      entry.publishedFacts = emptyBasicAwardFacts(); entry.basicFactsUnavailable = true;
+    }
+    mocks.loadStage1PublicationIndex.mockResolvedValue(authority);
+    mocks.loadDirectoryPublicationIndex.mockResolvedValue(hydrated);
+    const html = await renderDirectory();
+    expect(html).toContain("Example Fellowship"); expect(html).toContain("Not listed");
+    expect(html).not.toContain("A fellowship for testing."); expect(html).not.toContain(UNAVAILABLE_NOTICE);
+    expect(mocks.loadEligiblePublicChangeEvents.mock.calls[0][0].publicationIndex).toBe(authority);
+    expect(mocks.assertCurrentRelease).toHaveBeenCalledOnce();
   });
   it("shows the current application deadline without verification or change metadata", async () => {
     const index = publicationIndex(), entry = index.verifiedEntries[0];
