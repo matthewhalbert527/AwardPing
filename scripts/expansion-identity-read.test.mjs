@@ -2,7 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {readFileSync} from 'node:fs';
 import {parse} from 'libpg-query';
 import {expansionIdentityReadRollback} from './test-support/expansion-identity-read-rollback.mjs';
-const migration=readFileSync(new URL('../supabase/migrations/20261101193331_public_expansion_identity_reads.sql',import.meta.url),'utf8'),source=readFileSync(new URL('../supabase/migrations/20261101155527_program_award_expansion_batch_four.sql',import.meta.url),'utf8');
+const migration=readFileSync(new URL('../supabase/migrations/20261101203017_public_expansion_identity_reads.sql',import.meta.url),'utf8'),source=readFileSync(new URL('../supabase/migrations/20261101155527_program_award_expansion_batch_four.sql',import.meta.url),'utf8');
 const old=source.slice(source.indexOf('CREATE OR REPLACE FUNCTION public.get_program_award_expansion_publication('),source.indexOf('CREATE OR REPLACE FUNCTION private.program_award_expansion_follow_source'));
 const fn=ast=>ast.stmts.find(s=>s.stmt.CreateFunctionStmt).stmt.CreateFunctionStmt,body=f=>f.options.find(o=>o.DefElem.defname==='as').DefElem.arg.List.items[0].String.sval;
 const noLocations=v=>Array.isArray(v)?v.map(noLocations):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([k])=>!['location','stmt_location','stmt_len'].includes(k)).map(([k,v])=>[k,noLocations(v)])):v;
