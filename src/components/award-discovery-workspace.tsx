@@ -14,6 +14,8 @@ import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { awardMatchesUpdateWindow, UPDATE_WINDOW_OPTIONS } from "@/lib/award-update-window";
 import { AwardDeadlineValue } from "@/components/award-deadline-value";
+import { presentAwardCardDeadline } from "@/lib/award-card-deadline";
+import { awardDateZoneSlices } from "@/lib/award-date-display";
 import styles from "./award-discovery-workspace.module.css";
 
 export type SharedAwardCard = {
@@ -451,7 +453,7 @@ export function AwardDiscoveryWorkspace({
                   Clear
                 </button>
               </div>
-              <div className="award-search-results">
+              <div className={`award-search-results ${styles.cardContainer}`}>
                 <div className={`${styles.cardList} ${styles.searchCardList}`}>
                   {matches.map((award) => (
                     <Link
@@ -460,7 +462,7 @@ export function AwardDiscoveryWorkspace({
                       key={award.id}
                       onNavigate={() => setSearchOpen(false)}
                     >
-                      <AwardDirectoryCardContent award={award} presentationAsOf={presentationAsOf} searchResult />
+                      <AwardDirectoryCardContent award={award} presentationAsOf={presentationAsOf} />
                     </Link>
                   ))}
                   {matches.length === 0 && (
@@ -577,7 +579,7 @@ export function AwardDiscoveryWorkspace({
       )}
 
       {!browseHiddenBySearch && awards.length > 0 && (
-        <section className="grid min-w-0 gap-3" aria-label="Browse all awards">
+        <section className={`grid min-w-0 gap-3 ${styles.cardContainer}`} aria-label="Browse all awards">
           {renderBrowseControls("top")}
 
           <div className={styles.cardList}>
@@ -600,37 +602,39 @@ export function AwardDiscoveryWorkspace({
   );
 }
 
-// Search and A–Z browsing keep the same facts and provenance. Only the title
-// treatment differs; neither view guesses dates or reduces scoped deadlines.
+// Browse and search share one responsive presentation and one award link.
 function AwardDirectoryCardContent({
   award,
   presentationAsOf,
-  searchResult = false,
 }: {
   award: SharedAwardCard;
   presentationAsOf?: string;
-  searchResult?: boolean;
 }) {
   const deadline = presentAwardDeadlines(award, award.name, presentationAsOf ? new Date(presentationAsOf) : undefined);
   return (
     <div className={`award-row-grid ${styles.rowGrid}`}>
-      <div className="min-w-0">
-        {searchResult ? <span className="award-search-option-title">{award.name}</span> : (
-          <span className="inline-flex min-w-0 items-center gap-2 font-bold">
-            <span>{award.name}</span>
-            <ChevronRight size={17} aria-hidden="true" />
-          </span>
-        )}
+      <div className={styles.titleRegion}>
+        <span className={styles.title}>{award.name}</span>
         {award.hasApplicationRoutes ? <p className="mt-2 text-xs font-medium text-[var(--muted)]">Requirements and benefits by route</p> : null}
       </div>
-      <div className="award-row-deadline">
-        <span>{deadline.entries.length ? deadline.label : "Deadline"}</span>
-        {deadline.entries.length ? deadline.entries.map((entry) => (
-          <strong key={`${entry.label}:${entry.value}`} data-deadline-status={entry.status}>
-            {deadline.entries.length > 1 && entry.label !== "Application deadline" && entry.label !== "Deadline" && <span>{entry.label}: </span>}
-            <AwardDeadlineValue value={entry.value} status={entry.status} />
-          </strong>
-        )) : <strong>{award.hasApplicationRoutes ? "View route deadlines" : "Not listed"}</strong>}
+      <div className={styles.deadlinePanel}>
+        <dl className={`award-row-deadline ${styles.deadlines}`}>
+          {deadline.entries.length ? deadline.entries.map((entry) => {
+            const item = presentAwardCardDeadline(entry);
+            const zone = awardDateZoneSlices(entry.value)?.zone;
+            const timeZone = zone && item.time?.endsWith(zone) ? zone : null;
+            return <div className={styles.deadlineItem} key={`${entry.label}:${entry.value}`} data-deadline-status={entry.status}>
+              <dt className={styles.deadlineLabel}>{item.label}</dt>
+              <dd className={styles.deadlineDate}><AwardDeadlineValue value={item.date} status={entry.status} /></dd>
+              {item.time && <dd className={styles.deadlineTime}>{timeZone ? <>{item.time.slice(0, -timeZone.length)}<span className="award-date-zone">{timeZone}</span></> : item.time}</dd>}
+              {item.closedCycle || entry.status === "past" ? <dd className={styles.deadlineStatus}>{item.closedCycle ? "Closed cycle" : "Deadline passed"}</dd> : null}
+            </div>;
+          }) : <div className={styles.deadlineItem}>
+            <dt className={styles.deadlineLabel}>{award.hasApplicationRoutes ? "Route deadlines" : "Deadline · Unconfirmed"}</dt>
+            <dd className={styles.deadlineDate}>{award.hasApplicationRoutes ? "View route deadlines" : "Not listed"}</dd>
+          </div>}
+        </dl>
+        <span className={`button-primary ${styles.viewAward}`}>View award</span>
       </div>
     </div>
   );
