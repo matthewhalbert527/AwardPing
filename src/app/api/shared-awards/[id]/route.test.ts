@@ -37,6 +37,12 @@ vi.mock("@/lib/stage1-publication", () => ({
   isStage1SourceIdentityExcluded: mocks.isStage1SourceIdentityExcluded,
 }));
 vi.mock("@/lib/public-change-events", () => ({ loadEligiblePublicChangeEvents: mocks.loadEligiblePublicChangeEvents }));
+// These source-identity tests use synthetic event IDs. The real approved-group
+// getter and alias hydration are exercised separately in groups.test.ts.
+vi.mock("@/lib/public-alert-groups.server", async original => ({
+  ...(await original<typeof import("@/lib/public-alert-groups.server")>()),
+  loadPublicAlertGroups: async ({ events }: { events: unknown[] }) => ({ events, groups: [] }),
+}));
 vi.mock("@/lib/source-url-policy", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/source-url-policy")>();
   policy.real = actual.isTrackableOfficialSourceUrl;

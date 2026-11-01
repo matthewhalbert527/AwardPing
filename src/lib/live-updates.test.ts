@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
-const mocks = vi.hoisted(() => ({ eligible: vi.fn(), related: vi.fn(), index: vi.fn() }));
-vi.mock("@/lib/supabase/admin", () => ({ createSupabaseAdminClient: () => ({}) }));
+const mocks = vi.hoisted(() => ({ eligible: vi.fn(), related: vi.fn(), index: vi.fn(), rpc: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({ createSupabaseAdminClient: () => ({ rpc: mocks.rpc }) }));
 vi.mock("@/lib/stage1-publication", () => ({ loadStage1PublicationIndex: mocks.index }));
-vi.mock("@/lib/public-change-events", () => ({ loadEligiblePublicChangeEvents: mocks.eligible }));
+vi.mock("@/lib/public-change-events", async original => ({ ...(await original<typeof import("./public-change-events")>()), loadEligiblePublicChangeEvents: mocks.eligible }));
 vi.mock("@/lib/public-alert-groups.server", async original => ({
   ...(await original<typeof import("./public-alert-groups.server")>()), loadPublicAlertGroups: mocks.related,
 }));
 import { getLiveUpdateItems } from "./live-updates";
+import { KHS_ALIAS, KHS_CANONICAL, khsPublishedEvents, khsPublishedGroup } from "./test-support/published-khs-alias-group";
+import type { Stage1PublicationEntry } from "./stage1-publication";
 const id = (n: number) => `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const owner = id(99);
 function event(n: number) {
@@ -18,6 +20,20 @@ function event(n: number) {
 }
 describe("grouped public feed DTOs", () => {
   beforeEach(() => { vi.resetAllMocks(); mocks.index.mockResolvedValue({ available: true, verifiedMemberAwardIds: [owner] }); });
+  it("passes the real alias-owned KHS approved payload through actual hydration into one feed card", async () => {
+    const publication = { canonicalAwardId: KHS_CANONICAL, memberAwardIds: [KHS_CANONICAL, KHS_ALIAS],
+      registry: { canonical_name: "Knight-Hennessy Scholars", canonical_slug: "knight-hennessy-scholars" } } as Stage1PublicationEntry;
+    const events = khsPublishedEvents(publication);
+    mocks.index.mockResolvedValue({ available: true, verifiedMemberAwardIds: publication.memberAwardIds });
+    mocks.eligible.mockResolvedValue(events);
+    mocks.rpc.mockResolvedValue({ data: [khsPublishedGroup()], error: null });
+    const actual = await vi.importActual<typeof import("./public-alert-groups.server")>("./public-alert-groups.server");
+    mocks.related.mockImplementation(actual.loadPublicAlertGroups);
+    const feed = await getLiveUpdateItems(80, new Date("2026-11-01T02:00:00Z"));
+    expect(feed).toHaveLength(1); expect(feed[0].awardId).toBe(KHS_CANONICAL);
+    expect(feed[0].group?.id).toBe(khsPublishedGroup().group_id);
+    expect(new Set(feed[0].group?.memberEventIds)).toEqual(new Set(events.map(row => row.event.id)));
+  });
   it("returns one card for a complete approved family without removing either member's original source", async () => {
     const child = event(1), parent = event(2), before = structuredClone(child);
     mocks.eligible.mockResolvedValue([child]);

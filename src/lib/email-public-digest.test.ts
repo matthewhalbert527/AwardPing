@@ -22,6 +22,8 @@ import {
 } from "@/lib/email";
 import { buildPublicDigestChanges, pendingPublicDigestChangesForSubscriber } from "@/lib/public-updates-core";
 import { programChangePresentation } from "@/lib/program-change-presentation";
+import { KHS_ALIAS, KHS_CANONICAL, KHS_OLD_EVENT, KHS_NEW_EVENT, khsPublishedEvents, khsPublishedGroup } from "./test-support/published-khs-alias-group";
+import type { Stage1PublicationEntry } from "./stage1-publication";
 
 const changes = [
   {
@@ -36,6 +38,25 @@ const changes = [
 
 describe("public digest frozen email", () => {
   beforeEach(() => mocks.send.mockReset());
+
+  it("renders the actual approved KHS members together without replaying a previously reserved Iran update", () => {
+    const publication = { canonicalAwardId: KHS_CANONICAL, memberAwardIds: [KHS_CANONICAL, KHS_ALIAS] } as Stage1PublicationEntry;
+    const events = khsPublishedEvents(publication), reference = khsPublishedGroup();
+    const group = { id: reference.group_id, revisionHash: reference.content_hash, memberEventIds: reference.event_ids,
+      members: events.map(({ event }) => ({ id: event.id, sourceId: event.shared_award_source_id, sourceTitle: "Eligibility", sourceUrl: event.source_url,
+        sourcePageType: event.source_page_type, summary: event.summary, changeDetails: event.change_details, detectedAt: event.detected_at })) };
+    const changes = buildPublicDigestChanges(events.map(({ event }) => ({ ...event, shared_award_id: KHS_CANONICAL, group })), new Map([[KHS_CANONICAL, "Knight-Hennessy Scholars"]]), null);
+    const before = structuredClone(changes), rendered = renderPublicDailyDigestEmail({ changes, unsubscribeUrl: "https://awardping.org/unsubscribe" });
+    expect(rendered.subject).toContain("1 award page update");
+    expect(rendered.text).toContain("We encourage citizens and residents of all countries to apply.");
+    expect(rendered.text).toContain("Stanford cannot process applications");
+    expect(changes.map(change => change.eventId)).toEqual([KHS_NEW_EVENT, KHS_OLD_EVENT]);
+    const pending = pendingPublicDigestChangesForSubscriber(changes, "2026-10-01T00:00:00Z", new Set([KHS_OLD_EVENT]));
+    const followup = renderPublicDailyDigestEmail({ changes: pending, unsubscribeUrl: "https://awardping.org/unsubscribe" });
+    expect(pending.map(change => change.eventId)).toEqual([KHS_NEW_EVENT]);
+    expect(followup.text).not.toContain("Stanford cannot process applications");
+    expect(changes).toEqual(before); expect(mocks.send).not.toHaveBeenCalled();
+  });
 
   it("groups only current batch display rows while retaining every original event for delivery receipts", () => {
     const first = { ...changes[0], eventId: "first", summary: "The previous eligibility condition changed." };

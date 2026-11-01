@@ -11,6 +11,9 @@ import type { PublishedVariationContext } from "@/lib/program-variation-review-t
 import { isProgramExpansionPublication } from "@/lib/program-expansion-tracking.server";
 import { loadProgramExpansionPublicSources } from "@/lib/program-expansion-public-sources.server";
 import { isPublicAwardSource } from "@/lib/source-quality";
+import { attachPublicAlertGroups, loadPublicAlertGroups } from "@/lib/public-alert-groups.server";
+import { publicAlertDisplayRows } from "@/lib/public-alert-groups";
+import { readableSourceTitle } from "@/lib/display-text";
 import {
   isTrackableOfficialSourceUrl,
 } from "@/lib/source-url-policy";
@@ -152,7 +155,14 @@ export async function GET(_request: Request, { params }: Props) {
   if (!reviewedHomepageSource) {
     return NextResponse.json({ error: "Shared award was not found." }, { status: 404 });
   }
-  const changes = eligibleEvents.map((entry) => entry.event);
+  let related: Awaited<ReturnType<typeof loadPublicAlertGroups>>;
+  try { related = await loadPublicAlertGroups({ admin, publicationIndex, events: eligibleEvents }); }
+  catch { return NextResponse.json({ error: "Shared award details are unavailable right now." }, { status: 503 }); }
+  const changes = related.events.map((entry) => entry.event);
+  const grouped = attachPublicAlertGroups(changes.map(change => ({ id: change.id, sourceId: change.shared_award_source_id,
+    sourceTitle: readableSourceTitle(change.source_title, change.source_url), sourceUrl: change.source_url, sourcePageType: change.source_page_type,
+    summary: displayChangeSummary(change.summary, change.source_url, change.change_details), changeDetails: change.change_details, detectedAt: change.detected_at })), related.groups);
+  const groupByEvent = new Map(grouped.map(change => [change.id, change.group]));
   const facts = publicAwardFactsFromAward({ publicFacts: variations?.public_facts || publication.publishedFacts, completeSnapshot: Boolean(publication.basicFactSnapshot || publication.basicFactsUnavailable || publication.textFactReview) });
   return NextResponse.json({
     award: {
@@ -161,11 +171,14 @@ export async function GET(_request: Request, { params }: Props) {
       officialHomepage: publication.registry.official_homepage,
       summary: facts.overview,
       sourceCount: sources.length,
-      changeCount: changes.length,
+      changeCount: publicAlertDisplayRows(grouped).length,
       tracked: Boolean(officeAwards?.length),
       detailsLoaded: true,
       hasApplicationRoutes: !publication.basicFactSnapshot && !publication.basicFactsUnavailable && Boolean(publication.textFactReview?.variationCount),
-      sources: sources.map((source) => ({
+      sources: sources.map((source) => {
+        const latest = latestChangesForSource(source, changes).slice(0, 2);
+        const visibleIds = new Set(latest.map(change => change.id));
+        return {
         id: source.id,
         url: source.url,
         title: variations && !variations.source_bindings[source.id] ? publication.registry.canonical_name : source.title,
@@ -173,7 +186,7 @@ export async function GET(_request: Request, { params }: Props) {
         tracked: trackedSourceIds.has(source.id),
         lastCheckedAt: source.last_checked_at,
         lastError: source.last_error,
-        latestChanges: latestChangesForSource(source, changes).slice(0, 2).map((change) => ({
+        latestChanges: latest.map((change) => ({
           id: change.id,
           sourceTitle: change.source_title,
           sourceUrl: change.source_url,
@@ -184,8 +197,9 @@ export async function GET(_request: Request, { params }: Props) {
           suppressionReason: change.suppression_reason,
           suppressionSource: change.suppression_source,
           detectedAt: change.detected_at,
+          ...(groupByEvent.get(change.id)?.memberEventIds.every(eventId => visibleIds.has(eventId)) ? { group: groupByEvent.get(change.id) } : {}),
         })),
-      })),
+      }; }),
       changes: changes.map((change) => ({
         id: change.id,
         sourceTitle: change.source_title,
@@ -197,6 +211,7 @@ export async function GET(_request: Request, { params }: Props) {
         suppressionReason: change.suppression_reason,
         suppressionSource: change.suppression_source,
         detectedAt: change.detected_at,
+        ...(groupByEvent.get(change.id) ? { group: groupByEvent.get(change.id) } : {}),
       })),
     },
   });

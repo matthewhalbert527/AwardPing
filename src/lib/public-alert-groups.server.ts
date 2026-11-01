@@ -70,11 +70,17 @@ export async function loadPublicAlertGroups({ admin, publicationIndex, events }:
     const found = await loadEligiblePublicChangeEvents({ admin, publicationIndex, eventIds: selected, preserveDistinctEventIds: true, limit: null, pageSize: 100 });
     for (const row of found) { check(selected.includes(row.event.id) && !byId.has(row.event.id)); byId.set(row.event.id, row); }
   }
-  const complete = [...groups.values()].filter(group => group.event_refs.every(ref => {
-    const row = byId.get(ref.event_id);
-    return row?.publication.canonicalAwardId === group.shared_award_id &&
-      row.event.visual_review_candidate_id === ref.review_id && Boolean(parseProgramTextChangeDetails(row.event.change_details));
-  }));
+  const complete = [...groups.values()].filter(group => {
+    const canonicalId = byId.get(group.event_ids[0])?.publication.canonicalAwardId;
+    return Boolean(canonicalId && group.event_refs.every(ref => {
+      const row = byId.get(ref.event_id);
+      // Captures and groups retain their exact owner, including a reviewed
+      // alias. Only the verified publication establishes its canonical award.
+      return row?.event.shared_award_id === group.shared_award_id &&
+        row.publication.canonicalAwardId === canonicalId && row.publication.memberAwardIds.includes(group.shared_award_id) &&
+        row.event.visual_review_candidate_id === ref.review_id && Boolean(parseProgramTextChangeDetails(row.event.change_details));
+    }));
+  });
   const retained = new Set([...ids, ...complete.flatMap(group => group.event_ids)]);
   return { events: [...byId.values()].filter(row => retained.has(row.event.id)).sort((a, b) => comparePublicChangeEventsNewestFirst(a.event, b.event)), groups: complete };
 }

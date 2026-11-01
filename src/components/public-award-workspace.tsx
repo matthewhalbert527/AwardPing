@@ -683,7 +683,8 @@ function OverviewPanel({
 }) {
   const keyFacts = factRows.filter((fact) => ["Award amount", "Academic level", "Citizenship"].includes(fact.label));
   const deadlines = presentAwardDeadlines(data.facts, data.award.name, data.presentationAsOf ? new Date(data.presentationAsOf) : undefined);
-  const latestChange = data.changes[0];
+  const latestRow = publicAlertDisplayRows(data.changes)[0];
+  const latestChange = latestRow?.members[0];
 
   return (
     <div className="public-award-panel-stack">
@@ -730,7 +731,8 @@ function OverviewPanel({
         <div className="public-award-latest-heading"><h3 id="award-latest-heading">Last reported change</h3>
           {latestChange && <ChangeTimestamp value={latestChange.detectedAt} />}</div>
         {latestChange ? <>
-          <ChangeSummaryDisplay summary={latestChange.summary} changeDetails={latestChange.changeDetails} sourceTitle={latestChange.sourceTitle} sourceUrl={latestChange.sourceUrl} compact />
+          {latestRow.grouped ? <PublicAlertGroupSummary members={latestRow.members} /> :
+            <ChangeSummaryDisplay summary={latestChange.summary} changeDetails={latestChange.changeDetails} sourceTitle={latestChange.sourceTitle} sourceUrl={latestChange.sourceUrl} compact />}
           <button className="public-award-context-link" type="button" onClick={() => onViewUpdates(latestChange.id)}>View updates <ArrowRight size={15} aria-hidden="true" /></button>
         </> : <p>No changes reported. This does not confirm that the official pages have stayed unchanged.</p>}
       </section>

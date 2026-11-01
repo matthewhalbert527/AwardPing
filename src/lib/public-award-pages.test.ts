@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   sourceQueryError: null as { message: string } | null,
   identityRows: {} as Record<string, Array<Record<string, unknown>>>,
   identityQueryError: null as { message: string } | null,
+  groupRows: [] as unknown[],
 }));
 
 // Only the loader is replaced; the exact newest-first comparator the merge
@@ -38,7 +39,7 @@ vi.mock("@/lib/source-quality", async (importOriginal) => ({
 // predicate is part of what these tests exercise at this boundary.
 vi.mock("@/lib/supabase/admin", () => ({
   createSupabaseAdminClient: () => ({
-    rpc: async () => ({ data: [], error: null }),
+    rpc: async () => ({ data: mocks.groupRows, error: null }),
     from(table: string) {
       mocks.queriedTables.push(table);
       if (["shared_awards", "shared_award_slug_aliases"].includes(table)) {
@@ -69,7 +70,8 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
-import { PublicAwardWorkspace } from "@/components/public-award-workspace";
+import { PublicAwardWorkspace, changeIdsToMarkRead } from "@/components/public-award-workspace";
+import { load } from "cheerio";
 import {
   getPublicAwardPageBySlug,
   getPublicAwardPageResolutionBySlug,
@@ -79,6 +81,7 @@ import {
 import type { EligiblePublicChangeEvent } from "@/lib/public-change-events";
 import type { Stage1PublicationEntry, Stage1PublicationIndex } from "@/lib/stage1-publication";
 import { emptyBasicAwardFacts } from "@/lib/program-basic-facts.server";
+import { KHS_ALIAS, KHS_CANONICAL, KHS_SOURCE, KHS_SOURCE_URL, KHS_NEW_EVENT, KHS_OLD_EVENT, khsPublishedEvents, khsPublishedGroup } from "./test-support/published-khs-alias-group";
 
 const AWARD_ID = "10000000-0000-4000-8000-000000000001";
 const SOURCE_HOME = "30000000-0000-4000-8000-000000000001";
@@ -188,6 +191,7 @@ const ninthEvent = eligibleEvent(9, "2026-07-05T12:00:00.000Z");
 
 describe("public award page deep links", () => {
   beforeEach(() => {
+    mocks.groupRows = [];
     mocks.loadEligiblePublicChangeEvents.mockReset();
     mocks.loadStage1PublicationIndex.mockReset();
     mocks.unreadSharedChangeIdsForUser.mockReset();
@@ -579,6 +583,7 @@ async function listedSources(): Promise<Array<{ id: string; url: string }>> {
 
 describe("public award source listing keeps every eligible source ID", () => {
   beforeEach(() => {
+    mocks.groupRows = [];
     mocks.loadEligiblePublicChangeEvents.mockReset().mockResolvedValue([]);
     mocks.loadStage1PublicationIndex.mockReset();
     mocks.unreadSharedChangeIdsForUser.mockReset();
@@ -756,5 +761,53 @@ describe("public award source listing keeps every eligible source ID", () => {
     );
     expect(markup).toContain('<h2 id="public-award-panel-heading">Mirrored Instructions</h2>');
     expect(markup).not.toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
+  });
+});
+
+describe("real approved KHS alias group through the public award loader and workspace", () => {
+  it("renders one update and a complete overview while retaining both member deep links and read IDs", async () => {
+    const entry = publication();
+    entry.canonicalAwardId = KHS_CANONICAL;
+    entry.memberAwardIds = [KHS_CANONICAL, KHS_ALIAS];
+    entry.allowedSourceIds = [SOURCE_HOME, KHS_SOURCE]; entry.allowedSourceIdSet = new Set(entry.allowedSourceIds);
+    entry.registry = { ...entry.registry, canonical_name: "Knight-Hennessy Scholars", canonical_slug: "knight-hennessy-scholars", official_homepage: "https://knight-hennessy.stanford.edu/" };
+    entry.officialHomepageUrl = entry.registry.official_homepage;
+    const index = publicationIndex(entry);
+    index.entryByMemberAwardId = new Map(entry.memberAwardIds.map(id => [id, entry]));
+    index.verifiedMemberAwardIds = entry.memberAwardIds; index.verifiedCanonicalAwardIds = [KHS_CANONICAL];
+    mocks.loadStage1PublicationIndex.mockResolvedValue(index);
+    mocks.groupRows = [khsPublishedGroup()];
+    mocks.isPublicAwardSource.mockReturnValue(true); mocks.isStage1SourceIdentityExcluded.mockReturnValue(false);
+    mocks.sourceQueryError = null;
+    mocks.sourceRows = [sourceRow(SOURCE_HOME, entry.registry.official_homepage, "Official homepage", "homepage", KHS_CANONICAL),
+      sourceRow(KHS_SOURCE, KHS_SOURCE_URL, "Eligibility", "eligibility", KHS_ALIAS)];
+    const events = khsPublishedEvents(entry);
+    mocks.loadEligiblePublicChangeEvents.mockImplementation(async (input: { eventIds?: string[] }) =>
+      input.eventIds ? events.filter(row => input.eventIds!.includes(row.event.id)) : [events[0]]);
+    mocks.unreadSharedChangeIdsForUser.mockResolvedValue(new Set([KHS_NEW_EVENT, KHS_OLD_EVENT]));
+    const resolution = await getPublicAwardPageResolutionBySlug("knight-hennessy-scholars", { userId: "viewer", changeId: KHS_NEW_EVENT });
+    expect(resolution.kind).toBe("published");
+    if (resolution.kind !== "published") throw Error("Published KHS page required");
+    const data = resolution.data;
+    expect(data.award.id).toBe(KHS_CANONICAL);
+    expect(data.changes.map(change => change.id)).toEqual([KHS_NEW_EVENT, KHS_OLD_EVENT]);
+    expect(data.changes.every(change => change.group?.id === khsPublishedGroup().group_id)).toBe(true);
+    for (const initialChangeId of [KHS_NEW_EVENT, KHS_OLD_EVENT]) {
+      const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "updates", initialChangeId })));
+      expect($(".public-award-change-line")).toHaveLength(1);
+      expect($(".public-award-change-line[aria-current='true']")).toHaveLength(1);
+      expect($("[aria-label='Related changes'] > section")).toHaveLength(2);
+      expect($(".public-award-change-line blockquote")).toHaveLength(2);
+      expect($(".public-award-change-line a[href='" + KHS_SOURCE_URL + "']")).toHaveLength(2);
+      expect($(".public-award-change-line > time").attr("datetime")).toBe(new Date(events[0].event.detected_at).toISOString());
+      expect($(".public-award-update-count").attr("aria-label")).toBe("1 unread update");
+    }
+    const overview = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect(overview(".public-award-latest").text()).toContain("We encourage citizens and residents of all countries to apply.");
+    expect(overview(".public-award-latest").text()).toContain("Stanford cannot process applications");
+    expect(overview(".public-award-latest-heading time").attr("datetime")).toBe(new Date(events[0].event.detected_at).toISOString());
+    expect(overview(".public-award-latest").text()).not.toMatch(/because.*Iran/i);
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "changes" })).toEqual([KHS_NEW_EVENT, KHS_OLD_EVENT]);
+    mocks.groupRows = [];
   });
 });
