@@ -792,6 +792,41 @@ function Get-AwardPingProgramTextArchiveProblems {
   return $problems
 }
 
+function New-AwardPingPrivateDirectoryAcl {
+  param([object[]]$AllowedEntries)
+
+  # Directory.SetAccessControl clears this object's modification flags after
+  # persistence. Every directory therefore requires its own fresh DACL object.
+  $directoryAcl = [Security.AccessControl.DirectorySecurity]::new()
+  $directoryAcl.SetAccessRuleProtection($true, $false)
+  $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+  foreach ($entry in $AllowedEntries) {
+    $rights = [Security.AccessControl.FileSystemRights]::Modify
+    if ($entry.Rights -eq [Security.AccessControl.FileSystemRights]::FullControl) { $rights = $entry.Rights }
+    [void]$directoryAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+      $entry.Sid, $rights, $inheritance, [Security.AccessControl.PropagationFlags]::None,
+      [Security.AccessControl.AccessControlType]::Allow))
+  }
+  return $directoryAcl
+}
+
+function Initialize-AwardPingPrivateDataRoot {
+  param([string]$InstallRoot, [object[]]$TaskSnapshots)
+
+  $dataRoot = Join-Path ([IO.Path]::GetFullPath($InstallRoot)) "data"
+  $cursor = $dataRoot
+  while ($cursor) {
+    if ((Test-Path -LiteralPath $cursor) -and ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Worker data root traverses a reparse point: $cursor" }
+    $cursor = Split-Path -Parent $cursor
+  }
+  [void](New-Item -ItemType Directory -Path $dataRoot -Force -ErrorAction Stop)
+  $dataAcl = New-AwardPingPrivateDirectoryAcl -AllowedEntries @(Get-AwardPingWorkerEnvAllowedSecurityIdentifiers -TaskSnapshots $TaskSnapshots)
+  [IO.Directory]::SetAccessControl($dataRoot, $dataAcl)
+  $problems = @(Get-AwardPingProgramTextArchiveProblems -Path $dataRoot -TaskSnapshots $TaskSnapshots)
+  if ($problems.Count -gt 0) { throw "Private worker data root did not validate: $($problems -join ' | ')" }
+  return $dataRoot
+}
+
 function Set-AwardPingProgramTextEnvironment {
   param([string]$Path, [string]$InstallRoot, [object[]]$TaskSnapshots)
 
@@ -812,27 +847,11 @@ function Set-AwardPingProgramTextEnvironment {
   }
   # As with the environment file, write only the DACL. Historical snapshot
   # folders and any existing captures are neither deleted nor rewritten.
-  $acl = [Security.AccessControl.DirectorySecurity]::new()
-  $acl.SetAccessRuleProtection($true, $false)
-  $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
-  foreach ($entry in @(Get-AwardPingWorkerEnvAllowedSecurityIdentifiers -TaskSnapshots $TaskSnapshots)) {
-    $rights = [Security.AccessControl.FileSystemRights]::Modify
-    if ($entry.Rights -eq [Security.AccessControl.FileSystemRights]::FullControl) { $rights = $entry.Rights }
-    [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
-      $entry.Sid, $rights, $inheritance, [Security.AccessControl.PropagationFlags]::None,
-      [Security.AccessControl.AccessControlType]::Allow))
-  }
+  $acl = New-AwardPingPrivateDirectoryAcl -AllowedEntries @(Get-AwardPingWorkerEnvAllowedSecurityIdentifiers -TaskSnapshots $TaskSnapshots)
   [IO.Directory]::SetAccessControl($archive, $acl)
   $problems = @(Get-AwardPingProgramTextArchiveProblems -Path $archive -TaskSnapshots $TaskSnapshots)
   if ($problems.Count -gt 0) { throw "Private program text archive did not validate: $($problems -join ' | ')" }
-  $dataRoot = Join-Path ([IO.Path]::GetFullPath($InstallRoot)) "data"
-  $cursor = $dataRoot
-  while ($cursor) {
-    if ((Test-Path -LiteralPath $cursor) -and ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Worker data root traverses a reparse point: $cursor" }
-    $cursor = Split-Path -Parent $cursor
-  }
-  [void](New-Item -ItemType Directory -Path $dataRoot -Force -ErrorAction Stop)
-  [IO.Directory]::SetAccessControl($dataRoot, $acl)
+  $dataRoot = Initialize-AwardPingPrivateDataRoot -InstallRoot $InstallRoot -TaskSnapshots $TaskSnapshots
   # Read the actual installed collector clock, including equivalent offset XML.
   $coverageBoundary = Get-AwardPingDailyCoverageBoundaryUtc -InstallRoot $InstallRoot
   $anchorMinute = ([int]$coverageBoundary.UtcDateTime.TimeOfDay.TotalMinutes + 1440 - 30) % 1440
@@ -3126,6 +3145,7 @@ try {
       -InstallRoot $InstallRoot `
       -SnapshotDirectory $rootRuntimeSnapshotDir
     $rootRuntimeSnapshotCaptured = $true
+    [void](Initialize-AwardPingPrivateDataRoot -InstallRoot $InstallRoot -TaskSnapshots $taskSnapshots)
     Copy-AwardPingMutableAppState -CurrentAppDir $appDir -StagingAppDir $stagingAppDir
     Update-ExistingEnvFileDefaults `
       -Path (Join-Path $stagingAppDir ".env.worker.local") `
@@ -3180,7 +3200,10 @@ try {
     }
   }
 
-  if (-not $UpdateOnly) { Copy-AwardPingMutableAppState -CurrentAppDir $appDir -StagingAppDir $appDir }
+  if (-not $UpdateOnly) {
+    [void](Initialize-AwardPingPrivateDataRoot -InstallRoot $InstallRoot -TaskSnapshots $taskSnapshots)
+    Copy-AwardPingMutableAppState -CurrentAppDir $appDir -StagingAppDir $appDir
+  }
   Write-UninstallScript -InstallRoot $InstallRoot
   Write-LauncherScripts -InstallRoot $InstallRoot
   Register-VisualSnapshotTask -InstallRoot $InstallRoot -RegisterDisabled $true

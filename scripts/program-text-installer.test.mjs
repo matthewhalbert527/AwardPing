@@ -144,14 +144,16 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
     expect(status).not.toContain("--apply");
   }, 60000);
 
-  it("protects and validates the archive before writing its environment binding", () => {
+  it("protects and validates both private roots with fresh DACLs before writing environment bindings", () => {
     const path = fixture(), env = join(path, "worker.env");
     writeFileSync(env, "INERT_FIXTURE=yes\r\n");
-    const result = run(`${definitions(["ConvertTo-AwardPingSecurityIdentifier", "Get-AwardPingWorkerEnvAllowedSecurityIdentifiers", "Get-AwardPingProgramTextArchiveProblems", "Set-AwardPingProgramTextEnvironment"])}
+    const result = run(`${definitions(["ConvertTo-AwardPingSecurityIdentifier", "Get-AwardPingWorkerEnvAllowedSecurityIdentifiers", "Get-AwardPingProgramTextArchiveProblems", "New-AwardPingPrivateDirectoryAcl", "Initialize-AwardPingPrivateDataRoot", "Set-AwardPingProgramTextEnvironment"])}
       function Get-AwardPingDailyCoverageBoundaryUtc { [DateTimeOffset]'2026-11-01T23:30:00Z' }
       Set-AwardPingProgramTextEnvironment -Path ${quote(env)} -InstallRoot ${quote(path)} -TaskSnapshots @()
       $archive = Join-Path ${quote(path)} 'runtime\\program-text-archive'
       $positive = @(Get-AwardPingProgramTextArchiveProblems -Path $archive -TaskSnapshots @())
+      $data = Join-Path ${quote(path)} 'data'
+      $dataPositive = @(Get-AwardPingProgramTextArchiveProblems -Path $data -TaskSnapshots @())
       [IO.File]::WriteAllText((Join-Path $archive 'inert.txt'), 'fixture')
       $inherited = @((Get-Acl -LiteralPath (Join-Path $archive 'inert.txt')).Access | Where-Object IsInherited).Count
       $acl = Get-Acl -LiteralPath $archive
@@ -159,15 +161,69 @@ describe.skipIf(process.platform !== "win32")("program text installer boundaries
       [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($everyone, 'Read', 'Allow'))
       [IO.Directory]::SetAccessControl($archive, $acl)
       $tampered = @(Get-AwardPingProgramTextArchiveProblems -Path $archive -TaskSnapshots @())
-      [pscustomobject]@{ positive=$positive; inherited=$inherited; tampered=$tampered; protected=(Get-Acl -LiteralPath $archive).AreAccessRulesProtected } | ConvertTo-Json -Depth 4
+      [pscustomobject]@{ positive=$positive; dataPositive=$dataPositive; inherited=$inherited; tampered=$tampered; protected=(Get-Acl -LiteralPath $archive).AreAccessRulesProtected; dataProtected=(Get-Acl -LiteralPath $data).AreAccessRulesProtected } | ConvertTo-Json -Depth 4
     `);
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(result.stdout);
     expect(value.positive).toEqual([]);
+    expect(value.dataPositive).toEqual([]);
     expect(value.inherited).toBeGreaterThan(0);
     expect(value.protected).toBe(true);
+    expect(value.dataProtected).toBe(true);
     expect(value.tampered.join(" ")).toContain("unapproved SID S-1-1-0");
     expect(readFileSync(env, "utf8")).toBe(`INERT_FIXTURE=yes\r\nAWARDPING_PROGRAM_TEXT_ARCHIVE=${join(path, "runtime/program-text-archive")}\r\nAWARDPING_WORKER_DATA_ROOT=${join(path, "data")}\r\nAWARDPING_COLLECTION_ANCHOR_MINUTE_UTC=1380\r\n`);
+  }, 60000);
+
+  it("secures moved history descendants and preserves their bytes on repeated updates", () => {
+    const path = fixture(), app = join(path, "app"), stage = join(path, "stage"), env = join(stage, ".env.worker.local");
+    mkdirSync(app); mkdirSync(stage); writeFileSync(join(app, ".env.worker.local"), "INERT_FIXTURE=yes\r\n");
+    const result = run(`${definitions(["ConvertTo-AwardPingSecurityIdentifier", "Get-AwardPingWorkerEnvAllowedSecurityIdentifiers", "Get-AwardPingProgramTextArchiveProblems", "New-AwardPingPrivateDirectoryAcl", "Initialize-AwardPingPrivateDataRoot", "Set-AwardPingProgramTextEnvironment", "Copy-AwardPingMutableAppState"])}
+      function Get-AwardPingDailyCoverageBoundaryUtc { [DateTimeOffset]'2026-11-01T23:30:00Z' }
+      $entries = @(Get-AwardPingWorkerEnvAllowedSecurityIdentifiers -TaskSnapshots @())
+      $legacyAcl = New-AwardPingPrivateDirectoryAcl -AllowedEntries $entries
+      $everyone = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+      $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+      [void]$legacyAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($everyone, 'Read', $inheritance, [Security.AccessControl.PropagationFlags]::None, 'Allow'))
+      [IO.Directory]::SetAccessControl(${quote(app)}, $legacyAcl)
+      $oldDirectory = Join-Path ${quote(app)} 'reports\\nested'
+      [void][IO.Directory]::CreateDirectory($oldDirectory)
+      $oldFile = Join-Path $oldDirectory 'retained.json'
+      [IO.File]::WriteAllText($oldFile, 'retained history bytes')
+      $beforeHash = (Get-FileHash -LiteralPath $oldFile -Algorithm SHA256).Hash
+      $beforeForeign = @((Get-Acl -LiteralPath $oldFile).Access | Where-Object { $_.IsInherited -and $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq 'S-1-1-0' }).Count
+      $data = Initialize-AwardPingPrivateDataRoot -InstallRoot ${quote(path)} -TaskSnapshots @()
+      $beforeMove = @(Get-AwardPingProgramTextArchiveProblems -Path $data -TaskSnapshots @())
+      Copy-AwardPingMutableAppState -CurrentAppDir ${quote(app)} -StagingAppDir ${quote(stage)}
+      Set-AwardPingProgramTextEnvironment -Path ${quote(env)} -InstallRoot ${quote(path)} -TaskSnapshots @()
+      $after = @()
+      foreach ($relative in @('data', 'data\\reports', 'data\\reports\\nested', 'data\\reports\\nested\\retained.json')) {
+        $target = Join-Path ${quote(path)} $relative
+        $acl = Get-Acl -LiteralPath $target
+        $foreign = @($acl.Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -notin $entries.Sid.Value }).Count
+        $after += [pscustomobject]@{ relative=$relative; foreign=$foreign }
+      }
+      # Freshly persisting the root DACL must also repair an existing moved
+      # child's inherited foreign rule on a later update, without content writes.
+      $dataAcl = Get-Acl -LiteralPath $data
+      [void]$dataAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($everyone, 'Read', $inheritance, [Security.AccessControl.PropagationFlags]::None, 'Allow'))
+      [IO.Directory]::SetAccessControl($data, $dataAcl)
+      Set-AwardPingProgramTextEnvironment -Path ${quote(env)} -InstallRoot ${quote(path)} -TaskSnapshots @()
+      $retained = Join-Path $data 'reports\\nested\\retained.json'
+      $repairedForeign = @((Get-Acl -LiteralPath $retained).Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -notin $entries.Sid.Value }).Count
+      [pscustomobject]@{ beforeForeign=$beforeForeign; beforeMove=$beforeMove; after=$after; repairedForeign=$repairedForeign;
+        sameBytes=($beforeHash -ceq (Get-FileHash -LiteralPath $retained -Algorithm SHA256).Hash);
+        dataProblems=@(Get-AwardPingProgramTextArchiveProblems -Path $data -TaskSnapshots @());
+        archiveProblems=@(Get-AwardPingProgramTextArchiveProblems -Path (Join-Path ${quote(path)} 'runtime\\program-text-archive') -TaskSnapshots @()) } | ConvertTo-Json -Depth 5
+    `);
+    expect(result.status, result.stderr).toBe(0);
+    const value = JSON.parse(result.stdout);
+    expect(value.beforeForeign).toBeGreaterThan(0);
+    expect(value.beforeMove).toEqual([]);
+    expect(value.after.every(row => row.foreign === 0)).toBe(true);
+    expect(value.repairedForeign).toBe(0);
+    expect(value.sameBytes).toBe(true);
+    expect(value.dataProblems).toEqual([]);
+    expect(value.archiveProblems).toEqual([]);
   }, 60000);
 
   it("rejects a redirected archive ancestor before creating files or binding the environment", () => {
