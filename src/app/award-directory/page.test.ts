@@ -169,7 +169,10 @@ describe("award directory page", () => {
     const html = await renderDirectory();
     const $ = load(html);
     const card = $(".award-row-deadline");
-    expect(card.text()).toContain("Application deadlines");
+    expect(card.children("div")).toHaveLength(2);
+    expect(card.find("dt").map((_index, element) => $(element).text()).get()).toEqual(["Application", "Application"]);
+    expect(card.text()).toContain("Wednesday 14 October 2026 at 11:59 p.m. GMT");
+    expect(card.text()).toContain("Tuesday 8 December 2026 or Wednesday 6 January 2027 at 11:59 p.m. GMT");
     expect(card.text()).toContain("US citizens resident in the USA round");
     expect(card.text()).toContain("All other eligible applicants round");
     expect(card.text()).toContain("(dependent on course)");
@@ -261,7 +264,7 @@ describe("award directory page", () => {
     // its canonical public page.
     expect(html).toContain('id="award-directory-search"');
     expect(html).toContain('<a class="award-row-summary block" href="/example-fellowship">');
-    expect(html).toContain("<span>Example Fellowship</span>");
+    expect($(".award-row-summary span").filter((_index, element) => $(element).text() === "Example Fellowship")).toHaveLength(1);
   });
 
   it("renders the same directory for a signed-in visitor without an office", async () => {
