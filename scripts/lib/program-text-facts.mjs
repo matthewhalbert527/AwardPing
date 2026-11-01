@@ -4,6 +4,7 @@ import { validateProgramTextReference, programTextReference } from "./program-te
 import { hasProgramTextSourceAccess } from "./program-text-source-access.mjs";
 import { CURRENT_BASIC_VALIDATION_SCHEMA, CURRENT_BASIC_FIELDS, currentBasicSourceProof } from "./current-basic-source-proof.mjs";
 import {REVIEWED_BASIC_REPEAT_KIND,validateCurrentBasicReviewedRepeatEvidence,reviewedBasicSupportProjection,reviewedBasicHash} from './current-basic-reviewed-repeat.mjs';
+import {TECHNICAL_BASIC_REPEAT_KIND,validateCurrentBasicTechnicalProbeEvidence,technicalProbeSupportProjection} from './current-basic-technical-probe.mjs';
 
 export const PROGRAM_FACT_REVIEW_SCHEMA = "awardping.program-fact-review.v1";
 export const PROGRAM_FACT_FIELDS = Object.freeze(["overview", ...PROGRAM_DETAIL_FIELDS]);
@@ -55,6 +56,7 @@ export async function validateCurrentBasicFactReview(review, context) {
   if (!Array.isArray(context.repeat_observation_ids) || !sameSet(context.repeat_observation_ids.map(row => row?.source_id), ids) ||
       !Array.isArray(context.repeat_observations) || context.repeat_observations.length > 4000 ||
       context.reviewed_repeat_observations !== undefined && (!Array.isArray(context.reviewed_repeat_observations) || context.reviewed_repeat_observations.length > 4000) ||
+      context.technical_repeat_observations !== undefined && (!Array.isArray(context.technical_repeat_observations) || context.technical_repeat_observations.length > 4000) ||
       !Array.isArray(context.pending_alert_reviews) || context.pending_alert_reviews.length > 500) fail("bounded_exact_current_basic_proofs_required");
   return validateFactReviewBody(review, context, true);
 }
@@ -72,7 +74,7 @@ async function validateFactReviewBody(review, context, currentBasic) {
   const requiredIds = [...new Set(roles.flatMap(role => role.source_ids))];
   if (!requiredIds.length || requiredIds.length > 500 || !sameSet(review.capture_refs.map(ref => ref?.source?.id), requiredIds) ||
       !sameSet(sources.map(source => source.id), requiredIds)) fail("incomplete_source_set");
-  const restored = new Map(), reviewedRepeats = new Map(); const currentProofs = []; let totalBytes = 0;
+  const restored = new Map(), reviewedRepeats = new Map(), technicalRepeats = new Map(); const currentProofs = []; let totalBytes = 0;
   for (const ref of review.capture_refs) {
     const source = sources.find(source => source.id === ref.source.id);
     if (!memberIds.includes(source.shared_award_id) || roles.filter(role => role.source_ids.includes(source.id)).some(role =>
@@ -87,17 +89,25 @@ async function validateFactReviewBody(review, context, currentBasic) {
     if (!equal(programTextReference(capture), ref)) fail("original_reference_changed");
     totalBytes += Buffer.byteLength(capture.text) + Buffer.byteLength(JSON.stringify(capture.blocks));
     if (currentBasic) {
-      const proof = currentProofs.at(-1), reviewed = proof.kind === REVIEWED_BASIC_REPEAT_KIND;
-      const observation = reviewed ? context.reviewed_repeat_observations.find(row => row.id === proof.reviewed_repeat_observation_id) : context.repeat_observations.find(row => row.id === proof.repeat_observation_id);
-      for (const retainedRef of [observation.current_ref, observation.repeat_ref]) {
+      const proof = currentProofs.at(-1), reviewed = proof.kind === REVIEWED_BASIC_REPEAT_KIND, technical = proof.kind === TECHNICAL_BASIC_REPEAT_KIND;
+      const observation = technical ? context.technical_repeat_observations.find(row => row.id === proof.technical_repeat_observation_id) : reviewed ? context.reviewed_repeat_observations.find(row => row.id === proof.reviewed_repeat_observation_id) : context.repeat_observations.find(row => row.id === proof.repeat_observation_id);
+      if (!observation) fail('current_basic_repeat_ledger_missing');
+      const retained = new Map();
+      for (const retainedRef of technical ? [observation.causal_previous_ref, observation.probe_ref] : [observation.current_ref, observation.repeat_ref]) {
         if (equal(retainedRef, ref)) continue;
         const repeat = await loadCapture(retainedRef);
         validateProgramTextCapture(repeat, { source });
         if (repeat.completeness.status !== "complete" || !equal(programTextReference(repeat), retainedRef)) fail("current_basic_repeat_original_changed");
         totalBytes += Buffer.byteLength(repeat.text) + Buffer.byteLength(JSON.stringify(repeat.blocks));
+        retained.set(retainedRef.capture_id, repeat);
         if (reviewed) reviewedRepeats.set(source.id, {row:observation,repeat});
       }
       if (reviewed) validateCurrentBasicReviewedRepeatEvidence(observation,{current:capture,repeat:reviewedRepeats.get(source.id)?.repeat});
+      if (technical) {
+        const pair={causalPrevious:retained.get(observation.causal_previous_ref.capture_id),current:capture,probe:retained.get(observation.probe_ref.capture_id)};
+        validateCurrentBasicTechnicalProbeEvidence(observation,pair);
+        technicalRepeats.set(source.id,{row:observation,probe:pair.probe});
+      }
     }
     if (totalBytes > 32 * 1024 * 1024) fail("complete_context_exceeds_review_limit");
     restored.set(source.id, capture);
@@ -145,6 +155,10 @@ async function validateFactReviewBody(review, context, currentBasic) {
   for(const [sourceId,{row,repeat}] of reviewedRepeats){
     const projection=reviewedBasicSupportProjection(review,sourceId,restored.get(sourceId),repeat,row.widget_proofs);
     if(!equal(projection,row.support_projection)||reviewedBasicHash(projection)!==row.support_hash)fail('reviewed_repeat_published_support_changed');
+  }
+  for(const [sourceId,{row,probe}] of technicalRepeats){
+    const projection=technicalProbeSupportProjection(review,restored.get(sourceId),probe,row.widget_proofs);
+    if(!equal(projection,row.support_projection)||reviewedBasicHash(projection)!==row.support_hash)fail('technical_probe_published_support_changed');
   }
   const validation = { schema: currentBasic ? CURRENT_BASIC_VALIDATION_SCHEMA : "awardping.program-fact-validation.v1", review, blockers,
     source_text: review.capture_refs.map(ref => { const capture = restored.get(ref.source.id); return { reference: ref, text: capture.text,
