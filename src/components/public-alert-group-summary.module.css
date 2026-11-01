@@ -1,0 +1,122 @@
+.group,
+.member {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.member {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.375rem 1rem;
+  min-width: 0;
+}
+
+.group .member .source {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+a.source {
+  text-decoration: underline;
+  text-underline-offset: 0.1875rem;
+}
+
+.group .member .timestamp {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.detailed {
+  display: grid;
+  gap: 1rem;
+  padding-top: 0.75rem;
+}
+
+.detailed .member {
+  gap: 0.75rem;
+}
+
+.detailed .member + .member {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.detailed .member :global(.change-summary) {
+  margin: 0;
+}
+
+.detailed .member :global(.change-summary) p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.9375rem;
+  font-weight: 400;
+  line-height: 1.65;
+}
+
+.detailed .member :global(.change-summary) p + p {
+  margin-top: 0.5rem;
+}
+
+.detailed .member p:global(.change-summary-context) {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.detailed .member :global(.change-evidence),
+.detailed .member :global(.program-change-wording) {
+  margin-top: 0;
+}
+
+.detailed .member :global(.program-change-wording) {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.detailed .member :global(.program-change-wording) > summary {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.625rem 0.875rem;
+  color: var(--accent);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.5;
+  list-style-position: inside;
+}
+
+.detailed .member :global(.program-change-wording[open]) > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.detailed .member :global(.program-change-quotes) {
+  padding: 1rem;
+}
+
+.group :is(a, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-xs);
+}
