@@ -26,12 +26,12 @@ beforeEach(() => { hooks.values = []; hooks.refs = []; hooks.effects = []; hooks
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("simple outgoing alert review", () => {
-  it("shows short context alongside the original proposal without changing its approval identity", async () => {
+  it("hides Check guidance while retaining the original proposal and approval identity", async () => {
     const alert = { ...fixture(), context: "Check the closing date and time for your application route before planning your submission." };
     const before = structuredClone(alert);
     const tree = render([alert]);
     expect(text(tree)).toContain(alert.summary);
-    expect(text(tree)).toContain(alert.context);
+    expect(text(tree)).not.toContain(alert.context);
     send.mockResolvedValueOnce(response({ ok: true })).mockResolvedValueOnce(response({ alerts: [] }));
     await button(tree, "Approve alert").props.onClick!();
     expect(JSON.parse(send.mock.calls[0][1].body)).toEqual({ id: alert.id, expected_hash: alert.contentHash, action: "approve" });
@@ -43,15 +43,40 @@ describe("simple outgoing alert review", () => {
     expect(text(render())).toContain("The alert list could not be confirmed");
     expect(text(render())).not.toContain("No alerts waiting for review.");
   });
-  it("loads a short context paragraph and retains compatibility with older alerts", async () => {
+  it("omits refreshed Check guidance and retains compatibility with older alerts", async () => {
     const context = "Check the current guide on the official site before relying on a saved copy.";
     send.mockResolvedValueOnce(response({ alerts: [{ ...fixture(), context }] }));
     await button(render(), "Refresh").props.onClick!();
-    expect(text(render())).toContain(context);
+    expect(text(render())).not.toContain(context);
     send.mockResolvedValueOnce(response({ alerts: [fixture()] }));
     await button(render(), "Refresh").props.onClick!();
     expect(text(render())).toContain(fixture().summary);
     expect(text(render())).not.toContain(context);
+  });
+  it.each([
+    [" \t\ncHeCk the current submission instructions.", false],
+    ["Checks remain distinct from application deadlines.", true],
+    ["These changes are grouped for review; each retains its original source and supporting details.", true],
+  ] as const)("filters only the whole leading Check word in context %j", (context, visible) => {
+    const alert = { ...fixture(), context };
+    const original = structuredClone(alert);
+    const displayed = text(render([alert]));
+    expect(displayed.includes(context)).toBe(visible);
+    expect(displayed).toContain(alert.summary);
+    expect(alert).toEqual(original);
+    expect(send).not.toHaveBeenCalled();
+  });
+  it("retains Check-prefixed summaries and source quotations while omitting only context", () => {
+    const alert = { ...fixture(), summary: "Check the institutional portal before submitting the application.",
+      context: "Check all current instructions before you apply.", details: [{ category: "Application", summary: "Portal instructions changed.",
+        previous: "Check the original portal.", current: "Check the revised institutional portal." }] };
+    const original = structuredClone(alert);
+    const displayed = text(render([alert]));
+    expect(displayed).toContain(alert.summary);
+    expect(displayed).toContain(alert.details[0].previous);
+    expect(displayed).toContain(alert.details[0].current);
+    expect(displayed).not.toContain(alert.context);
+    expect(alert).toEqual(original);
   });
   it("shows the proposed summary and optional text support without exposing technical workflows", () => {
     const tree = render(); expect(text(tree)).toContain("Example Scholarship"); expect(text(tree)).toContain("November 5");
@@ -142,16 +167,34 @@ describe("manual grouping of related alerts", () => {
     expect(button(tree, "Combine with another update").props["aria-expanded"]).toBe(true);
     expect(nodes(tree).find(node => node.type === "label")?.props.htmlFor).toBe(select(tree).props.id);
     expect(text(tree)).toContain(targetStatus === "approved" ? "Recently approved" : "Needs review");
-    send.mockResolvedValue(response({ ok: true, preview: preview([first, second]) }));
+    const value = preview([first, second]), originalPreview = structuredClone(value);
+    send.mockResolvedValue(response({ ok: true, preview: value }));
     await select(tree).props.onChange!({ target: { value: second.id } }); tree = render(initial, "pending", options);
     expect(send).toHaveBeenCalledExactlyOnceWith(`/api/admin/alert-groups?source=${first.id}&target=${second.id}`, { cache: "no-store", credentials: "same-origin" });
     expect(text(tree)).toContain("Combined draft preview"); expect(text(tree)).toContain(first.summary); expect(text(tree)).toContain(second.summary);
     expect(text(tree)).toContain("One reference"); expect(text(tree)).toContain("Two references");
+    expect(text(tree)).not.toContain(value.context!); expect(text(tree)).toContain(value.message);
     expect(nodes(tree).filter(node => node.type === "a").map(node => node.props.href)).toContain(second.sourceUrl);
     expect(text(tree)).not.toMatch(/Iran|because|caused by/);
     expect(send.mock.calls.filter(([, init]) => init.method === "POST")).toHaveLength(0);
     expect([first, second]).toEqual(before);
+    expect(value).toEqual(originalPreview);
     if (targetStatus === "approved") expect(text(tree)).toContain("Previously approved updates stay live while you review this draft");
+  });
+
+  it("retains a non-Check combined preview context and its publication notice", async () => {
+    const first = source(), second = other("approved"), options = [mergeOption(second)];
+    const value = { ...preview([first, second]), context: "Related changes are presented together. Their original evidence remains separate; this does not establish a common cause." };
+    const original = structuredClone(value);
+    await button(render([first], "pending", options), "Combine with another update").props.onClick!();
+    send.mockResolvedValue(response({ ok: true, preview: value }));
+    await select(render([first], "pending", options)).props.onChange!({ target: { value: second.id } });
+    const displayed = text(render([first], "pending", options));
+    expect(displayed).toContain(value.context);
+    expect(displayed).toContain(value.message);
+    expect(displayed).toContain("Previously approved updates stay live while you review this draft");
+    expect(value).toEqual(original);
+    expect(send.mock.calls.filter(([, init]) => init.method === "POST")).toHaveLength(0);
   });
 
   it.each(["pending", "approved"] as const)("saves a %s-source combination as a draft only, then opens Needs review", async sourceStatus => {
@@ -248,7 +291,8 @@ describe("manual grouping of related alerts", () => {
     render(original); flushLatestEffect();
     render(updated); flushLatestEffect();
     const tree = render(updated);
-    expect(text(tree)).toContain(updated[0].summary); expect(text(tree)).toContain(updated[0].context);
+    expect(text(tree)).toContain(updated[0].summary); expect(text(tree)).not.toContain(updated[0].context);
+    expect(updated[0].contentHash).toBe(original[0].contentHash);
     expect(text(tree)).not.toContain(original[0].summary); expect(send).not.toHaveBeenCalled();
   });
 

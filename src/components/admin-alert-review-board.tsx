@@ -170,7 +170,7 @@ export function AdminAlertReviewBoard({ initialAlerts, initialStatus = "pending"
         <time className={styles.timestamp} dateTime={alert.detectedAt}>{formatCentralDateTime(alert.detectedAt)}</time></div>
       {alert.group?.hasPendingDraft ? <p className={styles.meta}>A newer combined draft is waiting in Needs review.</p> : null}
       <div className={styles.summaryPanel}><p className={styles.summary}>{alert.summary}</p>
-        {alert.context ? <p className={`change-summary-context ${styles.context}`}>{alert.context}</p> : null}</div>
+        {alert.context && !/^\s*check\b/i.test(alert.context) ? <p className={`change-summary-context ${styles.context}`}>{alert.context}</p> : null}</div>
       {alert.group ? <>{status === "pending" && alert.group.publishedMemberIds.length ? <p className={styles.meta}>Previously approved updates stay live until this combined draft is approved.</p> : null}
         {memberDetails(alert.group.members, alert.group.publishedMemberIds)}</> : <>
         <a className={styles.sourceLink} href={sourceLink(alert.sourceUrl)!} target="_blank" rel="noopener noreferrer">View official page</a>
@@ -194,7 +194,7 @@ export function AdminAlertReviewBoard({ initialAlerts, initialStatus = "pending"
           <p className={styles.meta}>Possible match: {related.find(option => option.id === mergeTargetId)!.relatedReason}</p> : null}
         {mergePreview ? <section className={styles.preview} aria-label="Combined update preview">
           <h3 className={styles.detailLabel}>Combined draft preview</h3><p>{mergePreview.summary}</p>
-          {mergePreview.context ? <p className={styles.meta}>{mergePreview.context}</p> : null}
+          {mergePreview.context && !/^\s*check\b/i.test(mergePreview.context) ? <p className={styles.meta}>{mergePreview.context}</p> : null}
           <p className={styles.meta}>{mergePreview.message}</p>
           {mergePreview.publishedMemberIds.length ? <p className={styles.meta}>Previously approved updates stay live while you review this draft. Combining updates does not resend emails already sent.</p> : null}
           {memberDetails(mergePreview.members, mergePreview.publishedMemberIds)}

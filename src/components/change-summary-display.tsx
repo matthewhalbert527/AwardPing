@@ -30,7 +30,7 @@ export function ChangeSummaryDisplay({
           <p>{parts.text}</p>
         )}
       </div>
-      {program?.context ? (
+      {program?.context && !/^\s*check\b/i.test(program.context) ? (
         <p className="change-summary-context mt-2 text-sm leading-relaxed text-[var(--muted)]">{program.context}</p>
       ) : null}
     </>

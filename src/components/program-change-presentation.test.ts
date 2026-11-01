@@ -33,6 +33,7 @@ describe("program-change presentation across reader surfaces", () => {
     })));
     expect(card(".change-summary").text()).toBe(summary);
     expect(standalone(".change-summary").text()).toBe(summary);
+    expect(programChangeContext(details)).toMatch(/^Plan\b/);
     expect(card(".change-summary-context").text()).toBe(programChangeContext(details));
     expect(standalone(".change-summary-context").text()).toBe(programChangeContext(details));
     expect(card(".change-summary-context")).toHaveLength(1);
@@ -71,10 +72,33 @@ describe("program-change presentation across reader surfaces", () => {
       program_changes: [{ field: "documents", operation: "remove", summary, previous_quote: text(title), current_quote: null }] };
     const $ = load(renderToStaticMarkup(createElement(PublicUpdateCard, { update: { ...update, changeDetails } })));
     expect($(".change-summary").text()).toBe(summary);
-    expect($(".change-summary-context").text()).toBe(programChangeContext(changeDetails));
-    expect($(".change-summary-context").text()).toMatch(/does not|doesn't/i);
+    expect(programChangeContext(changeDetails)).toMatch(/^Check\b/);
+    expect($(".change-summary-context")).toHaveLength(0);
+    expect($.text()).not.toContain(programChangeContext(changeDetails));
     expect($.text()).not.toMatch(/HTTP|500|reorganized|is unavailable/);
-    expect($(".change-summary-context").text()).toContain("does not establish that a document was deleted or moved");
+    expect(programChangeContext(changeDetails)).toContain("does not establish that a document was deleted or moved");
+  });
+
+  it("keeps accepted fact paragraphs and exact quotations beginning Check", () => {
+    const fact = "Check that you meet the revised eligibility criteria before submitting.";
+    const changeDetails = { ...details, summary: fact, program_changes: [{ ...details.program_changes[0], field: "eligibility", summary: fact, current_quote: text(fact) }] };
+    const original = structuredClone(changeDetails);
+    const $ = load(renderToStaticMarkup(createElement(SourcePageTree, {
+      layout: "split",
+      sources: [{ id: update.sourceId!, title: update.sourceTitle!, url: update.sourceUrl,
+        pageType: "deadline", latestChanges: [{
+          id: update.id, sourceTitle: update.sourceTitle, sourceUrl: update.sourceUrl,
+          sourcePageType: "deadline", summary: fact, changeDetails, detectedAt: update.detectedAt,
+        }] }],
+    })));
+    expect($(".change-summary").text()).toBe(fact);
+    expect($(".change-summary-context")).toHaveLength(0);
+    expect($("blockquote").last().text()).toBe(fact);
+    expect($(".change-evidence-source-link").attr("href")).toBe(update.sourceUrl);
+    const card = load(renderToStaticMarkup(createElement(PublicUpdateCard, { update: { ...update, changeDetails } })));
+    expect(card(".change-summary").text()).toBe(fact);
+    expect(card(".change-summary-context")).toHaveLength(0);
+    expect(changeDetails).toEqual(original);
   });
 
   it("does not generate context from legacy summaries or malformed program evidence", () => {
