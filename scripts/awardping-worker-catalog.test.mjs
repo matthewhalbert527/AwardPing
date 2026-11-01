@@ -9,15 +9,10 @@ import {
 const downstreamLaneWorkers = scheduledWorkers.filter((worker) => worker.laneKey);
 
 describe("AwardPing worker catalog automation", () => {
-  it("exposes eight independent downstream lanes and preserves the three 6 PM shards", () => {
+  it("exposes three downstream schedules and preserves all three daily collectors", () => {
     expect(scheduledWorkers.map((worker) => worker.id)).toEqual([
-      "new-page-review-lane",
       "changed-page-review-lane",
-      "feedback-promotion-lane",
-      "suppression-lane",
-      "reconciliation-lane",
       "page-audit-lane",
-      "manual-quarantine-lane",
       "nightly-report-lane",
       "visual-shard-1",
       "visual-shard-2",
@@ -25,26 +20,16 @@ describe("AwardPing worker catalog automation", () => {
     ]);
 
     expect(downstreamLaneWorkers.map((worker) => [worker.laneKey, worker.taskName])).toEqual([
-      ["new_page_review", "AwardPing New Page Review Lane"],
       ["changed_page_review", "AwardPing Changed Page Review Lane"],
-      ["feedback_promotion", "AwardPing Feedback Promotion Lane"],
-      ["suppression", "AwardPing Suppression Lane"],
-      ["reconciliation", "AwardPing Reconciliation Lane"],
       ["page_audit", "AwardPing Page Audit Lane"],
-      ["manual_quarantine", "AwardPing Manual Quarantine Lane"],
-      ["nightly_report", "AwardPing Nightly Report Lane"],
+      ["nightly_report", "AwardPing Coverage Report"],
     ]);
   });
 
-  it("maps every permanent stage to only its own scheduled lane", () => {
+  it("maps only current work to schedules and leaves historical tools unscheduled", () => {
     const mappings = {
-      "source-intake": "new-page-review-lane",
       "visual-review-batch": "changed-page-review-lane",
-      "verified-feedback-promotions": "feedback-promotion-lane",
-      "change-event-noise": "suppression-lane",
-      "reconcile-awards": "reconciliation-lane",
       "page-audit-batch": "page-audit-lane",
-      "manual-quarantine-registry": "manual-quarantine-lane",
       "nightly-report": "nightly-report-lane",
     };
 
@@ -52,6 +37,10 @@ describe("AwardPing worker catalog automation", () => {
       expect(atomicTasks.find((task) => task.id === taskId)?.scheduledWorkerIds).toEqual([
         workerId,
       ]);
+    }
+
+    for (const taskId of ["source-intake", "verified-feedback-promotions", "change-event-noise", "reconcile-awards", "manual-quarantine-registry"]) {
+      expect(atomicTasks.find((task) => task.id === taskId)?.scheduledWorkerIds).toEqual([]);
     }
 
     for (const taskId of [
@@ -68,13 +57,12 @@ describe("AwardPing worker catalog automation", () => {
     }
   });
 
-  it("has exactly two paid permanent lanes, each fixed at $5/day", () => {
+  it("keeps changed-page review as the only paid schedule at the existing $5/day cap", () => {
     const paid = scheduledWorkers.filter(
       (worker) => !String(worker.cost).startsWith("$0"),
     );
 
     expect(paid.map((worker) => worker.id)).toEqual([
-      "new-page-review-lane",
       "changed-page-review-lane",
     ]);
     for (const worker of paid) expect(worker.cost).toContain("$5/day hard cap");
@@ -101,12 +89,12 @@ describe("AwardPing worker catalog automation", () => {
     expect(auditWorker?.detail).toContain("never submits pages to Gemini");
   });
 
-  it("makes verified feedback promotion a zero-charge independent stage", () => {
+  it("preserves the historical feedback tool without a recurring promotion job", () => {
     const promotion = atomicTasks.find(
       (task) => task.id === "verified-feedback-promotions",
     );
 
-    expect(promotion?.scheduledWorkerIds).toEqual(["feedback-promotion-lane"]);
+    expect(promotion?.scheduledWorkerIds).toEqual([]);
     expect(promotion?.run).toMatchObject({
       kind: "script",
       args: [
@@ -118,7 +106,7 @@ describe("AwardPing worker catalog automation", () => {
     expect(promotion?.cost).toContain("$0 extra");
   });
 
-  it("explicitly authorizes the scheduled manual quarantine mutation", () => {
+  it("preserves the manual quarantine tool without scheduling its mutation", () => {
     const quarantine = atomicTasks.find(
       (task) => task.id === "manual-quarantine-registry",
     );
@@ -130,6 +118,16 @@ describe("AwardPing worker catalog automation", () => {
         "--apply=true",
       ],
     });
+    expect(quarantine?.scheduledWorkerIds).toEqual([]);
+  });
+
+  it("makes the combined report use the current full-roster coverage worker", () => {
+    const report = atomicTasks.find((task) => task.id === "nightly-report");
+    expect(report?.label).toBe("Coverage Report");
+    expect(report?.run.args).toEqual([
+      "scripts/program-text-worker.mjs", "--env=.env.worker.local", "--mode=report", "--apply=true",
+    ]);
+    expect(scheduledWorkers.find((worker) => worker.laneKey === "nightly_report")?.cost).toMatch(/^\$0/);
   });
 
   it("references only real scheduled workers from tasks and lane groups", () => {

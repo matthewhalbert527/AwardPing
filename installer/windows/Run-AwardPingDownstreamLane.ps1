@@ -2,13 +2,8 @@ param(
   [string]$InstallRoot = "",
   [Parameter(Mandatory = $true)]
   [ValidateSet(
-    "new_page_review",
     "changed_page_review",
-    "feedback_promotion",
-    "suppression",
-    "reconciliation",
     "page_audit",
-    "manual_quarantine",
     "nightly_report"
   )]
   [string]$Lane,
@@ -87,7 +82,8 @@ function Invoke-DownstreamLogRetention {
   )
 
   New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-  $lanePattern = "(?:new_page_review|changed_page_review|feedback_promotion|suppression|reconciliation|page_audit|manual_quarantine|nightly_report)"
+  # Retired reporters' logs remain available as history after consolidation.
+  $lanePattern = "(?:changed_page_review|page_audit|nightly_report)"
   $runLogPattern = "^awardping-downstream-$lanePattern-\d{8}-\d{6}-\d{3}-\d+\.log$"
   $temporaryLogPattern = "^awardping-downstream-$lanePattern-\d{8}-\d{6}-\d{3}-\d+\.(?:stdout|stderr)\.tmp$"
   $now = [DateTime]::UtcNow

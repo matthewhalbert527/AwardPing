@@ -313,7 +313,7 @@ describe("Windows worker update safety", () => {
       "$script:root = 'C:\\AwardPingWorker'",
       "$script:badTask = ''",
       "$script:lanes = @{",
-      "  'AwardPing New Page Review Lane'=@('new_page_review',0,10); 'AwardPing Changed Page Review Lane'=@('changed_page_review',2,10); 'AwardPing Feedback Promotion Lane'=@('feedback_promotion',4,6); 'AwardPing Suppression Lane'=@('suppression',6,6); 'AwardPing Reconciliation Lane'=@('reconciliation',8,6); 'AwardPing Page Audit Lane'=@('page_audit',10,6); 'AwardPing Manual Quarantine Lane'=@('manual_quarantine',12,4); 'AwardPing Nightly Report Lane'=@('nightly_report',14,4)",
+      "  'AwardPing Changed Page Review Lane'=@('changed_page_review',2,10); 'AwardPing Page Audit Lane'=@('page_audit',10,6); 'AwardPing Coverage Report'=@('nightly_report',14,4)",
       "}",
       "function Test-AwardPingTaskTargetsInstallRoot { param($Task,$InstallRoot); $true }",
       "function Get-ScheduledTask { param($TaskName,$ErrorAction); [pscustomobject]@{ TaskName=$TaskName; TaskPath='\\'; Actions=@() } }",
@@ -424,7 +424,7 @@ describe("Windows worker update safety", () => {
       cleanupFunctions,
       "function Test-AwardPingTaskTargetsInstallRoot { $true }",
       "$script:calls = @()",
-      "function Get-ScheduledTask { @([pscustomobject]@{ TaskName='AwardPing Visual Snapshot Worker Shard 1'; TaskPath='\\' }, [pscustomobject]@{ TaskName='AwardPing New Page Review Lane'; TaskPath='\\' }, [pscustomobject]@{ TaskName='AwardPing Concurrent Custom Audit'; TaskPath='\\' }) }",
+      "function Get-ScheduledTask { @([pscustomobject]@{ TaskName='AwardPing Visual Snapshot Worker Shard 1'; TaskPath='\\' }, [pscustomobject]@{ TaskName='AwardPing Coverage Report'; TaskPath='\\' }, [pscustomobject]@{ TaskName='AwardPing Concurrent Custom Audit'; TaskPath='\\' }) }",
       "function Disable-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction); $script:calls += 'disable:' + $TaskName }",
       "function Stop-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction); $script:calls += 'stop:' + $TaskName }",
       "function Unregister-ScheduledTask { param($TaskName, $TaskPath, $Confirm, $ErrorAction); $script:calls += 'remove:' + $TaskName }",
@@ -435,7 +435,7 @@ describe("Windows worker update safety", () => {
     const result = runPowerShell(simulation);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(
-      "CALLS=disable:AwardPing New Page Review Lane,stop:AwardPing New Page Review Lane,remove:AwardPing New Page Review Lane",
+      "CALLS=disable:AwardPing Coverage Report,stop:AwardPing Coverage Report,remove:AwardPing Coverage Report",
     );
     expect(result.stdout).not.toContain("AwardPing Concurrent Custom Audit");
   });
@@ -461,16 +461,80 @@ describe("Windows worker update safety", () => {
     const simulation = [
       finalizationFunctions,
       "function Test-AwardPingTaskTargetsInstallRoot { $true }",
-      "function Get-ScheduledTask { [pscustomobject]@{ TaskName='AwardPing New Page Review Lane'; TaskPath='\\' } }",
+      "function Get-ScheduledTask { [pscustomobject]@{ TaskName='AwardPing Changed Page Review Lane'; TaskPath='\\' } }",
       "function Export-ScheduledTask { '<Task />' }",
       "$legacy = [pscustomobject]@{ TaskName='AwardPing Downstream Queue Pipeline'; TaskPath='\\'; WasEnabled=$false; RestoreAfterUpdate=$false }",
-      "$migrated = @(Get-AwardPingTaskSnapshotsForFinalization -InitialSnapshots @($legacy) -InstallRoot 'C:\\AwardPingWorker' | Where-Object { $_.TaskName -eq 'AwardPing New Page Review Lane' })[0]",
-      "$fresh = @(Get-AwardPingTaskSnapshotsForFinalization -InitialSnapshots @() -InstallRoot 'C:\\AwardPingWorker' | Where-Object { $_.TaskName -eq 'AwardPing New Page Review Lane' })[0]",
+      "$migrated = @(Get-AwardPingTaskSnapshotsForFinalization -InitialSnapshots @($legacy) -InstallRoot 'C:\\AwardPingWorker' | Where-Object { $_.TaskName -eq 'AwardPing Changed Page Review Lane' })[0]",
+      "$fresh = @(Get-AwardPingTaskSnapshotsForFinalization -InitialSnapshots @() -InstallRoot 'C:\\AwardPingWorker' | Where-Object { $_.TaskName -eq 'AwardPing Changed Page Review Lane' })[0]",
       "'MIGRATED=' + $migrated.WasEnabled + ' FRESH=' + $fresh.WasEnabled",
     ].join("\n");
     const result = runPowerShell(simulation);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("MIGRATED=False FRESH=True");
+  });
+
+  windowsIt("preserves the renamed report principal and disabled state while retaining maintenance", () => {
+    const functions = [
+      extractPowerShellFunction(installer, "Get-AwardPingManagedTaskNames", "Get-AwardPingTaskSnapshotKey"),
+      extractPowerShellFunction(installer, "Get-AwardPingTaskSnapshotKey", "Assert-AwardPingManagedTaskRegistrationScope"),
+      extractPowerShellFunction(installer, "Get-AwardPingTaskSnapshotsForUpdate", "Get-InstalledAwardPingWorkerProcesses"),
+    ].join("\n");
+    const result = runPowerShell([
+      "$ErrorActionPreference = 'Stop'",
+      functions,
+      "function Test-AwardPingTaskTargetsInstallRoot { $true }",
+      "$script:taskNames = @('AwardPing Nightly Report Lane','AwardPing New Page Review Lane','AwardPing Daily Runtime Re-sign')",
+      "function Get-ScheduledTask { $script:taskNames | ForEach-Object { [pscustomobject]@{ TaskName=$_; TaskPath='\\'; State='Ready' } } }",
+      "function Export-ScheduledTask { param($TaskName); '<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><Principals><Principal><UserId>' + $TaskName + '</UserId><LogonType>S4U</LogonType></Principal></Principals><Settings><Enabled>false</Enabled></Settings></Task>' }",
+      "$initial = @(Get-AwardPingTaskSnapshotsForUpdate -InstallRoot 'C:\\AwardPingWorker')",
+      "$script:taskNames = @('AwardPing Coverage Report','AwardPing Daily Runtime Re-sign')",
+      "$final = @(Get-AwardPingTaskSnapshotsForFinalization -InitialSnapshots $initial -InstallRoot 'C:\\AwardPingWorker')",
+      "$report = @($final | Where-Object { $_.TaskName -eq 'AwardPing Coverage Report' })[0]",
+      "'REPORT_ENABLED=' + $report.WasEnabled",
+      "'REPORT_HAS_OLD_PRINCIPAL=' + $report.Xml.Contains('<UserId>AwardPing Nightly Report Lane</UserId>')",
+      "'MAINTENANCE_RESTORED=' + @($final | Where-Object { $_.TaskName -eq 'AwardPing Daily Runtime Re-sign' })[0].RestoreAfterUpdate",
+      "'RETIRED_RESTORED=' + @($final | Where-Object { $_.TaskName -eq 'AwardPing New Page Review Lane' })[0].RestoreAfterUpdate",
+      "'MAINTENANCE_COUNT=' + @($final | Where-Object { $_.TaskName -eq 'AwardPing Daily Runtime Re-sign' }).Count",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("REPORT_ENABLED=False");
+    expect(result.stdout).toContain("REPORT_HAS_OLD_PRINCIPAL=True");
+    expect(result.stdout).toContain("MAINTENANCE_RESTORED=True");
+    expect(result.stdout).toContain("RETIRED_RESTORED=False");
+    expect(result.stdout).toContain("MAINTENANCE_COUNT=1");
+  });
+
+  windowsIt("retires six redundant reporting tasks only for this install root and preserves logs", () => {
+    const retiredNames = [
+      "AwardPing New Page Review Lane", "AwardPing Feedback Promotion Lane",
+      "AwardPing Suppression Lane", "AwardPing Reconciliation Lane",
+      "AwardPing Manual Quarantine Lane", "AwardPing Nightly Report Lane",
+    ];
+    const functions = [
+      extractPowerShellFunction(installer, "Get-AwardPingManagedTaskNames", "Get-AwardPingTaskSnapshotKey"),
+      extractPowerShellFunction(installer, "Remove-LegacySourceTask", "Register-VisualSnapshotTask"),
+    ].join("\n");
+    const result = runPowerShell([
+      "$ErrorActionPreference = 'Stop'",
+      functions,
+      "function Write-Step {}",
+      "function Get-AwardPingRetiredArtifactRelativePaths { @() }",
+      "function Test-Path { $false }",
+      "function Test-AwardPingTaskTargetsInstallRoot { param($Task); $Task.Owned }",
+      "$script:calls = @()",
+      "function Stop-ScheduledTask {}",
+      "function Unregister-ScheduledTask { param($TaskName); $script:calls += $TaskName }",
+      `function Get-ScheduledTask { @(${retiredNames.map(name => `'${name}'`).join(",")},'AwardPing Coverage Report','AwardPing Daily Runtime Re-sign') | ForEach-Object { [pscustomobject]@{ TaskName=$_; TaskPath='\\'; Owned=$true } }; [pscustomobject]@{ TaskName='AwardPing Nightly Report Lane'; TaskPath='\\OtherRoot\\'; Owned=$false } }`,
+      "Remove-LegacySourceTask -InstallRoot 'C:\\AwardPingWorker'",
+      "'REMOVED=' + ($script:calls -join ',')",
+    ].join("\n"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(`REMOVED=${retiredNames.join(",")}`);
+    const cleanup = extractPowerShellFunction(installer, "Remove-LegacySourceTask", "Register-VisualSnapshotTask");
+    expect(cleanup).not.toMatch(/(?:logs|awardping-downstream-)/);
+    expect(cleanup).toContain('[string]$_.TaskName -notin $preservedTaskNames');
   });
 
   windowsIt("restores the exact old app and root wrappers after a post-switch failure", () => {
@@ -618,7 +682,8 @@ describe("Windows worker update safety", () => {
       "Get-AwardPingTaskSnapshotKey",
     );
     expect(managedTaskNames).not.toContain("AwardPing Downstream Queue Pipeline");
-    expect(installer).toContain("RestoreAfterUpdate = [string]$task.TaskName -in @(Get-AwardPingManagedTaskNames)");
+    expect(installer).toContain("[string]$task.TaskName -in @(Get-AwardPingManagedTaskNames) -or");
+    expect(installer).toContain("[string]$task.TaskName -in @(Get-AwardPingPreservedMaintenanceTaskNames)");
     expect(installer).toContain("Retired AwardPing artifacts remain after cleanup");
     expect(installer).toContain("retired-artifact cleanup was incomplete");
     expect(installer).toContain("$strictRetirementCommitted = $true");
@@ -926,22 +991,26 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain("Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath");
   });
 
-  it("installs eight isolated downstream lanes with bounded locks, stagger, and timeouts", () => {
+  it("installs three isolated downstream lanes with bounded locks, stagger, and timeouts", () => {
     const registrationStart = installer.indexOf("function Register-DownstreamLaneTasks {");
     const registrationEnd = installer.indexOf("\n$packageRoot = Resolve-Path", registrationStart);
     const registration = installer.slice(registrationStart, registrationEnd);
     expect(registrationStart).toBeGreaterThan(0);
     expect(registrationEnd).toBeGreaterThan(registrationStart);
     const definitions = [
-      ["new_page_review", "AwardPing New Page Review Lane", 0, 10, 12],
       ["changed_page_review", "AwardPing Changed Page Review Lane", 2, 10, 12],
-      ["feedback_promotion", "AwardPing Feedback Promotion Lane", 4, 6, 8],
-      ["suppression", "AwardPing Suppression Lane", 6, 6, 8],
-      ["reconciliation", "AwardPing Reconciliation Lane", 8, 6, 8],
       ["page_audit", "AwardPing Page Audit Lane", 10, 6, 8],
-      ["manual_quarantine", "AwardPing Manual Quarantine Lane", 12, 4, 6],
-      ["nightly_report", "AwardPing Nightly Report Lane", 14, 4, 6],
+      ["nightly_report", "AwardPing Coverage Report", 14, 4, 6],
     ];
+    const managedNames = extractPowerShellFunction(
+      installer, "Get-AwardPingManagedTaskNames", "Get-AwardPingPreservedMaintenanceTaskNames",
+    );
+    expect([...managedNames.matchAll(/"(AwardPing [^"]+)"/g)].map(match => match[1])).toEqual([
+      "AwardPing Visual Snapshot Worker Shard 1",
+      "AwardPing Visual Snapshot Worker Shard 2",
+      "AwardPing Visual Snapshot Worker Shard 3",
+      ...definitions.map(([, name]) => name),
+    ]);
 
     for (const [key, taskName, stagger, timeout, taskTimeout] of definitions) {
       expect(registration).toContain(
@@ -949,6 +1018,11 @@ describe("Windows worker update safety", () => {
       );
       expect(installer.split(`"${taskName}"`).length - 1).toBeGreaterThanOrEqual(3);
     }
+    expect([...registration.matchAll(/Key = "([^"]+)"; TaskName/g)].map(match => match[1]))
+      .toEqual(definitions.map(([key]) => key));
+    expect(downstream.slice(0, downstream.indexOf("[string]$Lane"))).not.toMatch(
+      /new_page_review|feedback_promotion|suppression|reconciliation|manual_quarantine/,
+    );
     expect(registration).toContain("-RepetitionInterval (New-TimeSpan -Minutes 15)");
     expect(registration).toContain("$quarterStartMinute");
     expect(registration).toContain("-TimeoutMinutes $($lane.TimeoutMinutes)");
@@ -1056,21 +1130,21 @@ describe("Windows worker update safety", () => {
           "-InstallRoot",
           installRoot,
           "-Lane",
-          "manual_quarantine",
+          "nightly_report",
           "-TimeoutMinutes",
           "2",
         ],
         { encoding: "utf8", timeout: 30_000 },
       );
       const runLogName = readdirSync(logDir).find((name) =>
-        /^awardping-downstream-manual_quarantine-.*\.log$/.test(name),
+        /^awardping-downstream-nightly_report-.*\.log$/.test(name),
       );
 
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(7);
       expect(runLogName).toBeTruthy();
       expect(readFileSync(join(logDir, runLogName), "utf8")).toContain(
-        "DOWNSTREAM_LANE_EXIT lane=manual_quarantine exit_code=7",
+        "DOWNSTREAM_LANE_EXIT lane=nightly_report exit_code=7",
       );
     } finally {
       rmSync(installRoot, { recursive: true, force: true });
@@ -1109,20 +1183,22 @@ describe("Windows worker update safety", () => {
       retentionFunctions,
       "$root = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-log-retention-' + [guid]::NewGuid().ToString('N'))",
       "$LogDir = Join-Path $root 'logs'; New-Item -ItemType Directory -Path $LogDir -Force | Out-Null",
-      "$SummaryLog = Join-Path $LogDir 'awardping-downstream-new_page_review.log'",
+      "$SummaryLog = Join-Path $LogDir 'awardping-downstream-changed_page_review.log'",
       "$outside = Join-Path $root 'outside.log'; Set-Content -LiteralPath $outside -Value 'keep'",
-      "1..4 | ForEach-Object { $path = Join-Path $LogDir ('awardping-downstream-new_page_review-20260716-12000' + $_ + '-001-' + $_ + '.log'); Set-Content -LiteralPath $path -Value $_; (Get-Item -LiteralPath $path).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes($_) }",
-      "$old = Join-Path $LogDir 'awardping-downstream-new_page_review-20260701-120000-001-9.log'; Set-Content -LiteralPath $old -Value 'old'; (Get-Item -LiteralPath $old).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-20)",
-      "$temp = Join-Path $LogDir 'awardping-downstream-new_page_review-20260701-120000-001-9.stdout.tmp'; Set-Content -LiteralPath $temp -Value 'old-temp'; (Get-Item -LiteralPath $temp).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-2)",
+      "1..4 | ForEach-Object { $path = Join-Path $LogDir ('awardping-downstream-changed_page_review-20260716-12000' + $_ + '-001-' + $_ + '.log'); Set-Content -LiteralPath $path -Value $_; (Get-Item -LiteralPath $path).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes($_) }",
+      "$old = Join-Path $LogDir 'awardping-downstream-changed_page_review-20260701-120000-001-9.log'; Set-Content -LiteralPath $old -Value 'old'; (Get-Item -LiteralPath $old).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-20)",
+      "$temp = Join-Path $LogDir 'awardping-downstream-changed_page_review-20260701-120000-001-9.stdout.tmp'; Set-Content -LiteralPath $temp -Value 'old-temp'; (Get-Item -LiteralPath $temp).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-2)",
+      "$retired = Join-Path $LogDir 'awardping-downstream-new_page_review-20260701-120000-001-9.log'; Set-Content -LiteralPath $retired -Value 'history'; (Get-Item -LiteralPath $retired).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-20)",
       "Invoke-DownstreamLogRetention -MaxRunLogFiles 2 -MaxRunLogAgeDays 14 -MaxTemporaryLogFiles 1 -MaxTemporaryLogAgeHours 24",
       "try { Remove-DownstreamLogFile -Path $outside; 'UNEXPECTED_OUTSIDE_DELETE' } catch { 'OUTSIDE_BLOCKED=' + $_.Exception.Message }",
       "Set-Content -LiteralPath $SummaryLog -Value ('x' * 2048)",
       "Rotate-DownstreamLaneSummaryLog -MaxBytes 1024",
       "Write-LaneLog -Message 'new-summary'",
-      "$runCount = @(Get-ChildItem -LiteralPath $LogDir -File | Where-Object { $_.Name -match '^awardping-downstream-new_page_review-\\d{8}-\\d{6}-\\d{3}-\\d+\\.log$' }).Count",
+      "$runCount = @(Get-ChildItem -LiteralPath $LogDir -File | Where-Object { $_.Name -match '^awardping-downstream-changed_page_review-\\d{8}-\\d{6}-\\d{3}-\\d+\\.log$' }).Count",
       "'RUN_COUNT=' + $runCount",
       "'OLD_EXISTS=' + (Test-Path -LiteralPath $old)",
       "'TEMP_EXISTS=' + (Test-Path -LiteralPath $temp)",
+      "'RETIRED_EXISTS=' + (Test-Path -LiteralPath $retired)",
       "'OUTSIDE_EXISTS=' + (Test-Path -LiteralPath $outside)",
       "'SUMMARY_EXISTS=' + (Test-Path -LiteralPath $SummaryLog)",
       "'PREVIOUS_EXISTS=' + (Test-Path -LiteralPath ($SummaryLog + '.previous.log'))",
@@ -1134,6 +1210,7 @@ describe("Windows worker update safety", () => {
     expect(result.stdout).toContain("RUN_COUNT=2");
     expect(result.stdout).toContain("OLD_EXISTS=False");
     expect(result.stdout).toContain("TEMP_EXISTS=False");
+    expect(result.stdout).toContain("RETIRED_EXISTS=True");
     expect(result.stdout).toContain("OUTSIDE_BLOCKED=");
     expect(result.stdout).toContain("OUTSIDE_EXISTS=True");
     expect(result.stdout).toContain("SUMMARY_EXISTS=True");
@@ -1164,7 +1241,7 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain(
       '"scripts\\lib\\monitoring-feedback-promotion-verification.mjs"',
     );
-    expect(installer).toContain("preserving historical quarantine records");
+    expect(installer).toContain("historical queues remain deferred");
     expect(installerDocs).toContain("AWARDPING_WORKER_REVISION");
     expect(installerDocs).toContain("NEXT_PUBLIC_APP_URL");
     expect(installerDocs).toContain("AwardPing Feedback Promotion Lane");
@@ -1255,7 +1332,7 @@ describe("Windows worker update safety", () => {
     expect(installerDocs).toContain("Install-AwardPingWorker.ps1\" -UpdateOnly");
     expect(installerDocs).toContain("apply and verify its Supabase migrations");
     expect(installerDocs).toContain("/api/monitoring-policy-identity");
-    expect(installerDocs).toContain("AwardPing Suppression Lane");
+    expect(installerDocs).toContain("AwardPing Coverage Report");
     expect(installerDocs).toContain("complete staged app");
     expect(installerDocs).toContain("workspace catch-up");
     expect(installerDocs).toContain("Cloudflare R2 account ID");

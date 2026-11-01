@@ -261,15 +261,25 @@ function Get-AwardPingManagedTaskNames {
     "AwardPing Visual Snapshot Worker Shard 1",
     "AwardPing Visual Snapshot Worker Shard 2",
     "AwardPing Visual Snapshot Worker Shard 3",
-    "AwardPing New Page Review Lane",
     "AwardPing Changed Page Review Lane",
-    "AwardPing Feedback Promotion Lane",
-    "AwardPing Suppression Lane",
-    "AwardPing Reconciliation Lane",
     "AwardPing Page Audit Lane",
-    "AwardPing Manual Quarantine Lane",
-    "AwardPing Nightly Report Lane"
+    "AwardPing Coverage Report"
   )
+}
+
+function Get-AwardPingPreservedMaintenanceTaskNames {
+  # This task is registered separately from the monitoring installer. Keep its
+  # definition and operational state without making it a required monitor.
+  return @("AwardPing Daily Runtime Re-sign")
+}
+
+function Get-AwardPingCurrentManagedTaskName {
+  param([string]$TaskName)
+
+  if ($TaskName -eq "AwardPing Nightly Report Lane") {
+    return "AwardPing Coverage Report"
+  }
+  return $TaskName
 }
 
 function Get-AwardPingInteractiveTaskNames {
@@ -279,7 +289,7 @@ function Get-AwardPingInteractiveTaskNames {
   return @(
     Get-ScheduledTask -ErrorAction Stop |
       Where-Object {
-        [string]$_.TaskName -in $managedTaskNames -and
+        (Get-AwardPingCurrentManagedTaskName -TaskName ([string]$_.TaskName)) -in $managedTaskNames -and
         (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot) -and
         [string]$_.Principal.LogonType -in @("Interactive", "InteractiveToken")
       } |
@@ -345,10 +355,10 @@ function Assert-AwardPingInteractiveTaskLogonAccepted {
   $installedManagedTaskNames = @(
     Get-ScheduledTask -ErrorAction Stop |
       Where-Object {
-        [string]$_.TaskName -in $managedTaskNames -and
+        (Get-AwardPingCurrentManagedTaskName -TaskName ([string]$_.TaskName)) -in $managedTaskNames -and
         (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot)
       } |
-      ForEach-Object { [string]$_.TaskName }
+      ForEach-Object { Get-AwardPingCurrentManagedTaskName -TaskName ([string]$_.TaskName) }
   )
   $interactiveTaskNames = @(Get-AwardPingInteractiveTaskNames -InstallRoot $InstallRoot)
   $missingManagedTaskNames = @(
@@ -369,7 +379,7 @@ function Assert-AwardPingInteractiveTaskLogonAccepted {
       -SourceRevision $SourceRevision
   }
   if (-not (Test-AwardPingInteractiveLogonAcceptance -InstallRoot $InstallRoot)) {
-    throw "AwardPing's current Scheduled Task mode requires a Windows operator to remain logged in. Re-run with -AcceptInteractiveTaskLogon only after explicitly accepting and documenting that Stage 1 operational limitation, or configure all eleven tasks with an approved least-privilege logged-off principal first."
+    throw "AwardPing's current Scheduled Task mode requires a Windows operator to remain logged in. Re-run with -AcceptInteractiveTaskLogon only after explicitly accepting and documenting that Stage 1 operational limitation, or configure all six monitoring tasks with an approved least-privilege logged-off principal first."
   }
 
   Write-Host "Accepted operational mode: AwardPing tasks require this Windows operator to remain logged in. Logged-off unattended execution is not configured." -ForegroundColor Yellow
@@ -898,7 +908,10 @@ function Get-AwardPingTaskSnapshotsForUpdate {
       WasEnabled = $wasEnabled
       WasRunning = [string]$task.State -eq "Running"
       ExistedBeforeUpdate = $true
-      RestoreAfterUpdate = [string]$task.TaskName -in @(Get-AwardPingManagedTaskNames)
+      RestoreAfterUpdate = (
+        [string]$task.TaskName -in @(Get-AwardPingManagedTaskNames) -or
+        [string]$task.TaskName -in @(Get-AwardPingPreservedMaintenanceTaskNames)
+      )
     }
   }
 
@@ -912,6 +925,11 @@ function Get-AwardPingTaskSnapshotsForFinalization {
   )
 
   $snapshots = @($InitialSnapshots)
+  $retiredReportSnapshot = @(
+    $InitialSnapshots |
+      Where-Object { [string]$_.TaskName -eq "AwardPing Nightly Report Lane" } |
+      Select-Object -First 1
+  )
   $retiredDownstreamSnapshot = @(
     $InitialSnapshots |
       Where-Object { [string]$_.TaskName -eq "AwardPing Downstream Queue Pipeline" } |
@@ -941,7 +959,13 @@ function Get-AwardPingTaskSnapshotsForFinalization {
     }
 
     $taskXml = [string](Export-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath -ErrorAction Stop)
-    $wasEnabled = if ([string]$task.TaskName -like "AwardPing * Lane") {
+    $reportPredecessor = if (
+      [string]$task.TaskName -eq "AwardPing Coverage Report" -and
+      $retiredReportSnapshot.Count -gt 0
+    ) { $retiredReportSnapshot[0] } else { $null }
+    $wasEnabled = if ($reportPredecessor) {
+      [bool]$reportPredecessor.WasEnabled
+    } elseif ([string]$task.TaskName -like "AwardPing * Lane" -or [string]$task.TaskName -eq "AwardPing Coverage Report") {
       $newLaneWasEnabled
     } else {
       $true
@@ -949,7 +973,9 @@ function Get-AwardPingTaskSnapshotsForFinalization {
     $snapshots += [pscustomobject]@{
       TaskName = [string]$task.TaskName
       TaskPath = $taskPath
-      Xml = $taskXml
+      # The renamed report keeps its existing security principal. Restoration
+      # still takes canonical actions/triggers from the new registered task.
+      Xml = if ($reportPredecessor) { [string]$reportPredecessor.Xml } else { $taskXml }
       WasEnabled = $wasEnabled
       WasRunning = $false
       ExistedBeforeUpdate = $false
@@ -1153,14 +1179,9 @@ function Get-AwardPingManagedTaskScheduleProblems {
     [pscustomobject]@{ TaskName = "AwardPing Visual Snapshot Worker Shard 1"; Kind = "visual"; ShardIndex = 0; Lane = ""; StaggerMinutes = 0; TimeoutMinutes = 0 },
     [pscustomobject]@{ TaskName = "AwardPing Visual Snapshot Worker Shard 2"; Kind = "visual"; ShardIndex = 1; Lane = ""; StaggerMinutes = 0; TimeoutMinutes = 0 },
     [pscustomobject]@{ TaskName = "AwardPing Visual Snapshot Worker Shard 3"; Kind = "visual"; ShardIndex = 2; Lane = ""; StaggerMinutes = 0; TimeoutMinutes = 0 },
-    [pscustomobject]@{ TaskName = "AwardPing New Page Review Lane"; Kind = "lane"; ShardIndex = -1; Lane = "new_page_review"; StaggerMinutes = 0; TimeoutMinutes = 10 },
     [pscustomobject]@{ TaskName = "AwardPing Changed Page Review Lane"; Kind = "lane"; ShardIndex = -1; Lane = "changed_page_review"; StaggerMinutes = 2; TimeoutMinutes = 10 },
-    [pscustomobject]@{ TaskName = "AwardPing Feedback Promotion Lane"; Kind = "lane"; ShardIndex = -1; Lane = "feedback_promotion"; StaggerMinutes = 4; TimeoutMinutes = 6 },
-    [pscustomobject]@{ TaskName = "AwardPing Suppression Lane"; Kind = "lane"; ShardIndex = -1; Lane = "suppression"; StaggerMinutes = 6; TimeoutMinutes = 6 },
-    [pscustomobject]@{ TaskName = "AwardPing Reconciliation Lane"; Kind = "lane"; ShardIndex = -1; Lane = "reconciliation"; StaggerMinutes = 8; TimeoutMinutes = 6 },
     [pscustomobject]@{ TaskName = "AwardPing Page Audit Lane"; Kind = "lane"; ShardIndex = -1; Lane = "page_audit"; StaggerMinutes = 10; TimeoutMinutes = 6 },
-    [pscustomobject]@{ TaskName = "AwardPing Manual Quarantine Lane"; Kind = "lane"; ShardIndex = -1; Lane = "manual_quarantine"; StaggerMinutes = 12; TimeoutMinutes = 4 },
-    [pscustomobject]@{ TaskName = "AwardPing Nightly Report Lane"; Kind = "lane"; ShardIndex = -1; Lane = "nightly_report"; StaggerMinutes = 14; TimeoutMinutes = 4 }
+    [pscustomobject]@{ TaskName = "AwardPing Coverage Report"; Kind = "lane"; ShardIndex = -1; Lane = "nightly_report"; StaggerMinutes = 14; TimeoutMinutes = 4 }
   )
   $problems = @()
   $normalizedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\", "/").Replace("/", "\")
@@ -2216,7 +2237,7 @@ function Update-ExistingEnvFileDefaults {
   }
 
   Set-Content -Path $Path -Value $content -Encoding UTF8
-  Write-Host "Gemini model defaults set to gemini-2.5-flash-lite. Database policy fixes New Page Review and Changed Page Review at `$5/day each; every other lane is `$0, and no limit comes from this environment file."
+  Write-Host "Gemini model defaults set to gemini-2.5-flash-lite. Changed Page Review keeps its database-enforced `$5/day limit; Page Audit and Coverage Report are `$0, and no limit comes from this environment file."
 }
 
 function Update-WorkerSupabaseSecretKeyForMigration {
@@ -2272,6 +2293,7 @@ function Write-UninstallScript {
   "AwardPing Page Audit Lane",
   "AwardPing Manual Quarantine Lane",
   "AwardPing Nightly Report Lane",
+  "AwardPing Coverage Report",
   "AwardPing Downstream Queue Pipeline",
   "AwardPing Startup Supervisor"
 )
@@ -2535,6 +2557,13 @@ explorer.exe "$InstallRoot\logs"
 AwardPing runner is installed here:
 $InstallRoot
 
+Monitoring schedules:
+  Three source collection shards run daily at 6 PM.
+  Changed Page Review, Page Audit, and Coverage Report each run every 15 minutes.
+  Coverage Report replaces the duplicate legacy coverage-report schedules.
+  The separate Daily Runtime Re-sign maintenance task keeps its existing schedule.
+  Historical logs and deferred queues are preserved.
+
 Use:
 3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
   Collects approved required pages as private original files and program text.
@@ -2657,9 +2686,11 @@ function Remove-LegacySourceTask {
 
   Write-Step "Removing legacy scheduled tasks"
   $managedTaskNames = @(Get-AwardPingManagedTaskNames)
+  $preservedTaskNames = @(Get-AwardPingPreservedMaintenanceTaskNames)
   $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
       [string]$_.TaskName -like "AwardPing*" -and
       [string]$_.TaskName -notin $managedTaskNames -and
+      [string]$_.TaskName -notin $preservedTaskNames -and
       (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot)
   })
   foreach ($task in $tasks) {
@@ -2696,9 +2727,11 @@ function Get-AwardPingRetiredArtifactProblems {
 
   $problems = @()
   $managedTaskNames = @(Get-AwardPingManagedTaskNames)
+  $preservedTaskNames = @(Get-AwardPingPreservedMaintenanceTaskNames)
   $remainingTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
       [string]$_.TaskName -like "AwardPing*" -and
       [string]$_.TaskName -notin $managedTaskNames -and
+      [string]$_.TaskName -notin $preservedTaskNames -and
       (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot)
   })
   foreach ($task in $remainingTasks) {
@@ -2777,14 +2810,9 @@ function Register-DownstreamLaneTasks {
   Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $InstallRoot "Launch-Hidden.vbs") -Force -ErrorAction Stop
 
   $laneDefinitions = @(
-    [pscustomobject]@{ Key = "new_page_review"; TaskName = "AwardPing New Page Review Lane"; StaggerMinutes = 0; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Reports required-source coverage. New discovery and historical new-page reviews remain deferred." },
     [pscustomobject]@{ Key = "changed_page_review"; TaskName = "AwardPing Changed Page Review Lane"; StaggerMinutes = 2; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Reviews new program-text comparisons under the existing `$5/day changed-page review limit." },
-    [pscustomobject]@{ Key = "feedback_promotion"; TaskName = "AwardPing Feedback Promotion Lane"; StaggerMinutes = 4; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Reports text monitoring coverage while preserving historical feedback queues." },
-    [pscustomobject]@{ Key = "suppression"; TaskName = "AwardPing Suppression Lane"; StaggerMinutes = 6; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Reports text monitoring coverage while preserving historical suppression queues." },
-    [pscustomobject]@{ Key = "reconciliation"; TaskName = "AwardPing Reconciliation Lane"; StaggerMinutes = 8; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Reports text monitoring coverage while preserving historical fact-reconciliation queues." },
     [pscustomobject]@{ Key = "page_audit"; TaskName = "AwardPing Page Audit Lane"; StaggerMinutes = 10; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Runs deterministic public-page audit checks only. This lane never submits pages to Gemini." },
-    [pscustomobject]@{ Key = "manual_quarantine"; TaskName = "AwardPing Manual Quarantine Lane"; StaggerMinutes = 12; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Reports text monitoring coverage while preserving historical quarantine records." },
-    [pscustomobject]@{ Key = "nightly_report"; TaskName = "AwardPing Nightly Report Lane"; StaggerMinutes = 14; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Reports coverage of the reviewed source sets and repeat text captures without a paid AI request." }
+    [pscustomobject]@{ Key = "nightly_report"; TaskName = "AwardPing Coverage Report"; StaggerMinutes = 14; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Reports coverage of the reviewed source sets and repeat text captures without a paid AI request. Replaces the duplicate legacy coverage-report schedules; historical queues remain deferred." }
   )
 
   $now = Get-Date
@@ -2935,8 +2963,8 @@ try {
     $appUpdateCommitted = $true
     Write-Host "Update-only mode: switched to a complete app/dependency tree and kept existing keys."
   } else {
-    Disable-AwardPingTasksForInstallRoot -InstallRoot $InstallRoot
-    Wait-ForAwardPingWorkerProcessesToStop -InstallRoot $InstallRoot
+    $taskSnapshots = @(Get-AwardPingTaskSnapshotsForUpdate -InstallRoot $InstallRoot)
+    Suspend-AwardPingTasksForUpdate -Snapshots $taskSnapshots -InstallRoot $InstallRoot
     $startupLauncherSnapshot = Suspend-AwardPingStartupLauncherForUpdate `
       -InstallRoot $InstallRoot `
       -UpdateToken $updateToken
@@ -2945,7 +2973,7 @@ try {
     $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
     $r2Configuration = Read-R2WorkerConfiguration
     $runTest = Read-YesNo "Run a one-page program text collection check after install?" $true
-    Write-Host "The three 6 PM text-collection shards and eight downstream lanes keep their schedules. Only Changed Page Review can make paid AI calls, under the existing daily limit. Discovery and legacy mutation lanes remain on hold. Initial coverage is not a website change."
+    Write-Host "The three 6 PM text-collection shards continue alongside Changed Page Review, Page Audit, and one Coverage Report every 15 minutes. Only Changed Page Review can make paid AI calls, under the existing daily limit. Discovery and legacy mutation lanes remain on hold. Initial coverage is not a website change."
     Write-EnvFile `
       -Path $envPath `
       -SupabaseUrl $SupabaseUrl `
@@ -2978,7 +3006,7 @@ try {
 
   if (-not $UpdateOnly) {
     $finalizationSnapshots = @(Get-AwardPingTaskSnapshotsForFinalization `
-      -InitialSnapshots @() `
+      -InitialSnapshots $taskSnapshots `
       -InstallRoot $InstallRoot)
     Set-AwardPingProgramTextEnvironment -Path $envPath -InstallRoot $InstallRoot -TaskSnapshots $finalizationSnapshots
     Set-AwardPingWorkerEnvFileAcl `
@@ -2987,7 +3015,7 @@ try {
     $runtimeProblems = @(Get-AwardPingInstalledRuntimeProblems `
       -InstallRoot $InstallRoot `
       -AppDir $appDir `
-      -TaskSnapshots $finalizationSnapshots `
+      -TaskSnapshots @($finalizationSnapshots | Where-Object { $_.RestoreAfterUpdate }) `
       -RequireManagedRuntime $true `
       -InstallerSourceDirectory $PSScriptRoot `
       -AppSourceRoot ([string]$sourceRoot) `

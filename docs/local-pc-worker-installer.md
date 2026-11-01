@@ -18,14 +18,13 @@
   that collect the approved required HTML/PDF sources daily as private originals
   and extracted text. Existing task names remain for compatibility; no screenshot,
   crop, image-AI or discovery flags are sent to the new collector.
-- Creates eight independent, staggered downstream tasks for new-page review,
-  changed-page review, feedback promotion, suppression, reconciliation,
-  deterministic page audit, manual quarantine, and nightly reporting. A slow or
-  failed lane cannot block the other seven.
+- Creates three independent, staggered downstream tasks for changed-page review,
+  deterministic page audit, and one combined coverage report. A slow or failed
+  lane cannot block the other two.
 - Only **Changed Page Review** can incur an AI charge, under the existing
-  **$5/day** lane limit. New Page Review reports deferred discovery; feedback,
-  suppression, reconciliation and quarantine report a read-only legacy hold.
-  Page audit remains deterministic, and nightly reporting reads text coverage.
+  **$5/day** lane limit. Page audit remains deterministic, and the Coverage
+  Report reads text coverage. Discovery and historical mutation queues remain
+  deferred; their duplicate reporting schedules are retired.
 - Creates `runtime/program-text-archive` with protected, inheritable private
   permissions for the operator, system/administrators and existing worker task
   principals. It validates the directory before setting
@@ -50,8 +49,8 @@ PM scan and downstream windows.
 
 The acceptance is recorded without credentials in
 `worker-operational-mode.json`. It is an honest operational limitation, not a
-claim of logged-off unattended service. An existing installation whose eleven
-tasks all use an approved least-privilege logged-off principal does not require
+claim of logged-off unattended service. An existing installation whose six
+monitoring tasks all use an approved least-privilege logged-off principal does not require
 this acceptance. The installer preserves those existing principals during an
 update.
 
@@ -61,11 +60,13 @@ Then:
    Legacy JWT, anon, and publishable keys are rejected.
 2. Paste the Gemini API key when prompted.
 3. Enter the Cloudflare R2 bucket and paste the Cloudflare R2 account ID, access
-   key ID, and secret access key. The installer keeps all eleven permanent tasks
+   key ID, and secret access key. The installer keeps all six monitoring tasks
    disabled unless the configuration is complete and resolves to an HTTPS R2
    endpoint.
-4. Confirm the installer summary lists eleven permanent Scheduled Tasks: three
-   6 PM shards and eight downstream lanes.
+4. Confirm the installer summary lists six monitoring Scheduled Tasks: three
+   6 PM shards and three downstream lanes. The separately registered
+   `AwardPing Daily Runtime Re-sign` maintenance task is preserved, giving seven
+   total tasks on PCs where that maintenance task is installed.
 
 The old hosted `awardping-worker-windows.zip` updater has been retired. Do not
 copy individual files into the installed `app` folder. That misses root runner
@@ -124,9 +125,12 @@ Deploy a reviewed revision in this order:
    cadence and stagger offset. It also rejects a task action with the wrong
    wrapper, shard/lane key, or timeout.
    On success, the installer enforces the canonical triggers (three daily 6 PM
-   shards and eight staggered 15-minute lanes) and installs current actions and
+   shards and three staggered 15-minute lanes) and installs current actions and
    settings while each existing task keeps its principal, enabled state, and
-   running state. Legacy tasks are retired only after that task-set commit. On
+   running state. `AwardPing Coverage Report` inherits the former Nightly Report
+   task's principal and enabled state. The separately registered runtime re-sign
+   task keeps its definition and operational state. Legacy tasks are retired only
+   after that task-set commit. On
    failure, newly created tasks are removed and the complete original task XML
    set is restored exactly. Tasks remain disabled if neither the old nor new
    app is complete enough to run. The installer also refuses to overwrite a
@@ -143,7 +147,7 @@ Deploy a reviewed revision in this order:
    installer requires matching bytes and all dependencies, including `pdf-parse`
    and `cheerio`. The pinned Scrapling Python runtime is retained; the old
    selector manifest does not admit or exclude awards in the new text roster.
-   Confirm the same three shard tasks run daily at 6 PM and all eight downstream
+   Confirm the same three shard tasks run daily at 6 PM and all three downstream
    lane tasks retain their 15-minute cadence, offsets, lane keys, locks and timeouts.
 6. Inspect the first log for each lane after deployment. Each log must name only
    its own lane and finish with a zero exit code. A failure in one log must not
@@ -160,7 +164,7 @@ the worker credentials.
 ## Permanent Worker Work
 
 The permanent worker schedule contains the three 6 PM capture shards and these
-eight downstream tasks. There is no monolithic downstream pipeline.
+three downstream tasks. There is no monolithic downstream pipeline.
 
 Every 6 PM shard calls `scripts/program-text-worker.mjs --mode=collect --apply=true`
 with only environment, limit, domain delay, shard and run-trigger arguments.
@@ -170,22 +174,18 @@ A collection failure exits once and does not restart automatically.
 
 | Windows task | Text-only behavior | Direct AI/API cost |
 | --- | --- | --- |
-| `AwardPing New Page Review Lane` | Reports deferred discovery; preserves the old intake queue. | **$0** |
 | `AwardPing Changed Page Review Lane` | Reviews saved program-text comparisons; never auto-retries failed paid reviews. | Existing **$5/day** maximum. |
-| `AwardPing Feedback Promotion Lane` | Reports a read-only legacy hold. | **$0** |
-| `AwardPing Suppression Lane` | Reports a read-only legacy hold. | **$0** |
-| `AwardPing Reconciliation Lane` | Reports a read-only legacy hold. | **$0** |
 | `AwardPing Page Audit Lane` | Runs deterministic public-page checks; never submits to Gemini. | **$0** |
-| `AwardPing Manual Quarantine Lane` | Reports a read-only legacy hold. | **$0** |
-| `AwardPing Nightly Report Lane` | Reports required-source text coverage. | **$0** |
+| `AwardPing Coverage Report` | Reports required-source text coverage every 15 minutes; keeps the internal `nightly_report` lane key. | **$0** |
 
 Each lane retains its stagger, Windows execution timeout, local lock and database
-lease. A slow or failed lane does not block the other seven. First collection
+lease. A slow or failed lane does not block the other two. First collection
 creates a private baseline only. Public updates require a later complete capture,
 an actual approved program-detail change and validated exact text provenance.
 
 Lane logs are retained only under the installed worker's `logs` directory.
-Per-run logs expire after 14 days and are also capped at the newest 2,000 files;
+Consolidation preserves the retired lanes' historical logs and database records.
+Active lanes' per-run logs expire after 14 days and are also capped at the newest 2,000 files;
 orphaned stdout/stderr temporary logs expire after 24 hours and are capped at
 64 files. Each per-lane summary rotates at 5 MiB and keeps one previous copy.
 
@@ -220,7 +220,11 @@ Baseline Facts Watchdog`, `AwardPing Overnight Source Quality Pass`, and the
 `AwardPing Startup Supervisor` task/Startup-folder launcher, plus any old
 standalone source-intake or localization watchdog. It also unregisters the
 retired `AwardPing Downstream Queue Pipeline` and removes its wrapper and lock
-only after all eight replacement lane tasks validate. The installer also removes
+only after all three replacement lane tasks validate. It also retires the five
+duplicate reporters (`New Page Review`, `Feedback Promotion`, `Suppression`,
+`Reconciliation`, and `Manual Quarantine`) and the old `Nightly Report Lane`
+task name after their replacement validates, without deleting their logs.
+The installer also removes
 the former baseline-completion, baseline-refresh, source-quality, and standalone
 localization-repair launchers. Recovery now runs through immutable R2 evidence,
 the normal capture path, quarantine, and the independent downstream lanes.
@@ -231,8 +235,8 @@ baseline-only onboarding action; it does not launch those retired workflows.
 
 ## Historical Manual Quarantine Registry (held)
 
-This section describes preserved pre-text records only. The current scheduled
-quarantine lane does not mutate them. Do not run the old sync/recovery commands
+This section describes preserved pre-text records only. The quarantine schedule
+is retired; monitoring does not mutate these records. Do not run the old sync/recovery commands
 as part of text-only monitoring.
 
 Manual quarantine is durable database state, not a count copied from one
@@ -277,11 +281,11 @@ pagination, its default clusters bind domain + evidence failure + policy reason
 ## Historical Feedback Promotions (held)
 
 These previous visual-review and promotion procedures are retained as private
-operational reference, not current run instructions. Current feedback/suppression/
-reconciliation lanes make no legacy-queue mutations.
+operational reference, not current run instructions. The feedback, suppression,
+and reconciliation schedules are retired; monitoring makes no legacy-queue mutations.
 
-The `AwardPing Feedback Promotion Lane` makes the broader feedback workflow
-automatic after an operator clusters feedback and drafts an inactive rule:
+The retired `AwardPing Feedback Promotion Lane` previously made the broader
+feedback workflow automatic after an operator clustered feedback and drafted an inactive rule:
 
 1. Scan the complete paginated change-event history, including events already
    hidden by immediate feedback suppression. A configured safety cap fails the

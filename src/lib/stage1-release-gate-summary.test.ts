@@ -460,16 +460,24 @@ describe("summarizeStage1BetaReleaseGate", () => {
     expect(summary.nightly.acceptance.cohorts[0]?.monitoringDate).toBe("2026-07-16");
   });
 
-  it("fails to UNKNOWN when any of the exact eight downstream lanes is missing", () => {
+  it("fails to UNKNOWN when any of the exact three downstream lanes is missing", () => {
     const input = readyInput();
     input.lanes = input.lanes.filter((lane) => lane.laneKey !== "page_audit");
 
     const summary = summarizeStage1BetaReleaseGate(input);
 
     expect(summary.state).toBe("UNKNOWN");
-    expect(summary.lanes).toHaveLength(8);
+    expect(summary.lanes).toHaveLength(3);
     expect(summary.lanes.find((lane) => lane.laneKey === "page_audit")?.status).toBe("unknown");
-    expect(summary.unknownReasons.join(" ")).toContain("exactly these eight keys");
+    expect(summary.unknownReasons.join(" ")).toContain("exactly these three keys");
+  });
+
+  it("rejects a retired reporting lane rather than counting it as coverage", () => {
+    const input = readyInput();
+    input.lanes.push({ ...input.lanes[0], laneKey: "new_page_review" });
+    const summary = summarizeStage1BetaReleaseGate(input);
+    expect(summary.state).toBe("UNKNOWN");
+    expect(summary.unknownReasons.join(" ")).toContain("exactly these three keys");
   });
 
   it("holds when any immutable release proof artifact is missing", () => {
@@ -608,28 +616,22 @@ describe("summarizeStage1BetaReleaseGate", () => {
     expect(summary.recovery.status).toBe("hold");
   });
 
-  it("holds on disabled, wrongly billed, expired, or SLA-breached lanes", () => {
+  it.each([
+    ["changed_page_review", { enabled: false }],
+    ["nightly_report", { paid: true }],
+    ["page_audit", { slaBreached: true }],
+    ["nightly_report", { lastStatus: "claimed", leaseExpiresAt: "2026-07-16T17:00:00.000Z" }],
+  ])("holds on an unhealthy active lane %s (%o)", (laneKey, issue) => {
     const input = readyInput();
     input.lanes = input.lanes.map((lane) => {
-      if (lane.laneKey === "reconciliation") return { ...lane, enabled: false };
-      if (lane.laneKey === "suppression") return { ...lane, paid: true };
-      if (lane.laneKey === "page_audit") return { ...lane, slaBreached: true };
-      if (lane.laneKey === "manual_quarantine") {
-        return {
-          ...lane,
-          lastStatus: "claimed",
-          leaseExpiresAt: "2026-07-16T17:00:00.000Z",
-        };
-      }
+      if (lane.laneKey === laneKey) return { ...lane, ...issue };
       return lane;
     });
 
     const summary = summarizeStage1BetaReleaseGate(input);
 
     expect(summary.state).toBe("HOLD");
-    for (const laneKey of ["reconciliation", "suppression", "page_audit", "manual_quarantine"]) {
-      expect(summary.lanes.find((lane) => lane.laneKey === laneKey)?.status).toBe("hold");
-    }
+    expect(summary.lanes.find((lane) => lane.laneKey === laneKey)?.status).toBe("hold");
   });
 });
 
@@ -1046,18 +1048,13 @@ function budgetRows(): AdminGeminiBudgetLane[] {
 
 function downstreamLaneRows(): AdminDownstreamLane[] {
   return [
-    "new_page_review",
     "changed_page_review",
-    "feedback_promotion",
-    "suppression",
-    "reconciliation",
     "page_audit",
-    "manual_quarantine",
     "nightly_report",
   ].map((laneKey) => ({
     laneKey,
     label: laneKey.replaceAll("_", " "),
-    paid: laneKey === "new_page_review" || laneKey === "changed_page_review",
+    paid: laneKey === "changed_page_review",
     enabled: true,
     claimable: false,
     timeoutSeconds: 900,

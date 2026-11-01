@@ -3,6 +3,8 @@ import { validateProgramTextReference, programTextReference } from './program-te
 import { validateProgramTextCapture } from './program-text-capture-contract.mjs';
 import { hasProgramTextSourceAccess } from './program-text-source-access.mjs';
 import { hasUnclearedProgramTextCollectionFailure } from './program-text-collection-quality.mjs';
+import {REVIEWED_BASIC_REPEAT_KIND,currentReviewedBasicSourceProof} from './current-basic-reviewed-repeat.mjs';
+import {TECHNICAL_BASIC_REPEAT_KIND,currentTechnicalBasicSourceProof} from './current-basic-technical-probe.mjs';
 
 export const CURRENT_BASIC_VALIDATION_SCHEMA='awardping.current-basic-fact-validation.v1';
 export const CURRENT_BASIC_RECEIPT_SCHEMA='awardping.current-basic-award-fact-review.v1';
@@ -45,6 +47,9 @@ export function assertCurrentBasicSource(source,ref,{registry,epoch,pending_aler
 export function currentBasicSourceProof(source,ref,context){
  const pending=assertCurrentBasicSource(source,ref,context),selected=context.repeat_observation_ids?.filter(r=>r.source_id===source.id)||[];
  check(selected.length===1&&uuid(selected[0].id),'explicit_retained_repeat_required');
+ if(selected[0].kind===REVIEWED_BASIC_REPEAT_KIND){check(pending===null,'reviewed_no_change_is_not_an_owner_alert_decision');return currentReviewedBasicSourceProof(source,ref,context,selected[0]);}
+ if(selected[0].kind===TECHNICAL_BASIC_REPEAT_KIND){check(pending===null,'technical_probe_requires_actual_approved_baseline_source');return currentTechnicalBasicSourceProof(source,ref,context,selected[0]);}
+ check(selected[0].kind===undefined,'unknown_repeat_proof_kind');
  const rows=context.repeat_observations?.filter(r=>r.id===selected[0].id)||[];check(rows.length===1,'retained_repeat_ledger_missing');const r=rows[0];
  check(r.cohort_key===context.registry.cohort_key&&r.source_id===source.id&&r.epoch===context.epoch&&
   currentBasicEqual(r.content_identity,currentBasicContentIdentity(ref))&&currentBasicEqual(currentBasicContentIdentity(r.current_ref),r.content_identity)&&

@@ -66,13 +66,13 @@ uses AI only when a visual candidate needs review.
 npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50000
 ```
 
-The legacy local text-change worker has been retired. Three visual-capture
-shards run on the crawler PC at 6:00 PM. Eight independently leased downstream
-lanes run every 15 minutes for new-page review, changed-page review, feedback
-promotion, suppression, reconciliation, deterministic page audit, manual
-quarantine, and the nightly report. A slow visual batch cannot block auditing
-or reconciliation. Only the two review lanes can create a Gemini charge, and
-PostgreSQL atomically caps each one at $5 per UTC day.
+Three approved-source text collectors run daily on the crawler PC. Three
+independently leased downstream jobs run every 15 minutes: changed-page review,
+deterministic page audit, and one Coverage Report. The report replaces the six
+duplicate coverage-only schedules and retains the internal `nightly_report`
+identity and its history. Discovery and historical promotion, suppression,
+reconciliation and quarantine queues remain deferred. Only changed-page review
+can create a scheduled Gemini charge, under the existing $5 per UTC day cap.
 
 Update the Windows worker from a reviewed repository revision with
 `Install-AwardPingWorker.ps1 -UpdateOnly`; do not copy individual files into the

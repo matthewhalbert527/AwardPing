@@ -13,15 +13,10 @@ import {
 import { parseProgramTextArgs } from "./program-text-worker.mjs";
 
 describe("independent downstream lane runner", () => {
-  it("preserves all eight downstream lane identities", () => {
+  it("runs review, audit and a single coverage report", () => {
     expect(Object.keys(downstreamLaneDefinitions)).toEqual([
-      "new_page_review",
       "changed_page_review",
-      "feedback_promotion",
-      "suppression",
-      "reconciliation",
       "page_audit",
-      "manual_quarantine",
       "nightly_report",
     ]);
   });
@@ -35,13 +30,14 @@ describe("independent downstream lane runner", () => {
     expect(command.args.join(" ")).not.toContain("--submit=true");
   });
 
-  it("holds all legacy mutation lanes without executing their former workers", () => {
-    for (const lane of ["feedback_promotion", "suppression", "reconciliation", "manual_quarantine"]) {
-      const command = commandForDownstreamLane(lane);
-      expect(command.args[0]).toMatch(/program-text-worker\.mjs$/);
-      expect(command.args).toContain("--mode=legacy_hold");
-      expect(command.args).toContain("--apply=true");
+  it("rejects retired reporting lanes before loading credentials or claiming work", () => {
+    for (const lane of ["new_page_review", "feedback_promotion", "suppression", "reconciliation", "manual_quarantine"]) {
+      expect(() => commandForDownstreamLane(lane)).toThrow("Unknown downstream lane");
     }
+    const coverage = commandForDownstreamLane("nightly-report");
+    expect(coverage.args[0]).toMatch(/program-text-worker\.mjs$/);
+    expect(coverage.args).toContain("--mode=report");
+    expect(coverage.args).toContain("--apply=true");
   });
 
   it("makes the scheduled --all page audit rotate a bounded full-catalog batch", () => {
@@ -64,12 +60,9 @@ describe("independent downstream lane runner", () => {
     expect(source).toContain('report.status = "succeeded_with_deferred_failures"');
   });
 
-  it("routes only changed text to paid review and defers discovery", () => {
+  it("routes only changed text to paid review", () => {
     expect(normalizeDownstreamLaneKey("New-Page-Review")).toBe("new_page_review");
-    const command = commandForDownstreamLane("new-page-review", { timeBudgetMs: 600_000 });
-    expect(command.args[0]).toMatch(/program-text-worker\.mjs$/);
-    expect(command.args).toContain("--mode=new_page_review");
-    expect(command.args.join(" ")).not.toContain("--time-budget-ms");
+    expect(() => commandForDownstreamLane("new-page-review")).toThrow("Unknown downstream lane");
     const changed = commandForDownstreamLane("changed-page-review");
     expect(changed.args[0]).toMatch(/program-text-worker\.mjs$/);
     expect(changed.args).toContain("--mode=review");
@@ -83,7 +76,7 @@ describe("independent downstream lane runner", () => {
       expect(parsed.apply).toBe(true);
       expect(parsed.env).toBe("fixture.env");
       expect(command.args.join(" ")).not.toMatch(/visual|screenshot|reports-dir|time-budget-ms|paid-lane/);
-      expect(parsed.mode).toBe(lane === "changed_page_review" ? "review" : lane === "new_page_review" ? "new_page_review" : lane === "nightly_report" ? "report" : "legacy_hold");
+      expect(parsed.mode).toBe(lane === "changed_page_review" ? "review" : "report");
     }
   });
 

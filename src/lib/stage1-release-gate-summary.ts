@@ -41,14 +41,9 @@ const expectedPolicyVersion = "stage1-publication-v1";
 const canonicalReleaseEpochPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const expectedBudgetLanes = ["new_page_review", "changed_page_review"] as const;
 const expectedDownstreamLanes = [
-  ["new_page_review", "New page review", true],
   ["changed_page_review", "Changed page review", true],
-  ["feedback_promotion", "Feedback promotion", false],
-  ["suppression", "Suppression", false],
-  ["reconciliation", "Reconciliation", false],
   ["page_audit", "Page audit", false],
-  ["manual_quarantine", "Manual quarantine", false],
-  ["nightly_report", "Nightly report", false],
+  ["nightly_report", "Coverage report", false],
 ] as const;
 export const stage1ReleaseArtifactKinds = [
   "hosted_runtime_identity",
@@ -1400,7 +1395,7 @@ function downstreamLaneIdentityIssue(lanes: AdminDownstreamLane[]) {
   ) {
     return null;
   }
-  return `Downstream lane identity is incomplete or unexpected; exactly these eight keys are required: ${[...expected].join(", ")}.`;
+  return `Downstream lane identity is incomplete or unexpected; exactly these three keys are required: ${[...expected].join(", ")}.`;
 }
 
 function budgetIssue(check: Stage1BudgetCheck) {

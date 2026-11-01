@@ -14,37 +14,18 @@ import {
 const root = resolve(import.meta.dirname, "..");
 
 export const downstreamLaneDefinitions = Object.freeze({
-  new_page_review: {
-    // New discovery waits while the reviewed 25-award baseline is established.
-    script: "scripts/program-text-worker.mjs",
-    args: ["--mode=new_page_review", "--apply=true"],
-  },
   changed_page_review: {
     script: "scripts/program-text-worker.mjs",
     args: ["--mode=review", "--apply=true", "--limit=100"],
-  },
-  feedback_promotion: {
-    script: "scripts/program-text-worker.mjs",
-    args: ["--mode=legacy_hold", "--apply=true"],
-  },
-  suppression: {
-    script: "scripts/program-text-worker.mjs",
-    args: ["--mode=legacy_hold", "--apply=true"],
-  },
-  reconciliation: {
-    script: "scripts/program-text-worker.mjs",
-    args: ["--mode=legacy_hold", "--apply=true"],
   },
   page_audit: {
     // Observation-only deterministic checks do not capture pages or invoke AI.
     script: "scripts/evaluate-public-page-audit-canaries.mjs",
     args: ["--all=true", "--apply=true", "--fail-on-critical=false"],
   },
-  manual_quarantine: {
-    script: "scripts/program-text-worker.mjs",
-    args: ["--mode=legacy_hold", "--apply=true"],
-  },
   nightly_report: {
+    // One coverage report replaces the six duplicate reporting schedules.
+    // Retain this key so its leases and historical runs keep their identity.
     script: "scripts/program-text-worker.mjs",
     args: ["--mode=report", "--apply=true"],
   },
