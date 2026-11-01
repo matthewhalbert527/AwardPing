@@ -1,3 +1,19 @@
+.cardList {
+  display: grid;
+  grid-auto-rows: 1fr;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+/* Equalize the content inside the scroller, whose height stays bounded. */
+.searchCardList {
+  gap: 0.12rem;
+}
+
+.searchCardList > :global(.award-search-option + .award-search-option) {
+  margin-top: 0;
+}
+
 /* A common track keeps the deadline border and text aligned across cards,
    regardless of the length of an award name or its reviewed date. Combining
    the local and global classes makes this independent of CSS import order. */

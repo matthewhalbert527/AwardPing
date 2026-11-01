@@ -282,9 +282,8 @@ describe("AwardDiscoveryWorkspace", () => {
     const signedIn = render(true, { search: "Goldwater" });
 
     expect(anonymous).toContain('<p role="status">1 matching award</p>');
-    expect(anonymous).toContain(
-      '<div class="award-search-results"><a class="award-search-option" href="/goldwater-scholarship">',
-    );
+    expect(load(anonymous)(".award-search-results .award-search-option").attr("href"))
+      .toBe("/goldwater-scholarship");
     expectNativeSearchSemantics(anonymous);
     // Search results use ordinary links, with no disclosure state.
     expect(anonymous).not.toContain("aria-expanded");

@@ -452,23 +452,25 @@ export function AwardDiscoveryWorkspace({
                 </button>
               </div>
               <div className="award-search-results">
-                {matches.map((award) => (
-                  <Link
-                    className="award-search-option"
-                    href={awardDirectoryHref(award)}
-                    key={award.id}
-                    onNavigate={() => setSearchOpen(false)}
-                  >
-                    <AwardDirectoryCardContent award={award} presentationAsOf={presentationAsOf} searchResult />
-                  </Link>
-                ))}
-                {matches.length === 0 && (
-                  <p className="award-search-empty">
-                    {hasActiveFilters
-                      ? "No awards match this search with these filters."
-                      : "No awards match this search."}
-                  </p>
-                )}
+                <div className={`${styles.cardList} ${styles.searchCardList}`}>
+                  {matches.map((award) => (
+                    <Link
+                      className="award-search-option"
+                      href={awardDirectoryHref(award)}
+                      key={award.id}
+                      onNavigate={() => setSearchOpen(false)}
+                    >
+                      <AwardDirectoryCardContent award={award} presentationAsOf={presentationAsOf} searchResult />
+                    </Link>
+                  ))}
+                  {matches.length === 0 && (
+                    <p className="award-search-empty">
+                      {hasActiveFilters
+                        ? "No awards match this search with these filters."
+                        : "No awards match this search."}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -578,7 +580,7 @@ export function AwardDiscoveryWorkspace({
         <section className="grid min-w-0 gap-3" aria-label="Browse all awards">
           {renderBrowseControls("top")}
 
-          <div className="grid gap-3">
+          <div className={styles.cardList}>
             {visibleLetterAwards.map((award) => (
               <article
                 className="award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)]"
