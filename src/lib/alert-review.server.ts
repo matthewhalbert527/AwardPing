@@ -2,11 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AlertReview, AlertReviewStatus } from "../components/admin-alert-review-board";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { createR2Client, getR2Bucket } from "@/lib/r2";
 import { parseProgramTextChangeDetails } from "../../scripts/lib/program-change-contract.mjs";
-import { loadProgramTextCapture } from "../../scripts/lib/program-text-artifacts.mjs";
-import { createProgramTextRepository, programTextEqual } from "../../scripts/lib/program-text-repository.mjs";
-import { validateProgramTextReviewResult } from "../../scripts/lib/program-text-review.mjs";
 import { programChangePresentation } from "@/lib/program-change-presentation";
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -49,6 +45,23 @@ export async function loadAlertReviews(status: AlertReviewStatus = "pending"): P
   return hydrateAlertReviewRows(db, rows(reviews.data), status);
 }
 
+/** Two bounded views share metadata reads; private evidence is still decision-only. */
+export async function loadPendingAndApprovedAlertReviews() {
+  const db = createSupabaseAdminClient() as SupabaseClient;
+  const statuses = ["pending", "approved"] as const;
+  const responses = await Promise.all(statuses.map(status => db.from("program_text_alert_reviews")
+    .select("id,content_hash,status,details,created_at").eq("status", status)
+    .order("created_at", { ascending: false }).order("id", { ascending: true }).limit(100)));
+  const reviewRows = responses.flatMap((response, index) => {
+    if (response.error) throw Error("Alert list unavailable.");
+    const values = rows(response.data);
+    if (values.some(row => row.status !== statuses[index])) throw Error("Invalid alert details.");
+    return values;
+  });
+  const hydrated = await hydrateAlertReviewRows(db, reviewRows, undefined, 200);
+  return { pending: hydrated.filter(row => row.status === "pending"), approved: hydrated.filter(row => row.status === "approved") };
+}
+
 /** Bounded original members for a group; this never makes a review decision. */
 export async function loadAlertReviewMembers(ids: string[]): Promise<AlertReview[]> {
   if (!Array.isArray(ids) || ids.length > 100 || ids.some(id => !uuid(id)) || new Set(ids).size !== ids.length) throw Error("Invalid alert members.");
@@ -62,19 +75,20 @@ export async function loadAlertReviewMembers(ids: string[]): Promise<AlertReview
   return result;
 }
 
-async function hydrateAlertReviewRows(db: SupabaseClient, reviewRows: Array<Record<string, unknown>>, expectedStatus?: AlertReviewStatus): Promise<AlertReview[]> {
+async function hydrateAlertReviewRows(db: SupabaseClient, reviewRows: Array<Record<string, unknown>>, expectedStatus?: AlertReviewStatus, maxRows: 100 | 200 = 100): Promise<AlertReview[]> {
+  if (reviewRows.length > maxRows) throw Error("Alert list unavailable.");
   const reviewIds = [...uniqueMap(reviewRows).keys()];
   if (!reviewIds.length) return [];
   const candidates = await db.from("shared_award_visual_review_candidates").select("id,shared_award_id,source_url,created_at,candidate_scope")
-    .in("id", reviewIds).limit(100);
+    .in("id", reviewIds).limit(maxRows);
   if (candidates.error) throw Error("Alert sources unavailable.");
-  const candidateRows = rows(candidates.data), byCandidate = uniqueMap(candidateRows);
+  const candidateRows = rows(candidates.data, maxRows), byCandidate = uniqueMap(candidateRows);
   if (candidateRows.length !== reviewRows.length) throw Error("Incomplete alert sources.");
   const awardIds = [...new Set(candidateRows.map(row => row.shared_award_id))];
   if (!awardIds.every(uuid)) throw Error("Invalid award identity.");
-  const awards = await db.from("shared_awards").select("id,name").in("id", awardIds).limit(100);
+  const awards = await db.from("shared_awards").select("id,name").in("id", awardIds).limit(maxRows);
   if (awards.error) throw Error("Alert awards unavailable.");
-  const byAward = uniqueMap(rows(awards.data));
+  const byAward = uniqueMap(rows(awards.data, maxRows));
   return reviewRows.map(row => {
     const candidate = byCandidate.get(row.id as string), details = parseProgramTextChangeDetails(row.details);
     const award = candidate && byAward.get(candidate.shared_award_id as string);
@@ -103,6 +117,7 @@ export async function verifyPendingAlertReview(id: string, expectedHash: string,
   if (!uuid(id) || !hash(expectedHash)) throw Error("Invalid alert version.");
   const review = await db.from("program_text_alert_reviews").select("id,content_hash,status,details").eq("id", id).single();
   if (review.error || !object(review.data) || review.data.id !== id || review.data.status !== "pending" || review.data.content_hash !== expectedHash) throw Error("Alert review changed. Refresh before deciding.");
+  const { verifySavedAlertEvidence } = await import("@/lib/alert-evidence.server");
   await verifySavedAlertEvidence(id, review.data.details, db, "pending");
 }
 
@@ -111,6 +126,7 @@ export async function verifyApprovedAlertReview(id: string, expectedHash: string
   if (!uuid(id) || !hash(expectedHash)) throw Error("Invalid alert version.");
   const review = await db.from("program_text_alert_reviews").select("id,content_hash,status,details,event_id,localization").eq("id", id).single();
   if (review.error || !object(review.data) || review.data.id !== id || review.data.status !== "approved" || review.data.content_hash !== expectedHash || !uuid(review.data.event_id)) throw Error("Approved alert changed.");
+  const { verifySavedAlertEvidence } = await import("@/lib/alert-evidence.server");
   await verifySavedAlertEvidence(id, review.data.details, db, "approved", review.data.event_id, review.data.localization);
 }
 
@@ -124,29 +140,4 @@ export async function decideAlertReview(input: AlertReviewDecision, actor: strin
   });
   if (result.error || !object(result.data) || result.data.ok !== true) throw Error("No alert decision was confirmed. Refresh before trying again.");
   return { ok: true } as const;
-}
-
-async function verifySavedAlertEvidence(id: string, details: unknown, db: SupabaseClient, status: "pending" | "approved", eventId?: string, localization?: unknown) {
-  const candidate = await db.from("shared_award_visual_review_candidates").select("*").eq("id", id).single();
-  if (candidate.error || !object(candidate.data) || candidate.data.id !== id || candidate.data.status !== (status === "pending" ? "succeeded" : "published") ||
-      (status === "pending" ? Boolean(candidate.data.published_at) : !candidate.data.published_at) || !object(candidate.data.prompt_payload) || !object(candidate.data.ai_result)) throw Error("Alert candidate unavailable.");
-  const client = createR2Client(), bucket = getR2Bucket();
-  const cache = new Map<string, Promise<Awaited<ReturnType<typeof loadProgramTextCapture>>>>();
-  const loadCapture = (ref: Parameters<typeof loadProgramTextCapture>[0]) => {
-    const key = JSON.stringify(ref);
-    if (!cache.has(key)) cache.set(key, loadProgramTextCapture(ref, { client, bucket }));
-    return cache.get(key)!;
-  };
-  if (status === "pending") {
-    await createProgramTextRepository(db, { loadCapture, bucket }).verifyCandidate(candidate.data);
-  } else {
-    const { verifyApprovedGroupEvidence } = await import("@/lib/alert-groups.server");
-    await verifyApprovedGroupEvidence(candidate.data, details, eventId!, db, loadCapture, localization);
-  }
-  const payload = candidate.data.prompt_payload, aiResult = candidate.data.ai_result;
-  const validated = validateProgramTextReviewResult(payload.comparison, payload.packet_plan, aiResult.responses);
-  if (validated.status !== "accepted" || !("details" in validated) || !parseProgramTextChangeDetails(details) ||
-      !programTextEqual(validated.details, details) || !programTextEqual(validated, aiResult.program_text_validation)) {
-    throw Error("The saved alert no longer matches its verified source comparison.");
-  }
 }

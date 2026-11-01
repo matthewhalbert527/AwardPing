@@ -210,16 +210,18 @@ export async function loadEligiblePublicChangeEvents({
           sourceById.has(event.shared_award_source_id),
         ),
       );
-      const evidenceByEventId = await loadPublicEventVisualEvidence(
-        admin,
-        evidenceCandidates.map((event) => event.id),
-      );
-      const textAlertApprovals = await loadProgramTextAlertApprovals(admin, evidenceCandidates.filter(event => {
+      const approvalEventIds = evidenceCandidates.filter(event => {
         const publication = publicationIndex.entryByMemberAwardId.get(event.shared_award_id);
         const source = event.shared_award_source_id ? sourceById.get(event.shared_award_source_id) : null;
         return Boolean(source && publication?.approvedTextAlertSourceBindings?.[source.id] &&
           (!publication.allowedSourceIdSet.has(source.id) || source.admin_review_status !== "open" && !publication.textFactReview?.variationInventoryId));
-      }).map(event => event.id));
+      }).map(event => event.id);
+      // Both immutable evidence and owner decisions depend only on the scoped
+      // events/sources above. Fetch together; neither bypasses the predicate.
+      const [evidenceByEventId, textAlertApprovals] = await Promise.all([
+        loadPublicEventVisualEvidence(admin, evidenceCandidates.map(event => event.id)),
+        loadProgramTextAlertApprovals(admin, approvalEventIds),
+      ]);
 
       for (const event of evidenceCandidates) {
         const publication = publicationIndex.entryByMemberAwardId.get(

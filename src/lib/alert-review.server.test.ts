@@ -17,7 +17,7 @@ vi.mock("../../scripts/lib/program-text-repository.mjs", async importOriginal =>
 }; });
 import { quoteIdRecoveryFixture } from "../../scripts/fixtures/program-text-quote-id-recovery.mjs";
 import { prepareProgramTextQuoteIdRecovery } from "../../scripts/lib/program-text-quote-id-recovery.mjs";
-import { decideAlertReview, loadAlertReviews, loadAlertReviewMembers, verifyApprovedAlertReview } from "./alert-review.server";
+import { decideAlertReview, loadAlertReviews, loadPendingAndApprovedAlertReviews, loadAlertReviewMembers, verifyApprovedAlertReview } from "./alert-review.server";
 import { programChangeContext, programChangePresentation } from "./program-change-presentation";
 
 const actor = "10000000-0000-4000-8000-000000000001";
@@ -81,6 +81,38 @@ describe("bounded private alert list and independently verified decision", () =>
   });
   it("returns an empty confirmed list without unrelated table queries", async () => {
     expect(await loadAlertReviews("approved")).toEqual([]); expect(mocks.from).toHaveBeenCalledTimes(1);
+  });
+  it("hydrates two bounded status lists with one shared candidate/award lookup and no evidence work", async () => {
+    const approvedId = "20000000-0000-4000-8000-000000000002";
+    tables.program_text_alert_reviews.push({ ...review, id: approvedId, status: "approved" });
+    tables.shared_award_visual_review_candidates.push({ ...candidate, id: approvedId, status: "published" });
+    const before = structuredClone(tables);
+    const result = await loadPendingAndApprovedAlertReviews();
+    expect(result.pending.map(r => r.id)).toEqual([candidate.id]); expect(result.approved.map(r => r.id)).toEqual([approvedId]);
+    expect(calls.filter(c => c.kind === "from" && c.table === "program_text_alert_reviews")).toHaveLength(2);
+    expect(calls.filter(c => c.kind === "from" && c.table === "shared_award_visual_review_candidates")).toHaveLength(1);
+    expect(calls.filter(c => c.kind === "from" && c.table === "shared_awards")).toHaveLength(1);
+    expect(calls.filter(c => c.kind === "limit").map(c => c.value)).toEqual([100,100,200,200]);
+    expect(tables).toEqual(before); expect(mocks.loadCapture).not.toHaveBeenCalled(); expect(mocks.rpc).not.toHaveBeenCalled();
+  });
+  it("preserves separate100/status bounds without dropping exact members from combined metadata", async () => {
+    tables.program_text_alert_reviews=[];tables.shared_award_visual_review_candidates=[];
+    for (let i=1;i<=202;i++) {
+      const id=`${String(i).padStart(8,"0")}-0000-4000-8000-000000000001`;
+      tables.program_text_alert_reviews.push({...review,id,status:i<=101?"pending":"approved"});
+      tables.shared_award_visual_review_candidates.push({...candidate,id});
+    }
+    const result=await loadPendingAndApprovedAlertReviews();
+    expect(result.pending).toHaveLength(100);expect(result.approved).toHaveLength(100);
+    expect(calls.find(c=>c.table==="shared_award_visual_review_candidates"&&c.kind==="in")?.value).toHaveLength(200);
+    tables.shared_award_visual_review_candidates.pop();
+    tables.shared_award_visual_review_candidates.shift();
+    await expect(loadPendingAndApprovedAlertReviews()).rejects.toThrow("Incomplete alert sources");
+  });
+  it("does no metadata hydration for two empty views", async () => {
+    tables.program_text_alert_reviews=[];
+    expect(await loadPendingAndApprovedAlertReviews()).toEqual({pending:[],approved:[]});
+    expect(mocks.from).toHaveBeenCalledTimes(2);expect(mocks.rpc).not.toHaveBeenCalled();expect(mocks.loadCapture).not.toHaveBeenCalled();
   });
   it("loads exact original members with award identity for a merge without changing their statuses", async () => {
     const before = structuredClone(review);

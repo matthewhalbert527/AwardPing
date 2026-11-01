@@ -1,6 +1,7 @@
 import "server-only";
 
 import { cookies } from "next/headers";
+import { cache } from "react";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { Database, NotificationPreference, OfficeRole } from "@/lib/database.types";
@@ -29,9 +30,11 @@ export function canManageOffice(role: OfficeRole) {
   return role === "owner" || role === "admin";
 }
 
-export async function getOfficeContext(user: { id: string; email?: string | null }) {
+// A primitive key also shares work when a page and layout pass different user
+// objects. React's render cache ends with the request, including its office cookie.
+const getOfficeContextForUser = cache(async function getOfficeContextForUser(userId: string) {
   const supabase = await createSupabaseServerClient();
-  const memberships = await fetchMemberships(supabase, user.id);
+  const memberships = await fetchMemberships(supabase, userId);
 
   if (memberships.length === 0) {
     return null;
@@ -44,6 +47,10 @@ export async function getOfficeContext(user: { id: string; email?: string | null
     memberships[0];
 
   return { current, memberships };
+});
+
+export async function getOfficeContext(user: { id: string; email?: string | null }) {
+  return getOfficeContextForUser(user.id);
 }
 
 export async function requireOfficeContext(user: { id: string; email?: string | null }) {

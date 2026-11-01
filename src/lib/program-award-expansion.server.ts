@@ -2,7 +2,7 @@ import "server-only";
 import { z } from "zod";
 import cohort from "../../config/program-award-expansion.json";
 import { applyProgramBasicFacts, emptyBasicAwardFacts } from "@/lib/program-basic-facts.server";
-import type { Stage1MemberRow, Stage1PublicationEntry, Stage1PublicationIndex, Stage1RegistryRow } from "@/lib/stage1-publication";
+import type { Stage1MemberRow, Stage1PublicationEntry, Stage1PublicationIndex, Stage1PublicationRead, Stage1RegistryRow } from "@/lib/stage1-publication";
 
 const uuid = z.string().uuid();
 const timestamp = z.string().datetime({ offset: true }).refine(value => Date.parse(value) <= Date.now() + 300_000);
@@ -67,11 +67,11 @@ export function applyProgramAwardExpansion(index: Stage1PublicationIndex, value:
 }
 
 /** A missing or invalid expansion cannot hide or weaken the accepted 25. */
-export async function loadProgramAwardExpansion(db: unknown, index: Stage1PublicationIndex, epoch: string): Promise<Stage1PublicationIndex> {
+export async function loadProgramAwardExpansion(db: unknown, index: Stage1PublicationIndex, epoch: string, read?: Stage1PublicationRead): Promise<Stage1PublicationIndex> {
   if (!index.available) return index;
   try {
     const client = db as { rpc(name: string, args: { p_epoch: string }): PromiseLike<{ data: unknown; error: unknown }> };
-    const result = await client.rpc("get_program_award_expansion_publication", { p_epoch: epoch });
+    const result = await (read ? read() : client.rpc("get_program_award_expansion_publication", { p_epoch: epoch }));
     if (result.error) throw Error("Expansion publication request failed.");
     return applyProgramAwardExpansion(index, result.data, epoch);
   } catch { return index; }

@@ -1,12 +1,8 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { loadAlertReviews, loadAlertReviewMembers, verifyPendingAlertReview, verifyApprovedAlertReview } from "@/lib/alert-review.server";
+import { loadAlertReviews, loadPendingAndApprovedAlertReviews, loadAlertReviewMembers, verifyPendingAlertReview, verifyApprovedAlertReview } from "@/lib/alert-review.server";
 import type { AlertReview, AlertReviewLeaf, AlertMemberRef, MergeOption, MergePreview, AlertReviewStatus } from "@/lib/alert-group-review";
-import { buildProgramTextComparison, buildProgramTextReviewPackets } from "../../scripts/lib/program-text-review.mjs";
-import { programTextReference } from "../../scripts/lib/program-text-storage.mjs";
-import { programTextEqual } from "../../scripts/lib/program-text-repository.mjs";
-import { loadProgramTextCapture } from "../../scripts/lib/program-text-artifacts.mjs";
 
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const uuid = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v);
@@ -30,6 +26,7 @@ function revision(v: unknown): Revision {
 }
 async function groupsFor(db: SupabaseClient, ids: string[]): Promise<Group[]> {
   if (ids.length > 100 || ids.some(id => !uuid(id))) throw Error("Choose a bounded alert list.");
+  if (!ids.length) return [];
   const data = await rpc(db, "get_program_text_alert_groups", { p_review_ids: [...new Set(ids)] });
   if (!Array.isArray(data) || data.length > 100) throw Error("Invalid combined update list.");
   const groups = data.map(v => {
@@ -83,7 +80,7 @@ function option(leaf: AlertReview, others: AlertReview[]): MergeOption {
 /** Admin-only board: original proofs stay separate; no grouping is an approval. */
 export async function loadAlertReviewBoard(status: AlertReviewStatus = "pending") {
   if (status === "dismissed") return { alerts: await loadAlertReviews(status), mergeOptions: [] as MergeOption[] };
-  const [pending, approved] = await Promise.all([loadAlertReviews("pending"), loadAlertReviews("approved")]);
+  const { pending, approved } = await loadPendingAndApprovedAlertReviews();
   const now = Date.now();
   const seeds = [...pending, ...approved.filter(x => recent(x, now))].slice(0, 100);
   const db = createSupabaseAdminClient() as SupabaseClient;
@@ -151,21 +148,4 @@ export async function decideAlertGroup(input: { id: string; expected_hash: strin
   const result = await rpc(db, "decide_program_text_alert_group", { p_id: input.id, p_expected_hash: input.expected_hash, p_action: input.action, p_actor: actor });
   if (!object(result) || result.ok !== true) throw Error("Combined decision was not confirmed.");
   return { ok: true } as const;
-}
-
-/** Cold-check a historical member without pretending its old pair is today's baseline. */
-export async function verifyApprovedGroupEvidence(candidate: Record<string, unknown>, details: unknown, eventId: string, db: SupabaseClient,
-  loadCapture: (ref: Parameters<typeof loadProgramTextCapture>[0]) => ReturnType<typeof loadProgramTextCapture>, localization?: unknown) {
-  if (candidate.candidate_scope !== "program_text_change" || ["previous_image_hash", "new_image_hash", "previous_file_hash", "new_file_hash"].some(key => candidate[key] != null) || !object(candidate.worker_metadata) || !object(candidate.prompt_payload) || !object(candidate.ai_result) || candidate.worker_metadata.change_event_id !== eventId || candidate.worker_metadata.evidence_signature !== candidate.candidate_signature || candidate.worker_metadata.monitoring_contract !== "program-text-v1") throw Error("Invalid approved source evidence.");
-  const [event, evidence] = await Promise.all([
-    db.from("shared_award_change_events").select("id,shared_award_id,shared_award_source_id,source_url,visual_review_candidate_id,change_details").eq("id", eventId).single(),
-    db.from("shared_award_change_event_visual_evidence").select("change_event_id,visual_review_candidate_id,candidate_signature,bucket,evidence_status,evidence_schema_version,previous_capture,current_capture,localization").eq("change_event_id", eventId).single(),
-  ]);
-  const e = event.data, proof = evidence.data;
-  if (event.error || evidence.error || !object(e) || !object(proof) || e.id !== eventId || e.visual_review_candidate_id !== candidate.id || e.shared_award_id !== candidate.shared_award_id || e.shared_award_source_id !== candidate.shared_award_source_id || e.source_url !== candidate.source_url || !programTextEqual(e.change_details, details) || !object(localization) || !programTextEqual(proof.localization, localization) || proof.change_event_id !== eventId || proof.visual_review_candidate_id !== candidate.id || proof.candidate_signature !== candidate.candidate_signature || proof.bucket !== candidate.worker_metadata.bucket || proof.evidence_status !== "verified_text" || proof.evidence_schema_version !== "program-text-event-evidence-v1" || !programTextEqual(proof.previous_capture, candidate.previous_snapshot_ref) || !programTextEqual(proof.current_capture, candidate.new_snapshot_ref)) throw Error("The approved event does not match its retained evidence.");
-  const payload = candidate.prompt_payload;
-  if (!object(payload.comparison) || !object(payload.comparison.context) || !object(payload.packet_plan) || !object(payload.packet_plan.limits)) throw Error("Invalid approved comparison.");
-  const [previous, current] = await Promise.all([loadCapture(candidate.previous_snapshot_ref as Parameters<typeof loadProgramTextCapture>[0]), loadCapture(candidate.new_snapshot_ref as Parameters<typeof loadProgramTextCapture>[0])]);
-  const comparison = buildProgramTextComparison(previous, current, { epoch: candidate.worker_metadata.epoch, cycle_id: payload.comparison.context.cycle_id });
-  if (!programTextEqual(comparison, payload.comparison) || comparison.comparison_id !== candidate.candidate_signature || !programTextEqual(programTextReference(previous), candidate.previous_snapshot_ref) || !programTextEqual(programTextReference(current), candidate.new_snapshot_ref) || !programTextEqual(buildProgramTextReviewPackets(comparison, payload.packet_plan.limits), payload.packet_plan)) throw Error("Approved originals no longer match the saved comparison.");
 }

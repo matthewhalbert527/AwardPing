@@ -79,6 +79,10 @@ export type Stage1PublicationIndex = {
   textAlertSourcesAvailable?: boolean;
 };
 
+/** An already-started read may be consumed by the existing validator. Each
+ * validator retains its own failure policy; fetching never grants authority. */
+export type Stage1PublicationRead = () => PromiseLike<{ data: unknown; error: unknown }>;
+
 type Stage1PublicationInput = {
   registryRows: Stage1RegistryRow[];
   memberRows: Stage1MemberRow[];
@@ -494,9 +498,24 @@ export async function loadStage1PublicationIndex(): Promise<Stage1PublicationInd
   if (!index.available) return index;
   // The retired complete-facts/route approvals remain private history. Normal
   // public reads use accepted identity + individually source-verified basics.
-  const basics = await loadProgramBasicFacts(admin, index);
-  const expanded = await loadProgramAwardExpansion(admin, basics, textMonitoring.epoch);
-  return loadProgramTextAlertSourceBindings(admin, expanded, textMonitoring.epoch);
+  const client = admin as unknown as {
+    rpc(name: string, args: Record<string, unknown>): PromiseLike<{ data: unknown; error: unknown }>;
+  };
+  // These snapshots depend on the accepted identity/epoch, not on one another.
+  // Start them together, then apply the unchanged validation/failure policies
+  // in order. There is no cross-request cache or stale authority fallback.
+  const results = await Promise.allSettled([
+    Promise.resolve().then(() => client.rpc("get_program_basic_facts", { p_award_ids: index.verifiedEntries.map(entry => entry.canonicalAwardId) })),
+    Promise.resolve().then(() => client.rpc("get_program_award_expansion_publication", { p_epoch: textMonitoring.epoch })),
+    Promise.resolve().then(() => client.rpc("get_program_text_public_alert_source_bindings", { p_epoch: textMonitoring.epoch })),
+  ]);
+  const read = (result: PromiseSettledResult<{ data: unknown; error: unknown }>): Stage1PublicationRead => () => {
+    if (result.status === "rejected") throw result.reason;
+    return Promise.resolve(result.value);
+  };
+  const basics = await loadProgramBasicFacts(admin, index, read(results[0]));
+  const expanded = await loadProgramAwardExpansion(admin, basics, textMonitoring.epoch, read(results[1]));
+  return loadProgramTextAlertSourceBindings(admin, expanded, textMonitoring.epoch, read(results[2]));
 }
 
 export async function getStage1PublicationEntryForAward(

@@ -84,6 +84,8 @@ export default async function OpsPage() {
     { data: structureErrors },
     { data: localWorkerRuns },
     { data: errorSharedSources },
+    digestResult,
+    lanesResult,
   ] = await Promise.all([
     userSupabase
       .from("alert_deliveries")
@@ -142,14 +144,7 @@ export default async function OpsPage() {
       .not("last_error", "is", null)
       .order("last_checked_at", { ascending: false, nullsFirst: false })
       .limit(8),
-  ]);
-
-  let lastDigestRun: JobRun | null = null;
-  let digestRunError: string | null = null;
-  let laneStatuses: LaneStatus[] = [];
-  let laneStatusError: string | null = null;
-
-  const [digestResult, lanesResult] = await Promise.all([
+    // Digest and lane status do not depend on any of the historical queries.
     admin
       .from("job_runs")
       .select("*")
@@ -158,6 +153,11 @@ export default async function OpsPage() {
       .limit(1),
     admin.rpc("list_monitoring_downstream_lane_status"),
   ]);
+
+  let lastDigestRun: JobRun | null = null;
+  let digestRunError: string | null = null;
+  let laneStatuses: LaneStatus[] = [];
+  let laneStatusError: string | null = null;
 
   if (digestResult.error) {
     digestRunError = digestResult.error.message;

@@ -5,7 +5,7 @@ import type { Json } from "@/lib/database.types";
 import { readableSourceTitle } from "@/lib/display-text";
 import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
+import { loadPublicRenderPublicationIndex } from "@/lib/public-render-publication";
 import { describeDetectedAt } from "@/lib/time-zone";
 import { attachPublicAlertGroups, loadPublicAlertGroups } from "@/lib/public-alert-groups.server";
 import { publicAlertDisplayRows, type PublicAlertGroup } from "@/lib/public-alert-groups";
@@ -35,7 +35,7 @@ export type LiveUpdateItem = {
 // `now` is read once per load so every item's label agrees with the others.
 export async function getLiveUpdateItems(limit = 30, now: Date = new Date()): Promise<LiveUpdateItem[]> {
   const admin = createSupabaseAdminClient();
-  const publicationIndex = await loadStage1PublicationIndex();
+  const publicationIndex = await loadPublicRenderPublicationIndex();
   if (!publicationIndex.available || publicationIndex.verifiedMemberAwardIds.length === 0) {
     return [];
   }

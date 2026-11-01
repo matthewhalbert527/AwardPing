@@ -1,4 +1,6 @@
 import { canonicalAwardPath, normalizeAwardSlug, withUniqueAwardSourceSlugs } from "@/lib/award-slugs";
+import { cache } from "react";
+import { loadPublicRenderPublicationIndex } from "@/lib/public-render-publication";
 import {
   latestCheckedAt,
   publicAwardFactsFromAward,
@@ -160,9 +162,8 @@ export async function getPublicAwardPageResolutionBySlug(
   return data ? { kind: "published", data } : { kind: "under_verification" };
 }
 
-/** Metadata uses the current publication identity and approved shared facts.
- * It does not need source cards, change history, unread state or route details.
- * The page body independently repeats its full current publication checks.
+/** Metadata shares this render's current identity, but never reads source
+ * cards, change history, unread state or other visitor-specific details.
  */
 export async function getPublicAwardMetadataResolutionBySlug(slug: string): Promise<PublicAwardMetadataResolution> {
   const identity = await resolvePublicAwardIdentityBySlug(slug);
@@ -172,12 +173,13 @@ export async function getPublicAwardMetadataResolutionBySlug(slug: string): Prom
     metaDescription: publicAwardMetaDescription(identity.award.name, facts) } };
 }
 
-/** Shared identity/alias resolution stays fresh for each independent caller. */
-async function resolvePublicAwardIdentityBySlug(slug: string): Promise<PublicAwardIdentityResolution> {
+/** Metadata and body share identity only within this React render. The full
+ * source/event predicates still run for each body, and every request is fresh. */
+const resolvePublicAwardIdentityBySlug = cache(async (slug: string): Promise<PublicAwardIdentityResolution> => {
   const normalizedSlug = normalizeAwardSlug(slug);
   if (!normalizedSlug) return { kind: "missing" };
 
-  const publicationIndex = await loadStage1PublicationIndex();
+  const publicationIndex = await loadPublicRenderPublicationIndex();
   if (!publicationIndex.available) return { kind: "unavailable" };
 
   const admin = createSupabaseAdminClient();
@@ -230,7 +232,7 @@ async function resolvePublicAwardIdentityBySlug(slug: string): Promise<PublicAwa
 
   return { kind: "published", award: canonicalAward, publication, publicationIndex,
     canonicalPath, redirectPath: shouldRedirect ? canonicalPath : null };
-}
+});
 
 export async function getPublicAwardSitemapRows(limit = 50000) {
   const publicationIndex = await loadStage1PublicationIndex();

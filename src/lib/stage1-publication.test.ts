@@ -30,17 +30,7 @@ const releaseEpoch = "11111111-1111-4111-8111-111111111111";
 
 describe("Stage 1 publication gate", () => {
   it("loads identity, basic snapshots and alert authority without retired full-fact or manual-route RPCs", async () => {
-    const fixture = activatedCohortFixture();
-    const snapshot = { schema_version: 3, cohort_identity_version: stage1CohortIdentityVersion, cohort_identity_hash: stage1CohortIdentityHash,
-      evaluated_at: now.toISOString(), release: { release_key: "stage1-national-25", release_state: "verified_beta", release_epoch: releaseEpoch,
-        policy_version: stage1PublicationPolicyVersion, cohort_identity_version: stage1CohortIdentityVersion, cohort_identity_hash: stage1CohortIdentityHash,
-        activated_at: fixture.release.activatedAt, effectively_released: true, effective_reason: "verified", ready_cohort_count: 25 },
-      cohorts: fixture.registryRows.map((registry, n) => { const sourceId = `70000000-0000-4000-8000-${String(n + 1).padStart(12, "0")}`;
-        return { registry: { ...registry, fact_ledger_batch_id: registry.fact_ledger_batch_id ?? null }, effectively_verified: true, effective_reason: "verified", cohort_ready: true,
-          cohort_readiness_reason: "verified", evaluated_at: now.toISOString(), members: fixture.memberRows.filter(row => row.cohort_key === registry.cohort_key),
-          identity_rules: [], allowed_source_ids: [sourceId], reviewed_homepage: { source_id: sourceId, url: registry.official_homepage },
-          published_facts: { overview: `Accepted ${registry.canonical_name} overview.` } };
-      }) };
+    const snapshot = activatedSnapshotFixture();
     const rpc = vi.fn(async (name: string) => {
       if (name === "get_stage1_publication_snapshot") return { data: snapshot, error: null };
       if (name === "get_program_basic_facts") return { data: [], error: null };
@@ -53,6 +43,37 @@ describe("Stage 1 publication gate", () => {
     expect(index.available).toBe(true); expect(index.verifiedEntries).toHaveLength(25);
     expect(rpc.mock.calls.map(([name]) => name)).toEqual(["get_stage1_publication_snapshot", "get_program_basic_facts", "get_program_award_expansion_publication", "get_program_text_public_alert_source_bindings"]);
     expect(index.entries[0].publishedFacts).toEqual(snapshot.cohorts[0].published_facts);
+  });
+  it("starts all three independent snapshots before waiting and retains each existing failure policy", async () => {
+    const snapshot = activatedSnapshotFixture();
+    type Result = { data: unknown; error: unknown };
+    const pending = new Map<string, { resolve: (value: Result) => void; reject: (error: Error) => void }>();
+    const rpc = vi.fn((name: string) => name === "get_stage1_publication_snapshot"
+      ? Promise.resolve({ data: snapshot, error: null })
+      : new Promise<Result>((resolve, reject) => { pending.set(name, { resolve, reject }); }));
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({ rpc } as unknown as ReturnType<typeof createSupabaseAdminClient>);
+    const loading = loadStage1PublicationIndex();
+    await vi.waitFor(() => expect(pending.size).toBe(3));
+    pending.get("get_program_basic_facts")!.reject(Error("Private basic transport diagnostic"));
+    pending.get("get_program_award_expansion_publication")!.resolve({ data: { schema: "awardping.program-award-expansion-publication.v1", epoch: textMonitoring.epoch, awards: [] }, error: null });
+    pending.get("get_program_text_public_alert_source_bindings")!.resolve({ data: { schema: "awardping.program-text-public-alert-sources.v1", epoch: textMonitoring.epoch, source_count: 1,
+      bindings: [{ cohort_key: snapshot.cohorts[0].registry.cohort_key, source_id: "70000000-0000-4000-8000-000000000001", shared_award_id: snapshot.cohorts[1].registry.canonical_shared_award_id, url: snapshot.cohorts[0].registry.official_homepage, epoch: textMonitoring.epoch }] }, error: null });
+    const index = await loading;
+    expect(index.available).toBe(true); expect(index.verifiedEntries).toHaveLength(25);
+    expect(index.entries.every(entry => entry.basicFactsUnavailable && (entry.publishedFacts as { overview: unknown }).overview === null)).toBe(true);
+    expect(index.textAlertSourcesAvailable).toBe(false);
+    expect(index.entries.every(entry => Object.keys(entry.approvedTextAlertSourceBindings || {}).length === 0)).toBe(true);
+    expect(rpc).toHaveBeenCalledTimes(4);
+  });
+  it("keeps the uncached authority loader fresh after a separate lookup suspends the release", async () => {
+    const snapshot = activatedSnapshotFixture();
+    const rpc = vi.fn(async (name: string) => name === "get_stage1_publication_snapshot" ? { data: snapshot, error: null } : name === "get_program_basic_facts" ? { data: [], error: null } : name === "get_program_award_expansion_publication" ? { data: { schema: "awardping.program-award-expansion-publication.v1", epoch: textMonitoring.epoch, awards: [] }, error: null } : { data: { schema: "awardping.program-text-public-alert-sources.v1", epoch: textMonitoring.epoch, source_count: 0, bindings: [] }, error: null });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({ rpc } as unknown as ReturnType<typeof createSupabaseAdminClient>);
+    expect((await loadStage1PublicationIndex()).verifiedEntries).toHaveLength(25);
+    snapshot.release.release_state = "suspended";
+    const held = await loadStage1PublicationIndex();
+    expect(held.available).toBe(false); expect(held.verifiedEntries).toHaveLength(0);
+    expect(rpc.mock.calls.filter(([name]) => name === "get_stage1_publication_snapshot")).toHaveLength(2);
   });
   it("publishes all 25 only under one fresh authoritative release epoch", () => {
     const fixture = activatedCohortFixture();
@@ -228,6 +249,21 @@ describe("Stage 1 publication gate", () => {
     expect(index.unavailableReason).toContain("identity mismatch");
   });
 });
+
+function activatedSnapshotFixture() {
+  const fixture = activatedCohortFixture();
+  return { schema_version: 3, cohort_identity_version: stage1CohortIdentityVersion, cohort_identity_hash: stage1CohortIdentityHash,
+    evaluated_at: now.toISOString(), release: { release_key: "stage1-national-25", release_state: "verified_beta", release_epoch: releaseEpoch,
+      policy_version: stage1PublicationPolicyVersion, cohort_identity_version: stage1CohortIdentityVersion, cohort_identity_hash: stage1CohortIdentityHash,
+      activated_at: fixture.release.activatedAt, effectively_released: true, effective_reason: "verified", ready_cohort_count: 25 },
+    cohorts: fixture.registryRows.map((registry, n) => {
+      const sourceId = `70000000-0000-4000-8000-${String(n + 1).padStart(12, "0")}`;
+      return { registry: { ...registry, fact_ledger_batch_id: registry.fact_ledger_batch_id ?? null }, effectively_verified: true, effective_reason: "verified", cohort_ready: true,
+        cohort_readiness_reason: "verified", evaluated_at: now.toISOString(), members: fixture.memberRows.filter(row => row.cohort_key === registry.cohort_key),
+        identity_rules: [], allowed_source_ids: [sourceId], reviewed_homepage: { source_id: sourceId, url: registry.official_homepage },
+        published_facts: { overview: `Accepted ${registry.canonical_name} overview.` } };
+    }) };
+}
 
 function cohortFixture() {
   return {

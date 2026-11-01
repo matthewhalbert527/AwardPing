@@ -40,6 +40,32 @@ describe("loadEligiblePublicChangeEvents", () => {
     mocks.loadPublicEventVisualEvidence.mockClear();
   });
 
+  it("starts immutable evidence and owner-decision reads together, then keeps the final release check", async () => {
+    const event = eventRow("2026-07-16T18:00:00.000Z", 4, allowedSourceId), source = { ...sourceRow(), admin_review_status: "review_later" };
+    const index = publicationIndex();
+    index.verifiedEntries[0].approvedTextAlertSourceBindings = { [allowedSourceId]: { url: source.url, shared_award_id: memberAwardId, epoch: "60000000-0000-4000-8000-000000000001" } };
+    let evidenceStarted = false, decisionStarted = false, releaseReads = 0;
+    let finishEvidence!: (value: Map<string, { change_event_id: string }>) => void;
+    let finishDecision!: (value: { data: unknown[]; error: null }) => void;
+    const evidence = new Promise<Map<string, { change_event_id: string }>>(resolve => { finishEvidence = resolve; });
+    const decision = new Promise<{ data: unknown[]; error: null }>(resolve => { finishDecision = resolve; });
+    mocks.loadPublicEventVisualEvidence.mockImplementationOnce(async () => { evidenceStarted = true; return evidence; });
+    const base = fakeAdmin([[event]], [source]).client as unknown as { from: (table: string) => unknown };
+    const admin = { from: (table: string) => {
+      if (table === "program_text_alert_reviews") return fluentBuilder(() => { decisionStarted = true; return decision; });
+      if (table === "stage1_publication_release_state") releaseReads++;
+      return base.from(table);
+    } } as never;
+    const loading = loadEligiblePublicChangeEvents({ admin, publicationIndex: index, limit: null });
+    await vi.waitFor(() => { expect(evidenceStarted).toBe(true); expect(decisionStarted).toBe(true); });
+    expect(releaseReads).toBe(0);
+    finishEvidence(new Map([[event.id, { change_event_id: event.id }]]));
+    finishDecision({ data: [{ id: event.visual_review_candidate_id, event_id: event.id, content_hash: "a".repeat(64), status: "approved" }], error: null });
+    expect((await loading).map(row => row.event.id)).toEqual([event.id]);
+    expect(releaseReads).toBe(1);
+    expect(mocks.isPublicChangeEvent).toHaveBeenCalledWith(expect.objectContaining({ textAlertApproval: { eventId: event.id, candidateId: event.visual_review_candidate_id, contentHash: "a".repeat(64) } }));
+  });
+
   it("preserves distinct exact-ID group members only when explicitly requested, keeping normal dedupe unchanged", async () => {
     const first = eventRow("2026-07-16T18:00:00.000Z", 4, allowedSourceId);
     const duplicate = { ...first, id: "40000000-0000-4000-8000-000000000003", detected_at: "2026-07-16T17:00:00.000Z" };

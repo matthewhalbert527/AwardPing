@@ -1,6 +1,6 @@
 import "server-only";
 import type { Json } from "@/lib/database.types";
-import type { Stage1PublicationIndex } from "@/lib/stage1-publication";
+import type { Stage1PublicationIndex, Stage1PublicationRead } from "@/lib/stage1-publication";
 import { PROGRAM_DETAIL_FIELDS } from "../../scripts/lib/program-change-contract.mjs";
 
 const fields = ["overview", ...PROGRAM_DETAIL_FIELDS];
@@ -53,12 +53,12 @@ export function applyProgramBasicFacts(index: Stage1PublicationIndex, rows: unkn
   }));
 }
 
-export async function loadProgramBasicFacts(db: unknown, index: Stage1PublicationIndex): Promise<Stage1PublicationIndex> {
+export async function loadProgramBasicFacts(db: unknown, index: Stage1PublicationIndex, read?: Stage1PublicationRead): Promise<Stage1PublicationIndex> {
   if (!index.available || !index.verifiedEntries.length) return index;
   try {
     const ids = index.verifiedEntries.map(entry => entry.canonicalAwardId);
     const client = db as { rpc(name: string, args: { p_award_ids: string[] }): PromiseLike<{ data: unknown; error: unknown }> };
-    const result = await client.rpc("get_program_basic_facts", { p_award_ids: ids });
+    const result = await (read ? read() : client.rpc("get_program_basic_facts", { p_award_ids: ids }));
     if (result.error) throw Error("Basic award snapshot request failed.");
     return applyProgramBasicFacts(index, result.data);
   } catch {

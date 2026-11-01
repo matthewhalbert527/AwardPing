@@ -494,6 +494,18 @@ describe("public award page deep links", () => {
     expect(data?.changes.find((change) => change.id === eventId(8))?.unread).toBe(false);
   });
 
+  it("never shares visitor unread state when the public identity is reused", async () => {
+    mocks.unreadSharedChangeIdsForUser.mockImplementation(async (userId: string) =>
+      new Set(userId === "viewer-A" ? [recentEvents[0].event.id] : []));
+    const first = await getPublicAwardPageBySlug("example-fellowship", { userId: "viewer-A" });
+    const second = await getPublicAwardPageBySlug("example-fellowship", { userId: "viewer-B" });
+    expect(first?.changes[0].unread).toBe(true);
+    expect(second?.changes[0].unread).toBe(false);
+    expect(first?.changes[0].unread).toBe(true);
+    expect(mocks.unreadSharedChangeIdsForUser.mock.calls.map(([id]) => id)).toEqual(["viewer-A", "viewer-B"]);
+    expect(mocks.loadEligiblePublicChangeEvents).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps adjacent PostgreSQL microseconds in exact order instead of letting the UUID decide", () => {
     // Date.parse would tie these two at the millisecond and then reverse them
     // by UUID; the exact comparison keeps the newer microsecond first.

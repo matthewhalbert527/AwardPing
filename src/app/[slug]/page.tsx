@@ -68,8 +68,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function SlugPage({ params, searchParams }: Props) {
-  const { slug } = await params;
-  const query = searchParams ? await searchParams : {};
+  const [{ slug }, query] = await Promise.all([params, searchParams || Promise.resolve({} as NonNullable<Awaited<Props["searchParams"]>>)]);
   const context = {
     sourceId: publicAwardQueryId(query.source),
     changeId: publicAwardQueryId(query.change),
@@ -83,28 +82,18 @@ export default async function SlugPage({ params, searchParams }: Props) {
   if (!hasSupabaseAdminConfig()) return <AwardUnavailable retryHref={retryHref} />;
   // The validated change id rides along so an update older than the recent
   // list is still loaded (through the public gates) and can be selected.
-  const initialResolution = await getPublicAwardPageResolutionBySlug(slug, {
+  const user = await getCurrentUser();
+  const resolution = await getPublicAwardPageResolutionBySlug(slug, {
+    ...(user ? { userId: user.id } : {}),
     changeId: context.changeId,
     variantId: context.variantId,
   }).catch(() => ({ kind: "unavailable" as const }));
-  if (initialResolution.kind === "unavailable") {
+  if (resolution.kind === "unavailable") {
     return <AwardUnavailable retryHref={retryHref} />;
   }
-  if (initialResolution.kind === "under_verification") {
+  if (resolution.kind === "under_verification") {
     return <AwardUnderVerification />;
   }
-  if (initialResolution.kind !== "published") notFound();
-
-  const user = await getCurrentUser();
-  const resolution = user
-    ? await getPublicAwardPageResolutionBySlug(slug, { userId: user.id, changeId: context.changeId, variantId: context.variantId }).catch(
-        () => ({ kind: "unavailable" as const }),
-      )
-    : initialResolution;
-  // A second load must pass the same current gates; never fall back to the
-  // earlier public data if availability or verification changed meanwhile.
-  if (resolution.kind === "unavailable") return <AwardUnavailable retryHref={retryHref} />;
-  if (resolution.kind === "under_verification") return <AwardUnderVerification />;
   if (resolution.kind !== "published") notFound();
   const awardPage = resolution.data;
   // An alias slug keeps its update context through the canonical redirect.

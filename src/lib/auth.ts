@@ -1,9 +1,12 @@
 import { redirect } from "next/navigation";
+import { cache } from "react";
 import { appConfig, hasSupabaseConfig } from "@/lib/config";
 import { decryptProfileFields } from "@/lib/personal-data";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-export async function getCurrentUser() {
+// Deduplicate only during the current Server Component render. Route handlers
+// and decisions still verify the session afresh; nothing persists across users.
+export const getCurrentUser = cache(async function getCurrentUser() {
   if (!hasSupabaseConfig()) {
     return null;
   }
@@ -14,7 +17,7 @@ export async function getCurrentUser() {
   } = await supabase.auth.getUser();
 
   return user;
-}
+});
 
 export async function requireUser() {
   const user = await getCurrentUser();
@@ -26,7 +29,7 @@ export async function requireUser() {
   return user;
 }
 
-export async function getUserProfile(userId: string) {
+export const getUserProfile = cache(async function getUserProfile(userId: string) {
   if (!hasSupabaseConfig()) {
     return null;
   }
@@ -41,7 +44,7 @@ export async function getUserProfile(userId: string) {
     .maybeSingle();
 
   return decryptProfileFields(data);
-}
+});
 
 export function isSiteAdminEmail(email?: string | null) {
   if (!email || appConfig.adminEmails.length === 0) return false;

@@ -27,33 +27,25 @@ export default async function OfficePage() {
   const canManage = canManageOffice(officeContext.current.role);
   const supabase = await createSupabaseServerClient();
 
-  const { data: members } = await supabase
-    .from("office_members")
-    .select("*")
-    .eq("office_id", officeContext.current.officeId)
-    .eq("status", "active")
-    .order("created_at", { ascending: true });
-
-  const { data: invites } = canManage
-    ? await supabase
-        .from("office_invites")
-        .select("*")
-        .eq("office_id", officeContext.current.officeId)
-        .is("accepted_at", null)
-        .order("created_at", { ascending: false })
-    : { data: [] as InviteRow[] };
-  const { data: inviteReissues } = canManage
-    ? await supabase
-        .from("office_invite_security_reissues")
-        .select("*")
-        .eq("office_id", officeContext.current.officeId)
-        .neq("status", "delivered")
-    : { data: [] as InviteReissueRow[] };
+  // These reads depend on the authorized office, not on one another.
+  const [{ data: members }, { data: invites }, { data: inviteReissues }, profile] = await Promise.all([
+    supabase.from("office_members").select("*")
+      .eq("office_id", officeContext.current.officeId).eq("status", "active")
+      .order("created_at", { ascending: true }),
+    canManage
+      ? supabase.from("office_invites").select("*")
+          .eq("office_id", officeContext.current.officeId).is("accepted_at", null)
+          .order("created_at", { ascending: false })
+      : { data: [] as InviteRow[] },
+    canManage
+      ? supabase.from("office_invite_security_reissues").select("*")
+          .eq("office_id", officeContext.current.officeId).neq("status", "delivered")
+      : { data: [] as InviteReissueRow[] },
+    getUserProfile(user.id),
+  ]);
   const inviteReissueById = new Map(
     ((inviteReissues || []) as InviteReissueRow[]).map((reissue) => [reissue.invite_id, reissue]),
   );
-
-  const profile = await getUserProfile(user.id);
 
   return (
     <div className="dashboard-page">

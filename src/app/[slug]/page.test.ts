@@ -239,7 +239,7 @@ describe("public award page", () => {
     expect(html).not.toContain("Under verification");
     expect(html).not.toContain("public-award-console");
     expect(mocks.notFound).not.toHaveBeenCalled();
-    expect(mocks.getCurrentUser).not.toHaveBeenCalled();
+    expect(mocks.getCurrentUser).toHaveBeenCalledTimes(1);
   });
 
   it("drops malformed and repeated query context from the retry link", async () => {
@@ -264,9 +264,8 @@ describe("public award page", () => {
     expect(mocks.getPublicAwardPageResolutionBySlug).not.toHaveBeenCalled();
   });
 
-  it.each(["unavailable", "thrown"])("does not use the first load as stale fallback when a signed-in second load is %s", async (failure) => {
+  it.each(["unavailable", "thrown"])("fails closed when the one signed-in current load is %s", async (failure) => {
     mocks.getCurrentUser.mockResolvedValue({ id: "user-1", email: "person@example.edu" });
-    mocks.getPublicAwardPageResolutionBySlug.mockResolvedValueOnce({ kind: "published", data: makeAwardPage() });
     if (failure === "thrown") {
       mocks.getPublicAwardPageResolutionBySlug.mockRejectedValueOnce(new Error("Private signed-in diagnostic"));
     } else {
@@ -281,13 +280,14 @@ describe("public award page", () => {
     expect(html).not.toContain("Private signed-in diagnostic");
     expect(html).not.toContain("public-award-console");
     expect(mocks.notFound).not.toHaveBeenCalled();
+    expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenCalledExactlyOnceWith("example-fellowship", {
+      userId: "user-1", changeId: CHANGE_APPLY, variantId: undefined,
+    });
   });
 
-  it.each(["under_verification", "missing"])("preserves the %s gate when the signed-in second load changes", async (kind) => {
+  it.each(["under_verification", "missing"])("preserves the %s gate in the one signed-in current load", async (kind) => {
     mocks.getCurrentUser.mockResolvedValue({ id: "user-1", email: "person@example.edu" });
-    mocks.getPublicAwardPageResolutionBySlug
-      .mockResolvedValueOnce({ kind: "published", data: makeAwardPage() })
-      .mockResolvedValueOnce({ kind });
+    mocks.getPublicAwardPageResolutionBySlug.mockResolvedValueOnce({ kind });
 
     if (kind === "missing") {
       await expect(renderSlugPage()).rejects.toThrow("NOT_FOUND");
@@ -297,6 +297,21 @@ describe("public award page", () => {
       expect(html).not.toContain("public-award-console");
       expect(html).not.toContain("unavailable right now");
     }
+    expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads signed-in award details once with only that visitor's identity", async () => {
+    mocks.getCurrentUser.mockResolvedValueOnce({ id: "user-A" });
+    expect(await renderSlugPage()).toContain("A fellowship for testing.");
+    expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenCalledExactlyOnceWith("example-fellowship", {
+      userId: "user-A", changeId: undefined, variantId: undefined,
+    });
+    mocks.getCurrentUser.mockResolvedValueOnce({ id: "user-B" });
+    await renderSlugPage();
+    expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenLastCalledWith("example-fellowship", {
+      userId: "user-B", changeId: undefined, variantId: undefined,
+    });
+    expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenCalledTimes(2);
   });
 
   it.each(["unavailable", "thrown"])("uses generic non-indexable metadata for an %s load", async (failure) => {
@@ -409,7 +424,7 @@ describe("public award page", () => {
     expect($("main").text()).toContain("AwardPing is checking this award's official pages, current cycle, evidence, and monitoring health. Application facts stay hidden until every release check passes.");
     expect($("main .badge")).toHaveLength(0);
     expect(html).not.toContain("public-award-console");
-    expect(mocks.getCurrentUser).not.toHaveBeenCalled();
+    expect(mocks.getCurrentUser).toHaveBeenCalledTimes(1);
 
     mocks.getPublicAwardPageResolutionBySlug.mockResolvedValue({ kind: "missing" });
     await expect(renderSlugPage({ source: SOURCE_APPLY, change: CHANGE_APPLY })).rejects.toThrow(

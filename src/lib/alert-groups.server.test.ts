@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlertReview } from "./alert-group-review";
-const m = vi.hoisted(() => ({ rpc: vi.fn(), load: vi.fn(), members: vi.fn(), pending: vi.fn(), approved: vi.fn() }));
+const m = vi.hoisted(() => ({ rpc: vi.fn(), load: vi.fn(), lists: vi.fn(), members: vi.fn(), pending: vi.fn(), approved: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/admin", () => ({ createSupabaseAdminClient: () => ({ rpc: m.rpc }) }));
-vi.mock("@/lib/alert-review.server", () => ({ loadAlertReviews: m.load, loadAlertReviewMembers: m.members, verifyPendingAlertReview: m.pending, verifyApprovedAlertReview: m.approved }));
+vi.mock("@/lib/alert-review.server", () => ({ loadAlertReviews: m.load, loadPendingAndApprovedAlertReviews: m.lists, loadAlertReviewMembers: m.members, verifyPendingAlertReview: m.pending, verifyApprovedAlertReview: m.approved }));
 import { loadAlertReviewBoard, previewAlertGroup, saveAlertGroup, decideAlertGroup } from "./alert-groups.server";
 const id = (n: number) => `${n.toString().padStart(8, "0")}-0000-4000-8000-000000000001`;
 const actor = id(1), award = id(2), groupId = id(3), h = "a".repeat(64), gh = "b".repeat(64);
@@ -17,16 +17,24 @@ beforeEach(() => {
   ];
   group = { id: groupId, shared_award_id: award, retired: false, head: { id: id(6), revision: 1, operation: "draft", member_refs: memberRefs(), event_refs: null, content_hash: gh, created_at: new Date().toISOString() }, published: null };
   m.load.mockImplementation(async status => leaves.filter(l => l.status === status));
+  m.lists.mockImplementation(async () => ({ pending: leaves.filter(l => l.status === "pending"), approved: leaves.filter(l => l.status === "approved") }));
   m.members.mockImplementation(async ids => leaves.filter(l => ids.includes(l.id)));
   m.rpc.mockImplementation(async name => ({ data: name === "get_program_text_alert_groups" ? [] : { ok: true }, error: null }));
   m.pending.mockResolvedValue(undefined); m.approved.mockResolvedValue(undefined);
 });
 describe("related updates are drafts over original verified alerts", () => {
+  it("returns a confirmed empty board without an unrelated group RPC or evidence calls", async () => {
+    leaves = [];
+    expect(await loadAlertReviewBoard()).toEqual({ alerts: [], mergeOptions: [] });
+    expect(m.lists).toHaveBeenCalledOnce(); expect(m.rpc).not.toHaveBeenCalled();
+    expect(m.members).not.toHaveBeenCalled(); expect(m.pending).not.toHaveBeenCalled(); expect(m.approved).not.toHaveBeenCalled();
+  });
   it("suggests the actual same-page eligibility pair without claiming causality or changing evidence", async () => {
     const before = structuredClone(leaves); const board = await loadAlertReviewBoard();
     expect(board.alerts).toHaveLength(1); expect(board.alerts[0].id).toBe(leaves[1].id);
     expect(board.mergeOptions.find(x => x.id === leaves[0].id)?.relatedToIds).toContain(leaves[1].id);
     expect(leaves).toEqual(before); expect(m.pending).not.toHaveBeenCalled(); expect(m.approved).not.toHaveBeenCalled();
+    expect(m.lists).toHaveBeenCalledOnce(); expect(m.load).not.toHaveBeenCalled();
   });
   it("does not suggest foreign awards merely because names or prose match", async () => {
     leaves[0].awardId = id(9); const board = await loadAlertReviewBoard();
