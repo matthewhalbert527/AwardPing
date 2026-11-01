@@ -174,11 +174,17 @@ A collection failure exits once and does not restart automatically.
 
 | Windows task | Text-only behavior | Direct AI/API cost |
 | --- | --- | --- |
-| `AwardPing Changed Page Review Lane` | Reviews saved program-text comparisons; never auto-retries failed paid reviews. | Existing **$5/day** maximum. |
-| `AwardPing Page Audit Lane` | Runs deterministic public-page checks; never submits to Gemini. | **$0** |
-| `AwardPing Coverage Report` | Reports required-source text coverage every 15 minutes; keeps the internal `nightly_report` lane key. | **$0** |
+| `AwardPing Changed Page Review Lane` | Every 15 minutes: reviews saved program-text comparisons; never auto-retries failed paid reviews. | Existing **$5/day** maximum. |
+| `AwardPing Page Audit Lane` | Hourly: runs deterministic public-page checks; never submits to Gemini. | **$0** |
+| `AwardPing Coverage Report` | Daily, 30 minutes after the collectors' scheduled UTC start: reports required-source coverage; keeps the internal `nightly_report` lane key. Also available on demand. | **$0** |
 
-Each lane retains its stagger, Windows execution timeout, local lock and database
+Currently the collectors start at 23:00 UTC and Coverage Report runs at 23:30 UTC.
+The report follows the scheduled start with a buffer; it does not wait indefinitely
+for late collectors or imply that collection completed. Its output keeps incomplete
+coverage visible. The installer derives its UTC time from the three collectors so
+future updates preserve that ordering across daylight-saving transitions.
+
+Each lane retains its Windows execution timeout, local lock and database
 lease. A slow or failed lane does not block the other two. First collection
 creates a private baseline only. Public updates require a later complete capture,
 an actual approved program-detail change and validated exact text provenance.

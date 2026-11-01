@@ -279,7 +279,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Page Audit Lane",
     label: "Deterministic Page Audit",
     detail:
-      "Every 15 minutes: runs deterministic public-page checks and never submits pages to Gemini.",
+      "Hourly: runs deterministic public-page checks and never submits pages to Gemini.",
     cost: "$0 direct AI/API cost.",
   },
 
@@ -290,7 +290,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Coverage Report",
     label: "Coverage Report",
     detail:
-      "Every 15 minutes: reports approved-source coverage and current core details without capture, AI review or historical queue mutations.",
+      "Daily, 30 minutes after the scheduled collection start: reports approved-source coverage and current core details. Also available on demand; late or incomplete collection remains visible.",
     cost: "$0 direct AI/API cost.",
   },
   {

@@ -1172,6 +1172,47 @@ function Get-AwardPingRootedActionPaths {
   return @($paths.Values)
 }
 
+function Get-AwardPingDailyCoverageBoundaryUtc {
+  param(
+    [string]$InstallRoot,
+    [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow
+  )
+
+  $collectorMinute = $null
+  foreach ($shard in 1..3) {
+    $name = "AwardPing Visual Snapshot Worker Shard $shard"
+    $tasks = @(Get-ScheduledTask -TaskName $name -ErrorAction Stop | Where-Object {
+        [string]$_.TaskPath -eq "\" -and
+        (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot)
+      })
+    if ($tasks.Count -ne 1) { throw "Coverage scheduling requires exactly one installed collector: $name" }
+    [xml]$document = Export-ScheduledTask -TaskName $name -TaskPath "\" -ErrorAction Stop
+    $namespace = [System.Xml.XmlNamespaceManager]::new($document.NameTable)
+    $namespace.AddNamespace("task", $document.DocumentElement.NamespaceURI)
+    $triggers = @($document.SelectNodes("/task:Task/task:Triggers/*", $namespace))
+    if ($triggers.Count -ne 1 -or $triggers[0].LocalName -ne "CalendarTrigger") {
+      throw "Coverage scheduling requires one daily calendar trigger for $name"
+    }
+    $days = $triggers[0].SelectSingleNode("./task:ScheduleByDay/task:DaysInterval", $namespace)
+    $start = $triggers[0].SelectSingleNode("./task:StartBoundary", $namespace)
+    [DateTimeOffset]$boundary = [DateTimeOffset]::MinValue
+    if (-not $days -or $days.InnerText -ne "1" -or
+        $triggers[0].SelectSingleNode("./task:Repetition", $namespace) -or
+        -not $start -or [string]$start.InnerText -notmatch "(?:Z|[+-]\d{2}:\d{2})$" -or
+        -not [DateTimeOffset]::TryParse([string]$start.InnerText, [ref]$boundary) -or
+        $boundary.Second -ne 0 -or $boundary.Millisecond -ne 0) {
+      throw "Coverage scheduling requires a daily collector boundary with an explicit time zone: $name"
+    }
+    $minute = [int]$boundary.UtcDateTime.TimeOfDay.TotalMinutes
+    if ($null -eq $collectorMinute) { $collectorMinute = $minute }
+    elseif ($collectorMinute -ne $minute) { throw "Coverage scheduling requires all three collectors at the same UTC time" }
+  }
+  $reportMinute = ($collectorMinute + 30) % (24 * 60)
+  $next = [DateTimeOffset]::new($NowUtc.UtcDateTime.Date.AddMinutes($reportMinute), [TimeSpan]::Zero)
+  if ($next -le $NowUtc.ToUniversalTime().AddSeconds(30)) { $next = $next.AddDays(1) }
+  return $next
+}
+
 function Get-AwardPingManagedTaskScheduleProblems {
   param([string]$InstallRoot)
 
@@ -1179,9 +1220,9 @@ function Get-AwardPingManagedTaskScheduleProblems {
     [pscustomobject]@{ TaskName = "AwardPing Visual Snapshot Worker Shard 1"; Kind = "visual"; ShardIndex = 0; Lane = ""; StaggerMinutes = 0; TimeoutMinutes = 0 },
     [pscustomobject]@{ TaskName = "AwardPing Visual Snapshot Worker Shard 2"; Kind = "visual"; ShardIndex = 1; Lane = ""; StaggerMinutes = 0; TimeoutMinutes = 0 },
     [pscustomobject]@{ TaskName = "AwardPing Visual Snapshot Worker Shard 3"; Kind = "visual"; ShardIndex = 2; Lane = ""; StaggerMinutes = 0; TimeoutMinutes = 0 },
-    [pscustomobject]@{ TaskName = "AwardPing Changed Page Review Lane"; Kind = "lane"; ShardIndex = -1; Lane = "changed_page_review"; StaggerMinutes = 2; TimeoutMinutes = 10 },
-    [pscustomobject]@{ TaskName = "AwardPing Page Audit Lane"; Kind = "lane"; ShardIndex = -1; Lane = "page_audit"; StaggerMinutes = 10; TimeoutMinutes = 6 },
-    [pscustomobject]@{ TaskName = "AwardPing Coverage Report"; Kind = "lane"; ShardIndex = -1; Lane = "nightly_report"; StaggerMinutes = 14; TimeoutMinutes = 4 }
+    [pscustomobject]@{ TaskName = "AwardPing Changed Page Review Lane"; Kind = "lane"; ShardIndex = -1; Lane = "changed_page_review"; StaggerMinutes = 2; IntervalMinutes = 15; TimeoutMinutes = 10 },
+    [pscustomobject]@{ TaskName = "AwardPing Page Audit Lane"; Kind = "lane"; ShardIndex = -1; Lane = "page_audit"; StaggerMinutes = 10; IntervalMinutes = 60; TimeoutMinutes = 6 },
+    [pscustomobject]@{ TaskName = "AwardPing Coverage Report"; Kind = "coverage"; ShardIndex = -1; Lane = "nightly_report"; StaggerMinutes = 0; TimeoutMinutes = 4 }
   )
   $problems = @()
   $normalizedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\", "/").Replace("/", "\")
@@ -1229,19 +1270,35 @@ function Get-AwardPingManagedTaskScheduleProblems {
         ) {
           $problems += "noncanonical visual trigger for $($definition.TaskName): expected daily at 18:00"
         }
+      } elseif ($definition.Kind -eq "coverage") {
+        $daysNode = $trigger.SelectSingleNode("./task:ScheduleByDay/task:DaysInterval", $namespace)
+        [DateTimeOffset]$coverageStart = [DateTimeOffset]::MinValue
+        $expectedCoverage = Get-AwardPingDailyCoverageBoundaryUtc -InstallRoot $InstallRoot
+        if (
+          $trigger.LocalName -ne "CalendarTrigger" -or
+          -not $daysNode -or [string]$daysNode.InnerText -ne "1" -or
+          $trigger.SelectSingleNode("./task:Repetition", $namespace) -or
+          [string]$startNode.InnerText -notmatch "(?:Z|[+-]00:00)$" -or
+          -not [DateTimeOffset]::TryParse([string]$startNode.InnerText, [ref]$coverageStart) -or
+          $coverageStart.UtcDateTime.TimeOfDay -ne $expectedCoverage.UtcDateTime.TimeOfDay
+        ) {
+          $problems += "noncanonical coverage trigger: expected daily in UTC, 30 minutes after the collector start"
+        }
       } else {
         $intervalNode = $trigger.SelectSingleNode("./task:Repetition/task:Interval", $namespace)
         $durationNode = $trigger.SelectSingleNode("./task:Repetition/task:Duration", $namespace)
+        $cadenceStart = if ($definition.IntervalMinutes -eq 60) { ([DateTimeOffset]::Parse([string]$startNode.InnerText)).UtcDateTime } else { $start }
         if (
           $trigger.LocalName -ne "TimeTrigger" -or
           -not $intervalNode -or
-          [string]$intervalNode.InnerText -ne "PT15M" -or
+          [string]$intervalNode.InnerText -ne $(if ($definition.IntervalMinutes -eq 60) { "PT1H" } else { "PT15M" }) -or
           -not $durationNode -or
           [string]$durationNode.InnerText -ne "P3650D" -or
-          ($start.Minute % 15) -ne [int]$definition.StaggerMinutes -or
-          $start.Second -ne 0
+          ($definition.IntervalMinutes -eq 60 -and [string]$startNode.InnerText -notmatch "(?:Z|[+-]00:00)$") -or
+          ($cadenceStart.Minute % [int]$definition.IntervalMinutes) -ne [int]$definition.StaggerMinutes -or
+          $cadenceStart.Second -ne 0
         ) {
-          $problems += "noncanonical lane trigger for $($definition.TaskName): expected PT15M at +$($definition.StaggerMinutes) minute(s)"
+          $problems += "noncanonical lane trigger for $($definition.TaskName): expected $($definition.IntervalMinutes)-minute cadence at +$($definition.StaggerMinutes) minute(s)"
         }
       }
 
@@ -2559,7 +2616,9 @@ $InstallRoot
 
 Monitoring schedules:
   Three source collection shards run daily at 6 PM.
-  Changed Page Review, Page Audit, and Coverage Report each run every 15 minutes.
+  Changed Page Review runs every 15 minutes; Page Audit runs hourly.
+  Coverage Report runs daily, 30 minutes after the three collectors' scheduled start.
+  Coverage Report can also be run on demand from Windows Task Scheduler.
   Coverage Report replaces the duplicate legacy coverage-report schedules.
   The separate Daily Runtime Re-sign maintenance task keeps its existing schedule.
   Historical logs and deferred queues are preserved.
@@ -2810,28 +2869,36 @@ function Register-DownstreamLaneTasks {
   Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $InstallRoot "Launch-Hidden.vbs") -Force -ErrorAction Stop
 
   $laneDefinitions = @(
-    [pscustomobject]@{ Key = "changed_page_review"; TaskName = "AwardPing Changed Page Review Lane"; StaggerMinutes = 2; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Reviews new program-text comparisons under the existing `$5/day changed-page review limit." },
-    [pscustomobject]@{ Key = "page_audit"; TaskName = "AwardPing Page Audit Lane"; StaggerMinutes = 10; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Runs deterministic public-page audit checks only. This lane never submits pages to Gemini." },
-    [pscustomobject]@{ Key = "nightly_report"; TaskName = "AwardPing Coverage Report"; StaggerMinutes = 14; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Reports coverage of the reviewed source sets and repeat text captures without a paid AI request. Replaces the duplicate legacy coverage-report schedules; historical queues remain deferred." }
+    [pscustomobject]@{ Key = "changed_page_review"; TaskName = "AwardPing Changed Page Review Lane"; StaggerMinutes = 2; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; CadenceMinutes = 15; Description = "Reviews new program-text comparisons every 15 minutes under the existing `$5/day changed-page review limit." },
+    [pscustomobject]@{ Key = "page_audit"; TaskName = "AwardPing Page Audit Lane"; StaggerMinutes = 10; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; CadenceMinutes = 60; Description = "Runs deterministic public-page audit checks hourly. This lane never submits pages to Gemini." },
+    [pscustomobject]@{ Key = "nightly_report"; TaskName = "AwardPing Coverage Report"; StaggerMinutes = 30; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; CadenceMinutes = 1440; Description = "Reports reviewed-source coverage daily, 30 minutes after the collectors' scheduled start, or on demand. Incomplete coverage remains visible if collection is late; historical queues remain deferred." }
   )
 
   $now = Get-Date
   $quarterStartMinute = [Math]::Floor($now.TimeOfDay.TotalMinutes / 15) * 15
   foreach ($lane in $laneDefinitions) {
-    $startAt = $now.Date.AddMinutes($quarterStartMinute + [int]$lane.StaggerMinutes)
-    if ($startAt -le $now.AddSeconds(30)) {
-      $startAt = $startAt.AddMinutes(15)
+    if ($lane.Key -eq "nightly_report") {
+      $startUtc = Get-AwardPingDailyCoverageBoundaryUtc -InstallRoot $InstallRoot
+      $trigger = New-ScheduledTaskTrigger -Daily -At $startUtc.LocalDateTime
+      $trigger.StartBoundary = $startUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    } elseif ($lane.Key -eq "page_audit") {
+      $nowUtc = [DateTimeOffset]::UtcNow
+      $startUtc = [DateTimeOffset]::new($nowUtc.UtcDateTime.Date.AddHours($nowUtc.Hour).AddMinutes(10), [TimeSpan]::Zero)
+      if ($startUtc -le $nowUtc.AddSeconds(30)) { $startUtc = $startUtc.AddHours(1) }
+      $trigger = New-ScheduledTaskTrigger -Once -At $startUtc.LocalDateTime `
+        -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650)
+      $trigger.StartBoundary = $startUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    } else {
+      $startAt = $now.Date.AddMinutes($quarterStartMinute + [int]$lane.StaggerMinutes)
+      if ($startAt -le $now.AddSeconds(30)) { $startAt = $startAt.AddMinutes(15) }
+      $trigger = New-ScheduledTaskTrigger -Once -At $startAt `
+        -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
     }
 
     $hiddenLauncher = Join-Path $InstallRoot "Launch-Hidden.vbs"
     $action = New-ScheduledTaskAction `
       -Execute "wscript.exe" `
       -Argument "//B //Nologo `"$hiddenLauncher`" powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Lane $($lane.Key) -TimeoutMinutes $($lane.TimeoutMinutes)"
-    $trigger = New-ScheduledTaskTrigger `
-      -Once `
-      -At $startAt `
-      -RepetitionInterval (New-TimeSpan -Minutes 15) `
-      -RepetitionDuration (New-TimeSpan -Days 3650)
     $settings = New-ScheduledTaskSettingsSet `
       -MultipleInstances IgnoreNew `
       -StartWhenAvailable `
@@ -2848,7 +2915,7 @@ function Register-DownstreamLaneTasks {
       -Settings $settings `
       -Description $lane.Description `
       -Force | Out-Null
-    Write-Host "Scheduled task created: $($lane.TaskName), every 15 minutes at +$($lane.StaggerMinutes) minute(s)"
+    Write-Host "Scheduled task created: $($lane.TaskName), cadence $($lane.CadenceMinutes) minute(s)"
   }
 }
 
@@ -2973,7 +3040,7 @@ try {
     $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
     $r2Configuration = Read-R2WorkerConfiguration
     $runTest = Read-YesNo "Run a one-page program text collection check after install?" $true
-    Write-Host "The three 6 PM text-collection shards continue alongside Changed Page Review, Page Audit, and one Coverage Report every 15 minutes. Only Changed Page Review can make paid AI calls, under the existing daily limit. Discovery and legacy mutation lanes remain on hold. Initial coverage is not a website change."
+    Write-Host "The three 6 PM text-collection shards continue alongside Changed Page Review every 15 minutes, hourly Page Audit, and daily Coverage Report 30 minutes after the collectors' scheduled start. Only Changed Page Review can make paid AI calls, under the existing daily limit. Discovery and legacy mutation lanes remain on hold. Initial coverage is not a website change."
     Write-EnvFile `
       -Path $envPath `
       -SupabaseUrl $SupabaseUrl `
