@@ -55,6 +55,28 @@ describe("award card deadline visual lines", () => {
   });
 
   it.each([
+    ["2027 CLS Program", "November 17, 2026", "8:00 p.m. (EST)"],
+    ["United States — 2027 award", "October 7, 2026", "11:59 p.m. (Eastern Time)"],
+    ["National online application", "March 4, 2027", "11:59 p.m. (MST)"],
+    ["2027 Global Research Program", "February 25, 2027", "5:00 p.m. (UTC-05:00)"],
+  ])("splits one exact program/audience scope %s without discarding it", (label, date, time) => {
+    const value = `${label}: ${date} at ${time}`;
+    expect(presentAwardCardDeadline(entry(value))).toEqual({ label, date, time, closedCycle: false });
+  });
+
+  it.each([
+    ["February 2, 2027", "11:59 p.m., your time zone", "Application deadline", "Application"],
+    ["September 29, 2026", "5:00 p.m. in the endorsing institution’s time zone", "Application deadline — Applicant submission", "Application · Applicant submission"],
+    ["October 1, 2026", "5:00 p.m. in the endorsing institution’s time zone", "Application deadline — Endorsing institution submission", "Application · Endorsing institution submission"],
+    ["October 1, 2026", "5:00 p.m. in the endorsing institution's time zone", "Application deadline", "Application"],
+  ])("keeps an explicit human time zone phrase verbatim: %s at %s", (date, time, sourceLabel, label) => {
+    const source = entry(`${date} at ${time}`, sourceLabel);
+    const before = structuredClone(source);
+    expect(presentAwardCardDeadline(source)).toEqual({ label, date, time, closedCycle: false });
+    expect(source).toEqual(before);
+  });
+
+  it.each([
     ["Application deadline", "Application"],
     ["Application deadline — Spring 2027 cycle", "Application · Spring 2027"],
     ["Application deadline – Summer 2027 cycle", "Application · Summer 2027"],
@@ -113,6 +135,18 @@ describe("award card deadline visual lines", () => {
     "Interviews: January 27, 2027 at 5:00 p.m. (Eastern Time)",
     "January 27, 2027 at 5:00 p.m. (Eastern Time): interview results",
     "January 27, 2027\nat 5:00 p.m. (Eastern Time)",
+    "2027 CLS Program: November 17, 2026 at 8:00 p.m. (EST) if selected",
+    "United States — 2027 or 2028 award: October 7, 2026 at 11:59 p.m. (Eastern Time)",
+    "National online application if nominated: March 4, 2027 at 11:59 p.m. (MST)",
+    "Campus nomination: National application: March 4, 2027 at 11:59 p.m. (MST)",
+    "January 20, 2027: January 27, 2027 at 5:00 p.m. (Eastern Time)",
+    "2026-01-20: January 27, 2027 at 5:00 p.m. (Eastern Time)",
+    "Application: January 20, 2027 to January 27, 2027 at 5:00 p.m. (Eastern Time)",
+    "Application: January 27, 2027 or February 2027 at 5:00 p.m. (Eastern Time)",
+    "February 2, 2027 at 11:59 p.m., your time zone unless extended",
+    "September 29, 2026 at 5:00 p.m. in the endorsing institution’s time zone (tentative)",
+    "September 29, 2026 at 5:00 p.m. in the endorsing institution’s time zone or 6:00 p.m. (UTC)",
+    "October 14, 2026 before midnight UK time",
   ])("retains every byte of unsupported or qualified wording: %s", (value) => {
     expect(presentAwardCardDeadline(entry(value))).toEqual({ label: "Deadline", date: value, time: null, closedCycle: false });
   });

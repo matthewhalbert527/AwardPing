@@ -12,8 +12,21 @@ const months = ["January", "February", "March", "April", "May", "June", "July", 
 const recurringDate = new RegExp(`^(?:First|Second|Third|Fourth|Fifth|Last) (?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) in (?:${months.join("|")})(?: \\d{4})?$`, "i");
 const namedZone = /^(?:UTC|GMT|PT|PST|PDT|ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|HST|AKST|AKDT|BST|CET|CEST|IST|JST|AEST|AEDT|NZST|NZDT|(?:Eastern|Central|Pacific|Mountain)(?: (?:Standard |Daylight )?Time)?)$/i;
 const localZones = new Set(["applicant's time zone", "endorsing institution time zone"]);
+const localZonePhrases = new Set([
+  ", your time zone",
+  " in the endorsing institution's time zone",
+  " in the endorsing institution’s time zone",
+]);
 const genericLabel = /^(?:Application )?Deadlines?$/i;
-const scopeLabel = /^(?:(?:\d{4} )?(?:(?:National|Institutional|Campus|Internal) )?nomination(?: deadline)?|(?:\d{4} )?application(?: deadline| submission deadline)?(?: (?:for\b|—|–|--).+)?)$/i;
+
+function simpleScopePrefix(value: string) {
+  // The entry is already an application deadline. Lift a single exact scope,
+  // never a conditional clause, another event category, or part of a date range.
+  if (!/^[\p{L}\p{N}][\p{L}\p{N} &/'’().,\-—–]*$/u.test(value)) return false;
+  if (/\b(?:if|unless|dependent|depending|tentative|unconfirmed|usually|typically|may|might|except|and|or|subject to|interviews?|outcomes?|results?|notifications?|opening|opens?)\b/i.test(value)) return false;
+  if (new RegExp(`\\b(?:${months.join("|")})\\b|\\d{4}-\\d{2}`, "i").test(value)) return false;
+  return (value.match(/\b\d{4}\b/g) ?? []).length <= 1;
+}
 
 /** Shorten only redundant category words, retaining the exact reviewed scope. */
 function displayLabel(label: string) {
@@ -48,10 +61,13 @@ function completeDate(value: string) {
 
 function explicitTime(value: string) {
   // Presented clocks only: leave malformed/compound clocks and extra prose whole.
-  const match = /^(?:[1-9]|1[0-2]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)? [ap]\.m\.(?: ?(\([^()]+\)|[^()]+))?$/i.exec(value);
+  const match = /^(?:[1-9]|1[0-2]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)? [ap]\.m\.(.*)$/i.exec(value);
   if (!match) return false;
   if (!match[1]) return true;
-  const zone = match[1].startsWith("(") ? match[1].slice(1, -1) : match[1];
+  if (localZonePhrases.has(match[1].toLowerCase())) return true;
+  const qualifier = /^ ?\(([^()]+)\)$|^ ([^()]+)$/.exec(match[1]);
+  if (!qualifier) return false;
+  const zone = qualifier[1] ?? qualifier[2];
   if (namedZone.test(zone) || localZones.has(zone)) return true;
   const offset = /^(?:UTC)?([+-])(\d{2}):(\d{2})$/.exec(zone);
   return Boolean(offset && Number(offset[2]) <= 23 && Number(offset[3]) <= 59 && !(offset[1] === "-" && offset[2] === "00" && offset[3] === "00"));
@@ -73,7 +89,7 @@ export function presentAwardCardDeadline(
   const value = closedCycle ? closed![1] : entry.value;
   const fallback = { ...original, date: value, closedCycle };
   const prefix = /^([^:]+): (.+)$/.exec(value);
-  const scope = prefix && scopeLabel.test(prefix[1]) ? prefix[1] : null;
+  const scope = prefix && simpleScopePrefix(prefix[1]) ? prefix[1] : null;
   // Retain every cycle/track already in the entry label. Conflicting scopes
   // cannot be replaced by a more convenient generic card label.
   if (scope && !genericLabel.test(entry.label) && entry.label !== scope) return fallback;

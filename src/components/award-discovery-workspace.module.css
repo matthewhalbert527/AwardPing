@@ -14,7 +14,12 @@
 }
 
 .searchCardList {
+  grid-auto-rows: auto;
   gap: 0.75rem;
+}
+
+.searchCardList > :global(.award-search-option) {
+  min-height: 10.25rem;
 }
 
 .cardList > :global(.award-row-card),
