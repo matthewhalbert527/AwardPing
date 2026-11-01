@@ -1,3 +1,11 @@
+.cardContainer {
+  container: award-cards / inline-size;
+}
+
+.cardContainer:global(.award-search-results) {
+  max-height: min(32rem, 65dvh);
+}
+
 .cardList {
   display: grid;
   grid-auto-rows: 1fr;
@@ -5,31 +13,170 @@
   min-width: 0;
 }
 
-/* Equalize the content inside the scroller, whose height stays bounded. */
 .searchCardList {
-  gap: 0.12rem;
+  grid-auto-rows: auto;
+  gap: 0.75rem;
+}
+
+.searchCardList > :global(.award-search-option) {
+  min-height: 10.25rem;
+}
+
+.cardList > :global(.award-row-card),
+.searchCardList > :global(.award-search-option) {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.cardList :global(.award-row-summary),
+.searchCardList > :global(.award-search-option) {
+  padding: 1.25rem;
 }
 
 .searchCardList > :global(.award-search-option + .award-search-option) {
   margin-top: 0;
 }
 
-/* A common track keeps the deadline border and text aligned across cards,
-   regardless of the length of an award name or its reviewed date. Combining
-   the local and global classes makes this independent of CSS import order. */
+.cardList :global(.award-row-summary:focus-visible),
+.searchCardList > :global(.award-search-option:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+  border-radius: var(--radius-md);
+}
+
 .rowGrid:global(.award-row-grid) {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 18rem);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 34.25rem);
+  align-items: center;
+  gap: 1.5rem;
+  min-width: 0;
+  min-height: 5.5rem;
+  height: 100%;
+}
+
+.titleRegion {
   min-width: 0;
 }
 
-.rowGrid:global(.award-row-grid) > :global(.award-row-deadline) {
-  min-width: 0;
+.title {
+  display: block;
+  color: var(--text);
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
-/* Retain the existing stacked mobile layout and its global border treatment. */
-@media (max-width: 640px) {
+.deadlinePanel {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+  padding: 1rem;
+  border-radius: var(--radius-sm);
+  background: var(--accent-tint);
+}
+
+.deadlines:global(.award-row-deadline) {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.5rem), 1fr));
+  align-items: start;
+  gap: 1.5rem;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.deadlineItem {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.deadlineLabel {
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.deadlineDate {
+  margin: 0;
+  color: var(--text);
+  font-size: 1.125rem;
+  font-weight: 500;
+  line-height: 1.39;
+}
+
+.deadlineTime,
+.deadlineStatus {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.deadlineItem[data-deadline-status="past"] .deadlineDate {
+  color: var(--text-secondary);
+}
+
+.viewAward:global(.button-primary) {
+  display: inline-flex;
+  flex: 0 0 7rem;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 2.5rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  padding: 0.5rem 0.75rem;
+  color: var(--accent-contrast);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.43;
+  white-space: nowrap;
+}
+
+@container award-cards (max-width: 760px) {
+  .cardList {
+    grid-auto-rows: auto;
+  }
+
   .rowGrid:global(.award-row-grid) {
     grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 1rem;
+    height: auto;
+  }
+
+  .title {
+    font-size: 1.125rem;
+    line-height: 1.39;
+  }
+
+  .deadlinePanel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .deadlines:global(.award-row-deadline) {
+    flex: none;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  .viewAward:global(.button-primary) {
+    flex: none;
+    min-height: 2.75rem;
+    width: 100%;
   }
 }
