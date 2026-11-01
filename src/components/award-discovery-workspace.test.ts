@@ -20,6 +20,7 @@ const searchState = vi.hoisted(() => ({
   presets: [] as unknown[],
   captureWiring: false,
   links: [] as CapturedLinkProps[],
+  cardLinks: [] as CapturedLinkProps[],
   states: [] as { initial: unknown; value: unknown; writes: unknown[] }[],
 }));
 vi.mock("react", async (importOriginal) => {
@@ -39,6 +40,7 @@ vi.mock("next/link", async (importOriginal) => {
     ...actual,
     default: (props: CapturedLinkProps) => {
       if (searchState.captureWiring && props.className === "award-search-option") searchState.links.push(props);
+      if (searchState.captureWiring && ["award-search-option", "award-row-summary block"].includes(String(props.className))) searchState.cardLinks.push(props);
       // Vitest resolves the installed Pages Router Link; Next's app build aliases
       // the App Router version. With no router context this render cannot reach
       // onNavigate through a click: we assert only the app's callback wiring.
@@ -259,10 +261,24 @@ afterEach(() => {
   searchState.presets = [];
   searchState.captureWiring = false;
   searchState.links = [];
+  searchState.cardLinks = [];
   searchState.states = [];
 });
 
 describe("AwardDiscoveryWorkspace", () => {
+  it.each([false, true])("keeps browse/search navigation explicit without automatic route prefetch (signed in: %s)", isAuthenticated => {
+    searchState.captureWiring = true;
+    const browse = load(render(isAuthenticated));
+    expect(searchState.cardLinks).toHaveLength(1);
+    expect(searchState.cardLinks[0]).toMatchObject({ href: goldwater.publicPath, prefetch: false });
+    expect(browse("a.award-row-summary").attr("href")).toBe(goldwater.publicPath);
+    searchState.cardLinks = [];
+    const search = load(render(isAuthenticated, { search: "Goldwater" }));
+    expect(searchState.cardLinks).toHaveLength(1);
+    expect(searchState.cardLinks[0]).toMatchObject({ href: goldwater.publicPath, prefetch: false, onNavigate: expect.any(Function) });
+    expect(searchState.cardLinks[0].onClick).toBeUndefined();
+    expect(search("a.award-search-option").attr("href")).toBe(goldwater.publicPath);
+  });
   it("renders the same canonical browse links for anonymous and signed-in visitors", () => {
     expect(dashboardPath).not.toBe(goldwater.publicPath);
 

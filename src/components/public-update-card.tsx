@@ -23,7 +23,7 @@ export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
       <div className={styles.card}>
         <header className={styles.header}>
           <h3 className="public-live-update-title-row">
-            <Link href={awardHref}>{update.awardName}</Link>
+            <Link href={awardHref} prefetch={false}>{update.awardName}</Link>
           </h3>
           <div className="public-live-update-time">
             <span>
@@ -54,6 +54,7 @@ export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
             <Link
               className="public-live-update-detail-link"
               href={awardHref}
+              prefetch={false}
               aria-label={`View update for ${update.awardName}`}
             >
               View update

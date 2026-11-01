@@ -461,6 +461,7 @@ export function AwardDiscoveryWorkspace({
                     <Link
                       className="award-search-option"
                       href={awardDirectoryHref(award)}
+                      prefetch={false}
                       key={award.id}
                       onNavigate={() => setSearchOpen(false)}
                     >
@@ -590,7 +591,7 @@ export function AwardDiscoveryWorkspace({
                 className="award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)]"
                 key={award.id}
               >
-                <Link className="award-row-summary block" href={awardDirectoryHref(award)}>
+                <Link className="award-row-summary block" href={awardDirectoryHref(award)} prefetch={false}>
                   <AwardDirectoryCardContent award={award} presentationAsOf={presentationAsOf} />
                 </Link>
               </article>

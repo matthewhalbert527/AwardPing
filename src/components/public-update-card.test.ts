@@ -1,11 +1,22 @@
-import { createElement } from "react";
+import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { load } from "cheerio";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicUpdateCard } from "@/components/public-update-card";
 import { FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY } from "@/lib/change-details";
 import { changeSummaryPresentation } from "@/lib/change-summary";
 import type { LiveUpdateItem } from "@/lib/live-updates";
+
+type LinkProps = ComponentProps<typeof import("next/link").default>;
+const navigation = vi.hoisted(() => ({ links: [] as LinkProps[] }));
+vi.mock("next/link", async importOriginal => {
+  const actual = await importOriginal<typeof import("next/link")>();
+  return { ...actual, default: (props: LinkProps) => {
+    navigation.links.push(props);
+    return createElement(actual.default, props);
+  } };
+});
+beforeEach(() => { navigation.links = []; });
 
 function update(overrides: Partial<LiveUpdateItem> = {}): LiveUpdateItem {
   return {
@@ -20,6 +31,17 @@ function update(overrides: Partial<LiveUpdateItem> = {}): LiveUpdateItem {
 }
 
 describe("consistent public update cards shared by home and global Updates", () => {
+  it("does not prefetch either award link while preserving exact source/change navigation", () => {
+    const item = update();
+    const $ = load(renderToStaticMarkup(createElement(PublicUpdateCard, { update: item })));
+    const expected = "/example-award?source=source-fixture&change=change-fixture";
+    expect(navigation.links).toHaveLength(2);
+    expect(navigation.links.every(link => link.prefetch === false && link.href === expected)).toBe(true);
+    expect($("h3 a").attr("href")).toBe(expected);
+    expect($(".public-live-update-detail-link").attr("href")).toBe(expected);
+    expect($(".public-live-update-source-link").attr("href")).toBe(item.sourceUrl);
+    expect(navigation.links.every(link => link.onClick === undefined)).toBe(true);
+  });
   it("shows one related update with each original page and description kept separate", () => {
     const first = update({ id: "first", summary: "U.S. applicants now need an additional statement.", changeDetails: {}, sourceTitle: "Application instructions" });
     const second = update({ id: "second", summary: "A new citizenship exception applies only to the stated route.", changeDetails: {},
