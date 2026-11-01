@@ -32,11 +32,16 @@ describe('one additional bounded five-award batch4',()=>{
   expect(owner).not.toMatch(/\bupdate\s+public\.|insert into public\.(?:shared_award_sources|program_award_members|program_basic_fact)/i);
   expect(migration).toContain('revoke all on function public.create_program_award_expansion_batch_four_owners(jsonb,text,text) from public,anon,authenticated,service_role');
   expect(migration).toContain('grant execute on function public.create_program_award_expansion_batch_four_owners(jsonb,text,text) to service_role');
+  expect(owner).not.toContain('pg_get_triggerdef');
+  for(const guard of ["t.tgtype=23","t.tgenabled='O'","t.tgfoid='public.set_shared_award_slug()'::regprocedure",'t.tgnargs=0','octet_length(t.tgargs)=0','t.tgqual is null',"array['name','slug']::text[]"])expect(owner).toContain(guard);
  });
  it('builds an unconditional rollback rehearsal covering owner atomicity/partial absence, ACL denial, silent admission and all40 history',async()=>{
   const sql=buildProgramAwardExpansionBatchFourRollback({migration,...plan()});
   expect(sql).toMatch(/^begin isolation level repeatable read;/);expect(sql).toMatch(/rollback;\s*$/);expect((await parse(sql)).stmts.length).toBeGreaterThan(20);
   for(const value of ['Invalid two-owner plan was partially inserted','Partial existing owner was reused, changed or completed','Owner replay changed rows','Unauthenticated batch4 backend authority exposed','Rejected plan left a partial fourth batch','Uncollected unsupported fourth batch activated','Admission replay reset retained history','The accepted40, undergraduate Ellison or retained source/approval/fact bodies changed'])expect(sql).toContain(value);
+  for(const alias of ['planned_award','planned_source','planned_owner','planned_boundary'])expect(sql).toContain('AS '+alias+'(value)');
+  const fixtureSql=sql.split('do $batch_four_rollback_checks$')[1];
+  expect(fixtureSql).not.toMatch(/\b(?:award|source|owner|boundary)->|to_jsonb\((?:source|owner)\)/);
  });
  it('has no PLpgSQL declaration/table-alias collisions in the rollback checker',()=>{
   const block=buildProgramAwardExpansionBatchFourRollback({migration,...plan()}).split('do $batch_four_rollback_checks$')[1],declarations=block.split('\nbegin\n')[0];

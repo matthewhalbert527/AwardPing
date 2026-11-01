@@ -631,9 +631,13 @@ begin
 
  -- Check the reviewed insert behavior. No UPDATE path or old-owner alias exists.
  if (select relacl::text from pg_catalog.pg_class where oid='public.shared_awards'::regclass) is distinct from '{postgres=arwdDxtm/postgres,service_role=arwdxm/postgres}'
- or (select jsonb_agg(jsonb_build_object('name',t.tgname,'definition',pg_get_triggerdef(t.oid)) order by t.tgname)
- from pg_catalog.pg_trigger t where t.tgrelid='public.shared_awards'::regclass and not t.tgisinternal and (t.tgtype::integer&4)<>0)
- is distinct from '[{"name":"set_shared_award_slug","definition":"CREATE TRIGGER set_shared_award_slug BEFORE INSERT OR UPDATE OF name, slug ON public.shared_awards FOR EACH ROW EXECUTE FUNCTION set_shared_award_slug()"}]'::jsonb
+ or (select count(*) from pg_catalog.pg_trigger t where t.tgrelid='public.shared_awards'::regclass and not t.tgisinternal and (t.tgtype::integer&4)<>0)<>1
+ or not exists(select 1 from pg_catalog.pg_trigger t where t.tgrelid='public.shared_awards'::regclass and not t.tgisinternal and
+  t.tgname='set_shared_award_slug' and t.tgtype=23 and t.tgenabled='O' and t.tgfoid='public.set_shared_award_slug()'::regprocedure and
+  t.tgnargs=0 and octet_length(t.tgargs)=0 and t.tgqual is null and t.tgconstraint=0 and
+  (select array_agg(attribute.attname::text order by column_number.ordinality) from unnest(t.tgattr::smallint[]) with ordinality column_number(attnum,ordinality)
+   join pg_catalog.pg_attribute attribute on attribute.attrelid=t.tgrelid and attribute.attnum=column_number.attnum and not attribute.attisdropped)
+  is not distinct from array['name','slug']::text[])
  or encode(extensions.digest(convert_to(pg_get_functiondef('public.set_shared_award_slug()'::regprocedure),'UTF8'),'sha256'),'hex')<>'24d3c1d71c4527c0d9ba704a277f553919d41e8ee1a9ceac9f42713cb3c23ef8'
  then raise exception 'Reviewed blank-owner insertion authority changed.' using errcode='40001';end if;
  if not exists(select 1 from pg_catalog.pg_index i where i.indexrelid=to_regclass('public.shared_awards_pkey') and i.indisunique and i.indisvalid and i.indisready and pg_get_indexdef(i.indexrelid)='CREATE UNIQUE INDEX shared_awards_pkey ON public.shared_awards USING btree (id)') then raise exception 'Reviewed owner uniqueness changed: shared_awards_pkey' using errcode='40001';end if;
@@ -724,7 +728,7 @@ begin
  p.prosecdef and pg_get_userbyid(p.proowner)='postgres' and p.proconfig is not distinct from array['search_path=""']::text[] and
  p.proacl::text is not distinct from '{postgres=X/postgres,service_role=X/postgres}' and p.proargnames is not distinct from array['p_plan','p_plan_hash','p_actor']::text[] and
  p.prorettype='jsonb'::regtype and p.prolang=(select oid from pg_catalog.pg_language where lanname='plpgsql') and p.provolatile='v' and not p.proretset and
- encode(extensions.digest(convert_to(p.prosrc,'UTF8'),'sha256'),'hex')='1e49d7cbd309fa3b425e78e07583651114315d60f5be05d93cf93c1d680b3d23')
+ encode(extensions.digest(convert_to(p.prosrc,'UTF8'),'sha256'),'hex')='9d07471a24c1146a8bf0d3ed24648e694359781eefca6ce4cc53e069919878db')
  then raise exception 'Exact-two blank-owner RPC authority changed.' using errcode='40001';end if;
 end;$batch_four_postconditions$;
 notify pgrst,'reload schema';

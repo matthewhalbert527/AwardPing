@@ -23,8 +23,8 @@ create temporary table batch4_before_owner_history as select id,to_jsonb(a) docu
  (select canonical_shared_award_id from public.program_award_registry) or id='07ccbb15-9e99-4a3e-8eb7-d55c6c6d1990'::uuid;
 create temporary table batch4_before_sources as select id,to_jsonb(s) document from public.shared_award_sources s where
  id in(select unnest(source_ids) from public.program_text_source_roster) or shared_award_id='07ccbb15-9e99-4a3e-8eb7-d55c6c6d1990'::uuid or
- id in(select (source->>'id')::uuid from jsonb_array_elements(${literal(awards)}) award cross join lateral jsonb_array_elements(award->'sources') source) or
- id in(select (boundary->>'source_id')::uuid from jsonb_array_elements(${literal(awards)}) award cross join lateral jsonb_array_elements(award->'sources') source cross join lateral jsonb_array_elements(source->'url_alias_boundary') boundary);
+ id in(select (planned_source.value->>'id')::uuid from jsonb_array_elements(${literal(awards)}) AS planned_award(value) cross join lateral jsonb_array_elements(planned_award.value->'sources') AS planned_source(value)) or
+ id in(select (planned_boundary.value->>'source_id')::uuid from jsonb_array_elements(${literal(awards)}) AS planned_award(value) cross join lateral jsonb_array_elements(planned_award.value->'sources') AS planned_source(value) cross join lateral jsonb_array_elements(planned_source.value->'url_alias_boundary') AS planned_boundary(value));
 ${migration}
 do $batch_four_rollback_checks$
 declare v_plans jsonb:=${literal(awards)};v_owner_plan jsonb:=${literal(ownerPlan)};v_plan_hash text:='${planHash}';v_owner_hash text:='${ownerHash}';
@@ -43,8 +43,8 @@ begin
  select count(*) into v_acquisitions from public.shared_award_source_acquisitions;
  select count(*) into v_events from public.shared_award_change_events;select count(*) into v_candidates from public.shared_award_visual_review_candidates;
  select count(*) into v_outbox from public.public_digest_outbox;
- select count(*) into v_created from jsonb_array_elements(v_plans) award cross join lateral jsonb_array_elements(award->'sources') source where (source->>'create')::boolean;
- if exists(select 1 from public.shared_awards existing where existing.id in(select (owner->>'id')::uuid from jsonb_array_elements(v_owner_plan->'owners') owner))
+ select count(*) into v_created from jsonb_array_elements(v_plans) AS planned_award(value) cross join lateral jsonb_array_elements(planned_award.value->'sources') AS planned_source(value) where (planned_source.value->>'create')::boolean;
+ if exists(select 1 from public.shared_awards existing where existing.id in(select (planned_owner.value->>'id')::uuid from jsonb_array_elements(v_owner_plan->'owners') AS planned_owner(value)))
  then raise exception 'Real reviewed new-owner absence changed; no rehearsal insertion authorized';end if;
 
  -- Wrong second identity must create neither owner, despite a correctly hashed request.
@@ -73,7 +73,7 @@ begin
  if v_result->>'already_applied'<>'false' or (select count(*) from public.shared_awards)<>v_owners+2 then raise exception 'Exact two blank owners did not insert atomically';end if;v_checks:=v_checks+1;
  v_result:=public.create_program_award_expansion_batch_four_owners(v_owner_plan,v_owner_hash,'ROLLBACK ONLY batch4 probe');
  if v_result->>'already_applied'<>'true' or (select count(*) from public.shared_awards)<>v_owners+2 then raise exception 'Owner replay changed rows';end if;v_checks:=v_checks+1;
- if exists(select 1 from public.shared_awards existing where existing.id in(select (owner->>'id')::uuid from jsonb_array_elements(v_owner_plan->'owners') owner) and
+ if exists(select 1 from public.shared_awards existing where existing.id in(select (planned_owner.value->>'id')::uuid from jsonb_array_elements(v_owner_plan->'owners') AS planned_owner(value)) and
  (existing.public_facts<>'{}'::jsonb or existing.summary is not null or existing.public_facts_generated_at is not null or existing.public_facts_model is not null or existing.submitted_by_user_id is not null))
  then raise exception 'Owner creation invented public facts or account attribution';end if;v_checks:=v_checks+1;
 
@@ -101,8 +101,8 @@ begin
  (select count(*) from public.shared_award_sources)<>v_sources+v_created or (select count(*) from public.shared_award_source_acquisitions)<>v_acquisitions+v_created
  then raise exception 'Atomic five-award admission failed';end if;v_checks:=v_checks+1;
  if exists(select 1 from public.program_award_expansion_admissions a cross join lateral unnest(a.source_ids) ids(id)
- join public.shared_award_sources source on source.id=ids.id where a.batch=4 and
- (source.text_monitoring_state<>'{}'::jsonb or private.program_award_expansion_source_proof(source.id) is null))
+ join public.shared_award_sources source_row on source_row.id=ids.id where a.batch=4 and
+ (source_row.text_monitoring_state<>'{}'::jsonb or private.program_award_expansion_source_proof(source_row.id) is null))
  then raise exception 'New source silently lost independent initial-coverage authority';end if;v_checks:=v_checks+1;
  for v_admission in select a.*,r.canonical_shared_award_id from public.program_award_expansion_admissions a join public.program_award_registry r using(cohort_key) where a.batch=4 loop
   v_context:=public.get_program_award_expansion_tracking_context(v_admission.canonical_shared_award_id);
@@ -132,8 +132,8 @@ begin
  exists(select 1 from batch4_before_admissions b join public.program_award_expansion_admissions a on a.id::text=b.document->>'id' where to_jsonb(a) is distinct from b.document) or
  exists(select 1 from batch4_before_roster b join public.program_text_source_roster r on r.cohort_key=b.document->>'cohort_key' and r.source_role=b.document->>'source_role' where to_jsonb(r) is distinct from b.document) or
  exists(select 1 from batch4_before_heads b full join public.program_basic_fact_heads basic_head on basic_head.cohort_key=b.document->>'cohort_key' where to_jsonb(basic_head) is distinct from b.document) or
- exists(select 1 from batch4_before_owner_history b join public.shared_awards owner on owner.id=b.id where to_jsonb(owner) is distinct from b.document) or
- exists(select 1 from batch4_before_sources b join public.shared_award_sources source on source.id=b.id where to_jsonb(source) is distinct from b.document)
+ exists(select 1 from batch4_before_owner_history b join public.shared_awards history_owner on history_owner.id=b.id where to_jsonb(history_owner) is distinct from b.document) or
+ exists(select 1 from batch4_before_sources b join public.shared_award_sources source_row on source_row.id=b.id where to_jsonb(source_row) is distinct from b.document)
  then raise exception 'The accepted40, undergraduate Ellison or retained source/approval/fact bodies changed';end if;v_checks:=v_checks+1;
  raise notice 'Batch4 rollback checks passed: %',v_checks;
 end;$batch_four_rollback_checks$;
