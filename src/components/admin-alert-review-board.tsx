@@ -178,7 +178,7 @@ export function AdminAlertReviewBoard({ initialAlerts, initialStatus = "pending"
       {status === "pending" || status !== "dismissed" && related.length ? <div className={styles.actions}>
         {status === "pending" ? <><button type="button" className="button-primary" disabled={busy || decisionsBlocked} onClick={() => decide(alert, "approve")}>{alert.group ? "Approve combined update" : "Approve alert"}</button>
           <button type="button" className="button-secondary" disabled={busy || decisionsBlocked} onClick={() => decide(alert, alert.group ? "undo" : "dismiss")}>{alert.group ? "Undo merge" : "Dismiss"}</button></> : null}
-        {status !== "dismissed" && related.length ? <button type="button" className={`button-secondary ${styles.combineButton}`} aria-expanded={merging} aria-controls={`merge-${alert.id}`}
+        {related.length ? <button type="button" className={`button-secondary ${styles.combineButton}`} aria-expanded={merging} aria-controls={`merge-${alert.id}`}
           disabled={busy || decisionsBlocked} onClick={() => openMerge(alert)}>Combine with another update</button> : null}
       </div> : null}
       {merging ? <section id={`merge-${alert.id}`} className={styles.mergePanel} aria-label="Combine related updates">
