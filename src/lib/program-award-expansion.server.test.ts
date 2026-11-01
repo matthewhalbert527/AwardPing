@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import cohort from "../../config/program-award-expansion.json";
 import { emptyBasicAwardFacts } from "@/lib/program-basic-facts.server";
-import { applyProgramAwardExpansion, loadProgramAwardExpansion } from "@/lib/program-award-expansion.server";
+import { applyProgramAwardExpansion, loadProgramAwardExpansion, applyProgramAwardExpansionIdentities, loadProgramAwardExpansionIdentities } from "@/lib/program-award-expansion.server";
 import type { Stage1PublicationEntry, Stage1PublicationIndex } from "@/lib/stage1-publication";
 
 const epoch = "ec349339-ff62-4d2e-a610-8c361b4044ec", at = "2026-10-29T12:00:00.000Z";
@@ -33,7 +33,37 @@ function publication(count = 5) {
         public_facts: { ...emptyBasicAwardFacts(), overview: `Source-supported ${award.canonical_name} overview.`, reviewed_cycle: "Current published guidance" } },
     })) };
 }
+function identities(count = 20) {
+  const full = publication(count);
+  return { schema: "awardping.program-award-expansion-identities.v1", epoch: full.epoch,
+    awards: full.awards.map(row => ({ registry: row.registry, members: row.members, source_ids: row.source_ids, reviewed_homepage: row.reviewed_homepage })) };
+}
 describe("bounded text-only award expansion", () => {
+  it.each([5, 10, 15, 20])("adds%i identities without inventing basic snapshots or exposing retired facts", count => {
+    const result = applyProgramAwardExpansionIdentities(original(), identities(count), epoch);
+    expect(result.entries).toHaveLength(25 + count);
+    expect(result.entries.every(entry => entry.publishedFacts && JSON.stringify(entry.publishedFacts) === JSON.stringify(emptyBasicAwardFacts()))).toBe(true);
+    expect(result.entries.every(entry => entry.basicFactsUnavailable && !entry.basicFactSnapshot && !entry.textFactReview)).toBe(true);
+  });
+  it("uses only the identity RPC, without making full-publication or basic-fact calls", async () => {
+    const rpc = vi.fn(async () => ({ data: identities(), error: null })), result = await loadProgramAwardExpansionIdentities({ rpc }, original(), epoch);
+    expect(result.entries).toHaveLength(45); expect(rpc).toHaveBeenCalledExactlyOnceWith("get_program_award_expansion_identities", { p_epoch: epoch });
+  });
+  it("shares exact owner, source, cycle and partial-batch guards with full publication", () => {
+    for (const mutate of [(v: ReturnType<typeof identities>) => { v.epoch = id(999); }, (v: ReturnType<typeof identities>) => { v.awards.pop(); },
+      (v: ReturnType<typeof identities>) => { v.awards[0].registry.publication_state = "suspended"; },
+      (v: ReturnType<typeof identities>) => { v.awards[0].members[0].shared_award_id = id(999); },
+      (v: ReturnType<typeof identities>) => { v.awards[0].source_ids = [id(100)]; },
+      (v: ReturnType<typeof identities>) => { v.awards[0].reviewed_homepage.url += "wrong"; },
+      (v: ReturnType<typeof identities>) => { Object.assign(v.awards[0], { basic_fact: publication().awards[0].basic_fact }); }]) {
+      const input = identities(); mutate(input); expect(() => applyProgramAwardExpansionIdentities(original(), input, epoch)).toThrow();
+    }
+  });
+  it("does not reveal old original25 facts if the identity-only RPC fails", async () => {
+    const result = await loadProgramAwardExpansionIdentities({ rpc: async () => ({ data: null, error: { code: "57014" } }) }, original(), epoch);
+    expect(result.entries).toHaveLength(25); expect(result.entries.every(entry => entry.basicFactsUnavailable && !entry.basicFactSnapshot)).toBe(true);
+    expect(result.entries.every(entry => JSON.stringify(entry.publishedFacts) === JSON.stringify(emptyBasicAwardFacts()))).toBe(true);
+  });
   it.each([5, 10, 15, 20])("adds the complete reviewed batch of %i without changing the accepted25", count => {
     const before = original(), result = applyProgramAwardExpansion(before, publication(count), epoch);
     expect(result.entries).toHaveLength(25 + count); expect(result.verifiedCanonicalAwardIds).toHaveLength(25 + count);

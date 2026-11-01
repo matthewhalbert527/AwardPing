@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
-import { applyProgramBasicFacts, emptyBasicAwardFacts, loadProgramBasicFacts } from "@/lib/program-basic-facts.server";
+import { applyProgramBasicFacts, emptyBasicAwardFacts, loadProgramBasicFacts, withoutProgramBasicFacts } from "@/lib/program-basic-facts.server";
 import type { Stage1PublicationEntry, Stage1PublicationIndex } from "@/lib/stage1-publication";
 import type { Json } from "@/lib/database.types";
 const owner = "22222222-2222-4222-8222-222222222222", other = "44444444-4444-4444-8444-444444444444", snapshotId = "33333333-3333-4333-8333-333333333333";
@@ -15,6 +15,29 @@ function row() { return { award_id: owner, cohort_key: "example_0", snapshot_id:
   verified_at: "2026-10-28T12:34:56.123456+00:00" }; }
 
 describe("individual automated basic-information snapshots", () => {
+  it("reads one requested canonical award while every unrequested fact stays blank", async () => {
+    const thin = withoutProgramBasicFacts(index()), rpc = vi.fn(async () => ({ data: [row()], error: null }));
+    const result = await loadProgramBasicFacts({ rpc }, thin, [owner]);
+    expect(rpc).toHaveBeenCalledExactlyOnceWith("get_program_basic_facts", { p_award_ids: [owner] });
+    expect(result.entries[0].basicFactSnapshot?.current).toBe(true);
+    expect(result.entries[1].basicFactsUnavailable).toBe(true); expect(result.entries[1].publishedFacts).toEqual(emptyBasicAwardFacts());
+  });
+  it("rejects extra valid-looking basic rows outside the requested award and never resurrects ledger values", async () => {
+    const extra = { ...row(), award_id: other, cohort_key: "example_1", snapshot_id: "55555555-5555-4555-8555-555555555555" };
+    const result = await loadProgramBasicFacts({ rpc: async () => ({ data: [row(), extra], error: null }) }, withoutProgramBasicFacts(index()), [owner]);
+    expect(result.entries.every(entry => entry.basicFactsUnavailable)).toBe(true);
+    expect(result.entries.every(entry => JSON.stringify(entry.publishedFacts) === JSON.stringify(emptyBasicAwardFacts()))).toBe(true);
+  });
+  it("does not query invalid, duplicate or alias/foreign scopes", async () => {
+    for (const ids of [["not-an-id"], [owner, owner], ["66666666-6666-4666-8666-666666666666"], []]) {
+      const rpc = vi.fn(), result = await loadProgramBasicFacts({ rpc }, withoutProgramBasicFacts(index()), ids);
+      expect(rpc).not.toHaveBeenCalled(); expect(result.entries.every(entry => entry.basicFactsUnavailable)).toBe(true);
+    }
+  });
+  it("a missing selected snapshot remains unavailable rather than showing the original ledger", async () => {
+    const result = await loadProgramBasicFacts({ rpc: async () => ({ data: [], error: null }) }, withoutProgramBasicFacts(index()), [owner]);
+    expect(result.entries[0].publishedFacts).toEqual(emptyBasicAwardFacts()); expect(result.entries[0].basicFactsUnavailable).toBe(true);
+  });
   it("shows one source-backed award without requiring25 approvals or changing public identity/source permissions", () => {
     const before = index(), result = applyProgramBasicFacts(before, [row()]), first = result.entries[0];
     expect(first.publishedFacts).toEqual(row().public_facts); expect(first.basicFactSnapshot).toEqual({ id: snapshotId, kind: "automated_source_verified_basics", current: true, verifiedAt: row().verified_at });

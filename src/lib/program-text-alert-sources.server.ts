@@ -1,5 +1,5 @@
 import "server-only";
-import type { Stage1PublicationEntry, Stage1PublicationIndex, Stage1PublicationRead } from "@/lib/stage1-publication";
+import type { Stage1PublicationEntry, Stage1PublicationIndex } from "@/lib/stage1-publication";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import expansionCohort from "../../config/program-award-expansion.json";
 
@@ -49,11 +49,11 @@ export function applyProgramTextAlertSourceBindings(index: Stage1PublicationInde
 }
 
 /** One service-only bounded SQL snapshot, no per-source HTTP requests or caches. */
-export async function loadProgramTextAlertSourceBindings(db: unknown, index: Stage1PublicationIndex, epoch: string, read?: Stage1PublicationRead): Promise<Stage1PublicationIndex> {
+export async function loadProgramTextAlertSourceBindings(db: unknown, index: Stage1PublicationIndex, epoch: string): Promise<Stage1PublicationIndex> {
   if (!index.available) return index;
   try {
     const client = db as { rpc(name: string, args: { p_epoch: string }): PromiseLike<{ data: unknown; error: unknown }> };
-    const result = await (read ? read() : client.rpc("get_program_text_public_alert_source_bindings", { p_epoch: epoch }));
+    const result = await client.rpc("get_program_text_public_alert_source_bindings", { p_epoch: epoch });
     if (result.error) throw Error("Text alert source request failed.");
     return applyProgramTextAlertSourceBindings(index, result.data, epoch);
   } catch {

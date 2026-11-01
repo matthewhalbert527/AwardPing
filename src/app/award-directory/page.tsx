@@ -10,7 +10,7 @@ import type { Database } from "@/lib/database.types";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { loadPublicRenderPublicationIndex } from "@/lib/public-render-publication";
+import { loadPublicRenderDirectoryPublicationIndex } from "@/lib/public-render-publication";
 
 export const dynamic = "force-dynamic";
 
@@ -126,7 +126,7 @@ async function loadDirectoryCatalog(): Promise<DirectoryCatalog> {
 
 async function getSharedCatalog(): Promise<DirectoryCatalog> {
   const admin = createSupabaseAdminClient();
-  const publicationIndex = await loadPublicRenderPublicationIndex();
+  const publicationIndex = await loadPublicRenderDirectoryPublicationIndex();
   if (!publicationIndex.available) return { status: "unavailable" };
   if (publicationIndex.verifiedEntries.length === 0) return { status: "empty" };
 

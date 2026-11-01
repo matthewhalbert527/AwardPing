@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 const mocks = vi.hoisted(() => ({ eligible: vi.fn(), related: vi.fn(), index: vi.fn(), rpc: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => ({ createSupabaseAdminClient: () => ({ rpc: mocks.rpc }) }));
-vi.mock("@/lib/stage1-publication", () => ({ loadStage1PublicationIndex: mocks.index }));
+vi.mock("@/lib/public-render-publication", () => ({ loadPublicRenderPublicationIndex: mocks.index }));
 vi.mock("@/lib/public-change-events", async original => ({ ...(await original<typeof import("./public-change-events")>()), loadEligiblePublicChangeEvents: mocks.eligible }));
 vi.mock("@/lib/public-alert-groups.server", async original => ({
   ...(await original<typeof import("./public-alert-groups.server")>()), loadPublicAlertGroups: mocks.related,

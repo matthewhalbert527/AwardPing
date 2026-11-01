@@ -8,6 +8,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 import {
   buildStage1PublicationIndex,
   loadStage1PublicationIndex,
+  loadStage1PublicationIdentityIndex,
   isStage1SourceIdentityExcluded,
   isEffectivelyVerifiedRegistryRow,
   stage1AwardCount,
@@ -44,7 +45,7 @@ describe("Stage 1 publication gate", () => {
     expect(rpc.mock.calls.map(([name]) => name)).toEqual(["get_stage1_publication_snapshot", "get_program_basic_facts", "get_program_award_expansion_publication", "get_program_text_public_alert_source_bindings"]);
     expect(index.entries[0].publishedFacts).toEqual(snapshot.cohorts[0].published_facts);
   });
-  it("starts all three independent snapshots before waiting and retains each existing failure policy", async () => {
+  it("keeps heavy authority reads serialized and retains each existing failure policy", async () => {
     const snapshot = activatedSnapshotFixture();
     type Result = { data: unknown; error: unknown };
     const pending = new Map<string, { resolve: (value: Result) => void; reject: (error: Error) => void }>();
@@ -53,9 +54,14 @@ describe("Stage 1 publication gate", () => {
       : new Promise<Result>((resolve, reject) => { pending.set(name, { resolve, reject }); }));
     vi.mocked(createSupabaseAdminClient).mockReturnValue({ rpc } as unknown as ReturnType<typeof createSupabaseAdminClient>);
     const loading = loadStage1PublicationIndex();
-    await vi.waitFor(() => expect(pending.size).toBe(3));
+    await vi.waitFor(() => expect(pending.size).toBe(1));
+    expect(pending.has("get_program_basic_facts")).toBe(true);
+    expect(pending.has("get_program_award_expansion_publication")).toBe(false);
     pending.get("get_program_basic_facts")!.reject(Error("Private basic transport diagnostic"));
+    await vi.waitFor(() => expect(pending.size).toBe(2));
+    expect(pending.has("get_program_text_public_alert_source_bindings")).toBe(false);
     pending.get("get_program_award_expansion_publication")!.resolve({ data: { schema: "awardping.program-award-expansion-publication.v1", epoch: textMonitoring.epoch, awards: [] }, error: null });
+    await vi.waitFor(() => expect(pending.size).toBe(3));
     pending.get("get_program_text_public_alert_source_bindings")!.resolve({ data: { schema: "awardping.program-text-public-alert-sources.v1", epoch: textMonitoring.epoch, source_count: 1,
       bindings: [{ cohort_key: snapshot.cohorts[0].registry.cohort_key, source_id: "70000000-0000-4000-8000-000000000001", shared_award_id: snapshot.cohorts[1].registry.canonical_shared_award_id, url: snapshot.cohorts[0].registry.official_homepage, epoch: textMonitoring.epoch }] }, error: null });
     const index = await loading;
@@ -64,6 +70,14 @@ describe("Stage 1 publication gate", () => {
     expect(index.textAlertSourcesAvailable).toBe(false);
     expect(index.entries.every(entry => Object.keys(entry.approvedTextAlertSourceBindings || {}).length === 0)).toBe(true);
     expect(rpc).toHaveBeenCalledTimes(4);
+  });
+  it("loads the accepted base identity alone and blanks every retired program fact", async () => {
+    const snapshot = activatedSnapshotFixture(), rpc = vi.fn(async () => ({ data: snapshot, error: null }));
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({ rpc } as unknown as ReturnType<typeof createSupabaseAdminClient>);
+    const index = await loadStage1PublicationIdentityIndex();
+    expect(index.available).toBe(true); expect(index.verifiedEntries).toHaveLength(25);
+    expect(rpc).toHaveBeenCalledExactlyOnceWith("get_stage1_publication_snapshot");
+    expect(index.entries.every(entry => entry.basicFactsUnavailable && (entry.publishedFacts as { overview: unknown }).overview === null && !entry.textFactReview)).toBe(true);
   });
   it("keeps the uncached authority loader fresh after a separate lookup suspends the release", async () => {
     const snapshot = activatedSnapshotFixture();

@@ -36,8 +36,8 @@ vi.mock("@/lib/public-change-events", () => ({
 vi.mock("@/lib/award-first-capture", () => ({
   loadFirstPublishedCaptureDates: mocks.loadFirstPublishedCaptureDates,
 }));
-vi.mock("@/lib/stage1-publication", () => ({
-  loadStage1PublicationIndex: mocks.loadStage1PublicationIndex,
+vi.mock("@/lib/public-render-publication", () => ({
+  loadPublicRenderDirectoryPublicationIndex: mocks.loadStage1PublicationIndex,
 }));
 vi.mock("@/lib/supabase/admin", () => ({
   createSupabaseAdminClient: () => ({

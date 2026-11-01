@@ -1,6 +1,6 @@
 import "server-only";
 import type { Json } from "@/lib/database.types";
-import type { Stage1PublicationIndex, Stage1PublicationRead } from "@/lib/stage1-publication";
+import type { Stage1PublicationIndex } from "@/lib/stage1-publication";
 import { PROGRAM_DETAIL_FIELDS } from "../../scripts/lib/program-change-contract.mjs";
 
 const fields = ["overview", ...PROGRAM_DETAIL_FIELDS];
@@ -28,6 +28,12 @@ function rebuild(index: Stage1PublicationIndex, entries: Stage1PublicationIndex[
     entryByMemberAwardId: new Map(entries.flatMap(entry => entry.memberAwardIds.map(id => [id, entry] as const))) };
 }
 
+/** Identity-only readers must never expose retired ledger or source facts. */
+export function withoutProgramBasicFacts(index: Stage1PublicationIndex): Stage1PublicationIndex {
+  return rebuild(index, index.entries.map(entry => ({ ...entry, publishedFacts: emptyBasicAwardFacts(),
+    basicFactSnapshot: undefined, basicFactsUnavailable: true, textFactReview: undefined })));
+}
+
 /** One award may have useful verified basics while other fields/awards stay held.
  * This is not a complete-program approval, application-route inventory or alert.
  */
@@ -53,17 +59,22 @@ export function applyProgramBasicFacts(index: Stage1PublicationIndex, rows: unkn
   }));
 }
 
-export async function loadProgramBasicFacts(db: unknown, index: Stage1PublicationIndex, read?: Stage1PublicationRead): Promise<Stage1PublicationIndex> {
+export async function loadProgramBasicFacts(db: unknown, index: Stage1PublicationIndex, requestedAwardIds?: readonly string[]): Promise<Stage1PublicationIndex> {
   if (!index.available || !index.verifiedEntries.length) return index;
   try {
-    const ids = index.verifiedEntries.map(entry => entry.canonicalAwardId);
+    const ids = requestedAwardIds ? [...requestedAwardIds] : index.verifiedEntries.map(entry => entry.canonicalAwardId);
+    if (ids.length < 1 || ids.length > 100 || new Set(ids).size !== ids.length ||
+        ids.some(id => !uuid(id) || !index.verifiedEntries.some(entry => entry.canonicalAwardId === id))) {
+      throw Error("Invalid basic award snapshot scope.");
+    }
     const client = db as { rpc(name: string, args: { p_award_ids: string[] }): PromiseLike<{ data: unknown; error: unknown }> };
-    const result = await (read ? read() : client.rpc("get_program_basic_facts", { p_award_ids: ids }));
+    const result = await client.rpc("get_program_basic_facts", { p_award_ids: ids });
     if (result.error) throw Error("Basic award snapshot request failed.");
-    return applyProgramBasicFacts(index, result.data);
+    if (!Array.isArray(result.data) || result.data.some(row => !object(row) || !ids.includes(String(row.award_id)))) throw Error("Basic award snapshot exceeded its requested scope.");
+    return applyProgramBasicFacts(requestedAwardIds ? withoutProgramBasicFacts(index) : index, result.data);
   } catch {
     // An unreadable replacement must not resurrect an older conflicting ledger
     // value. Identities, official links and genuine update history stay available.
-    return rebuild(index, index.entries.map(entry => ({ ...entry, publishedFacts: emptyBasicAwardFacts(), basicFactSnapshot: undefined, basicFactsUnavailable: true })));
+    return withoutProgramBasicFacts(index);
   }
 }

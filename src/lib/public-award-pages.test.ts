@@ -16,7 +16,14 @@ const mocks = vi.hoisted(() => ({
   identityRows: {} as Record<string, Array<Record<string, unknown>>>,
   identityQueryError: null as { message: string } | null,
   groupRows: [] as unknown[],
+  rpcCalls: [] as Array<{ name: string; args: unknown }>,
+  renderMemo: null as Map<unknown, Map<string, unknown>> | null,
 }));
+vi.mock("react", async original => ({ ...(await original<typeof import("react")>()), cache: (fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => {
+  if (!mocks.renderMemo) return fn(...args);
+  let memo = mocks.renderMemo.get(fn); if (!memo) { memo = new Map(); mocks.renderMemo.set(fn, memo); }
+  const key = JSON.stringify(args); if (!memo.has(key)) memo.set(key, fn(...args)); return memo.get(key);
+} }));
 
 // Only the loader is replaced; the exact newest-first comparator the merge
 // uses is the real one.
@@ -27,6 +34,9 @@ vi.mock("@/lib/public-change-events", async (importOriginal) => ({
 vi.mock("@/lib/stage1-publication", () => ({
   loadStage1PublicationIndex: mocks.loadStage1PublicationIndex,
   isStage1SourceIdentityExcluded: mocks.isStage1SourceIdentityExcluded,
+}));
+vi.mock("@/lib/public-render-publication", () => ({
+  loadPublicRenderPublicationIndex: mocks.loadStage1PublicationIndex,
 }));
 vi.mock("@/lib/update-read-state", () => ({
   unreadSharedChangeIdsForUser: mocks.unreadSharedChangeIdsForUser,
@@ -39,7 +49,17 @@ vi.mock("@/lib/source-quality", async (importOriginal) => ({
 // predicate is part of what these tests exercise at this boundary.
 vi.mock("@/lib/supabase/admin", () => ({
   createSupabaseAdminClient: () => ({
-    rpc: async () => ({ data: mocks.groupRows, error: null }),
+    rpc: async (name: string, args: unknown) => {
+      mocks.rpcCalls.push({ name, args });
+      if (name !== "get_program_basic_facts") return { data: mocks.groupRows, error: null };
+      const index = await mocks.loadStage1PublicationIndex.mock.results.at(-1)?.value as Stage1PublicationIndex | undefined;
+      const ids = (args as { p_award_ids: string[] }).p_award_ids;
+      return { data: (index?.entries || []).filter(entry => ids.includes(entry.canonicalAwardId) && entry.basicFactSnapshot).map(entry => ({
+        award_id: entry.canonicalAwardId, cohort_key: entry.registry.cohort_key, snapshot_id: entry.basicFactSnapshot!.id,
+        kind: "automated_source_verified_basics", current: entry.basicFactSnapshot!.current, verified_at: entry.basicFactSnapshot!.verifiedAt,
+        public_facts: entry.basicFactSnapshot!.current ? entry.publishedFacts : null,
+      })), error: null };
+    },
     from(table: string) {
       mocks.queriedTables.push(table);
       if (["shared_awards", "shared_award_slug_aliases"].includes(table)) {
@@ -95,6 +115,7 @@ function eventId(suffix: number) {
 function publication(): Stage1PublicationEntry {
   return {
     registry: {
+      cohort_key: "example",
       canonical_slug: "example-fellowship",
       canonical_name: "Example Fellowship",
       official_homepage: "https://example.edu/fellowship",
@@ -192,6 +213,8 @@ const ninthEvent = eligibleEvent(9, "2026-07-05T12:00:00.000Z");
 describe("public award page deep links", () => {
   beforeEach(() => {
     mocks.groupRows = [];
+    mocks.rpcCalls = [];
+    mocks.renderMemo = null;
     mocks.loadEligiblePublicChangeEvents.mockReset();
     mocks.loadStage1PublicationIndex.mockReset();
     mocks.unreadSharedChangeIdsForUser.mockReset();
@@ -251,6 +274,24 @@ describe("public award page deep links", () => {
     await expect(getPublicAwardPageResolutionBySlug("example-fellowship")).rejects.toThrow("Public award source query failed");
   });
 
+  it("shares one target-only facts query between metadata/body while visitor unread state stays separate", async () => {
+    mocks.renderMemo = new Map();
+    mocks.unreadSharedChangeIdsForUser.mockImplementation(async (user: string) => new Set(user === "viewer-A" ? [recentEvents[0].event.id] : []));
+    try {
+      expect((await getPublicAwardMetadataResolutionBySlug("example-fellowship")).kind).toBe("published");
+      const first = await getPublicAwardPageBySlug("example-fellowship", { userId: "viewer-A" });
+      const second = await getPublicAwardPageBySlug("example-fellowship", { userId: "viewer-B" });
+      expect(mocks.rpcCalls.filter(call => call.name === "get_program_basic_facts")).toEqual([{ name: "get_program_basic_facts", args: { p_award_ids: [AWARD_ID] } }]);
+      expect(mocks.loadStage1PublicationIndex).toHaveBeenCalledTimes(1);
+      expect(first?.changes[0].unread).toBe(true); expect(second?.changes[0].unread).toBe(false);
+      expect(mocks.unreadSharedChangeIdsForUser.mock.calls.map(([user]) => user)).toEqual(["viewer-A", "viewer-B"]);
+      // A new request cannot retain that render's successful authority/facts.
+      mocks.renderMemo = new Map(); mocks.loadStage1PublicationIndex.mockResolvedValueOnce({ ...publicationIndex(), available: false });
+      expect((await getPublicAwardMetadataResolutionBySlug("example-fellowship")).kind).toBe("unavailable");
+      expect(mocks.rpcCalls.filter(call => call.name === "get_program_basic_facts")).toHaveLength(1);
+    } finally { mocks.renderMemo = null; }
+  });
+
   it("rechecks current publication for each metadata request without caching an earlier approval", async () => {
     mocks.loadStage1PublicationIndex.mockResolvedValueOnce(publicationIndex())
       .mockResolvedValueOnce({ ...publicationIndex(), available: false });
@@ -265,6 +306,7 @@ describe("public award page deep links", () => {
     const entry = publication(), index = publicationIndex(entry);
     entry.memberAwardIds.push(aliasId); index.entryByMemberAwardId.set(aliasId, entry);
     entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "2027", overview: "Canonical approved description." };
+    entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-28T12:00:00.000Z" };
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
     const member = { id: aliasId, name: "Old award name", slug: "old-award-name", status: "active", public_facts: { overview: "Unapproved old row facts." } };
     if (kind === "member") mocks.identityRows.shared_awards = [member];
@@ -410,9 +452,8 @@ describe("public award page deep links", () => {
     const shapes = calls.map((input) => ({ limit: input.limit, eventIds: input.eventIds, members: input.memberAwardIds }));
     expect(shapes).toContainEqual({ limit: 8, eventIds: undefined, members: [AWARD_ID] });
     expect(shapes).toContainEqual({ limit: 1, eventIds: [NINTH_CHANGE_ID], members: [AWARD_ID] });
-    for (const input of calls) {
-      expect(input.publicationIndex).toBe(await mocks.loadStage1PublicationIndex.mock.results[0].value);
-    }
+    for (const input of calls) expect(input.publicationIndex).toBe(calls[0].publicationIndex);
+    expect(calls[0].publicationIndex.entryByMemberAwardId.get(AWARD_ID)?.allowedSourceIds).toEqual([SOURCE_HOME, SOURCE_APPLY]);
 
     const html = renderToStaticMarkup(
       createElement(PublicAwardWorkspace, { data, initialChangeId: NINTH_CHANGE_ID, initialSourceId: SOURCE_APPLY }),

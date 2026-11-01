@@ -11,6 +11,7 @@ vi.mock("@/lib/config", () => ({ hasSupabaseConfig: () => true, hasSupabaseAdmin
 vi.mock("@/lib/auth", () => ({ getCurrentUser: mocks.user }));
 vi.mock("@/lib/offices", () => ({ getOfficeContext: mocks.office }));
 vi.mock("@/lib/stage1-publication", () => ({ loadStage1PublicationIndex: mocks.index, isStage1SourceIdentityExcluded: mocks.excluded }));
+vi.mock("@/lib/public-render-publication", () => ({ loadPublicRenderPublicationIndex: mocks.index }));
 vi.mock("@/lib/public-change-events", async original => ({ ...(await original<typeof import("./public-change-events")>()), loadEligiblePublicChangeEvents: mocks.events }));
 vi.mock("@/lib/source-quality", async original => ({ ...(await original<typeof import("./source-quality")>()), isPublicAwardSource: mocks.quality }));
 vi.mock("@/lib/supabase/admin", () => ({ createSupabaseAdminClient: () => ({ rpc: mocks.rpc, from: mocks.from }) }));
@@ -18,6 +19,7 @@ vi.mock("@/lib/update-read-state", () => ({ unreadSharedChangeIdsForUser: vi.fn(
 import { GET } from "../app/api/shared-awards/[id]/route";
 import { getPublicAwardPageResolutionBySlug } from "./public-award-pages";
 import { PublicAwardWorkspace } from "../components/public-award-workspace";
+import { emptyBasicAwardFacts } from "./program-basic-facts.server";
 
 function fixture(key = "ppia_jsi") {
   const award = cohort.awards.find(a => a.cohort_key === key)!;
@@ -36,7 +38,10 @@ function fixture(key = "ppia_jsi") {
     admission_id: "22222222-2222-4222-8222-222222222222", epoch: monitoring.epoch, source_ids: [sourceId], sources: [source] };
   mocks.index.mockResolvedValue({ available: true, entries: [publication], verifiedEntries: [publication],
     entryByMemberAwardId: new Map([[award.canonical_shared_award_id, publication]]), entryByCohortKey: new Map([[key, publication]]) });
-  mocks.rpc.mockResolvedValue({ data: context, error: null });
+  mocks.rpc.mockImplementation(async (name: string) => ({ data: name === "get_program_basic_facts" ? [{ award_id: award.canonical_shared_award_id, cohort_key: key,
+    snapshot_id: "33333333-3333-4333-8333-333333333333", kind: "automated_source_verified_basics", current: publication.basicFactSnapshot!.current,
+    public_facts: publication.basicFactSnapshot!.current ? { ...emptyBasicAwardFacts(), overview: "Source-supported basic programme information.", reviewed_cycle: "Current test cycle" } : null,
+    verified_at: "2026-10-30T10:00:00.000Z" }] : context, error: null }));
   return { award, source, sourceId, publication, context };
 }
 function request(id: string) { return GET(new Request(`https://awardping.com/api/shared-awards/${id}`), { params: Promise.resolve({ id }) }); }

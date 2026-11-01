@@ -1,6 +1,7 @@
 import { canonicalAwardPath, normalizeAwardSlug, withUniqueAwardSourceSlugs } from "@/lib/award-slugs";
 import { cache } from "react";
 import { loadPublicRenderPublicationIndex } from "@/lib/public-render-publication";
+import { loadProgramBasicFacts } from "@/lib/program-basic-facts.server";
 import {
   latestCheckedAt,
   publicAwardFactsFromAward,
@@ -24,7 +25,6 @@ import {
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import {
   isStage1SourceIdentityExcluded,
-  loadStage1PublicationIndex,
   type Stage1PublicationEntry,
   type Stage1PublicationIndex,
 } from "@/lib/stage1-publication";
@@ -179,7 +179,7 @@ const resolvePublicAwardIdentityBySlug = cache(async (slug: string): Promise<Pub
   const normalizedSlug = normalizeAwardSlug(slug);
   if (!normalizedSlug) return { kind: "missing" };
 
-  const publicationIndex = await loadPublicRenderPublicationIndex();
+  let publicationIndex = await loadPublicRenderPublicationIndex();
   if (!publicationIndex.available) return { kind: "unavailable" };
 
   const admin = createSupabaseAdminClient();
@@ -220,6 +220,13 @@ const resolvePublicAwardIdentityBySlug = cache(async (slug: string): Promise<Pub
   if (!requestedAward || !publication) return { kind: "missing" };
   if (!publication.effectivelyVerified) return { kind: "under_verification" };
 
+  // The slug identity is memoized only for this render. Metadata and body
+  // therefore share one fresh lookup for this canonical award, never the
+  // other44 awards or visitor-specific unread state.
+  const canonicalId = publication.canonicalAwardId;
+  publicationIndex = await loadProgramBasicFacts(admin, publicationIndex, [canonicalId]);
+  publication = publicationIndex.entryByMemberAwardId.get(canonicalId);
+  if (!publication?.effectivelyVerified) return { kind: "under_verification" };
   const canonicalAward = canonicalAwardFromPublication(publication);
 
   const canonicalPath = canonicalAwardPath(
@@ -235,7 +242,7 @@ const resolvePublicAwardIdentityBySlug = cache(async (slug: string): Promise<Pub
 });
 
 export async function getPublicAwardSitemapRows(limit = 50000) {
-  const publicationIndex = await loadStage1PublicationIndex();
+  const publicationIndex = await loadPublicRenderPublicationIndex();
   if (!publicationIndex.available || publicationIndex.verifiedCanonicalAwardIds.length === 0) {
     return [];
   }
