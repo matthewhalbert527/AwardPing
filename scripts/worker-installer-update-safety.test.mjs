@@ -303,15 +303,20 @@ describe("Windows worker update safety", () => {
   });
 
   windowsIt("rejects every noncanonical managed-task trigger before resume", () => {
+    const coverageBoundary = extractPowerShellFunction(
+      installer, "Get-AwardPingDailyCoverageBoundaryUtc", "Get-AwardPingManagedTaskScheduleProblems",
+    );
     const validator = extractPowerShellFunction(
       installer,
       "Get-AwardPingManagedTaskScheduleProblems",
       "Get-AwardPingInstalledRuntimeProblems",
     );
     const simulation = [
+      coverageBoundary,
       validator,
       "$script:root = 'C:\\AwardPingWorker'",
       "$script:badTask = ''",
+      "$script:exportOffset = 0",
       "$script:lanes = @{",
       "  'AwardPing Changed Page Review Lane'=@('changed_page_review',2,10); 'AwardPing Page Audit Lane'=@('page_audit',10,6); 'AwardPing Coverage Report'=@('nightly_report',14,4)",
       "}",
@@ -323,10 +328,13 @@ describe("Windows worker update safety", () => {
       "  if ($TaskName -like 'AwardPing Visual Snapshot Worker Shard *') {",
       "    $number = [int]($TaskName -replace '^.*Shard ', ''); $index = $number - 1; $hour = if ($TaskName -eq $script:badTask) { 17 } else { 18 }",
       "    $arguments = '-NoProfile -File \"' + $script:root + '\\Run-AwardPingVisualSnapshots.ps1\" -All -ShardCount 3 -ShardIndex ' + $index + ' -RunTrigger scheduled'",
-      "    return '<Task xmlns=\"' + $ns + '\"><Triggers><CalendarTrigger><StartBoundary>2026-07-16T' + $hour.ToString('00') + ':00:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers><Actions><Exec><Command>powershell.exe</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>'",
+      "    return '<Task xmlns=\"' + $ns + '\"><Triggers><CalendarTrigger><StartBoundary>2026-07-16T' + $hour.ToString('00') + ':00:00-05:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers><Actions><Exec><Command>powershell.exe</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>'",
       "  }",
       "  $lane = $script:lanes[$TaskName]; $arguments = '-NoProfile -File \"' + $script:root + '\\Run-AwardPingDownstreamLane.ps1\" -InstallRoot \"' + $script:root + '\" -Lane ' + $lane[0] + ' -TimeoutMinutes ' + $lane[2]",
-      "  return '<Task xmlns=\"' + $ns + '\"><Triggers><TimeTrigger><StartBoundary>2026-07-16T12:' + ([int]$lane[1]).ToString('00') + ':00</StartBoundary><Repetition><Interval>PT15M</Interval><Duration>P3650D</Duration></Repetition></TimeTrigger></Triggers><Actions><Exec><Command>powershell.exe</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>'",
+      "  $zone=if($script:exportOffset -eq 0){'Z'}else{'-'+$script:exportOffset.ToString('00')+':00'}",
+      "  if ($TaskName -eq 'AwardPing Coverage Report') { $minute=if($script:badTask -eq $TaskName){29}else{30}; $hour=23-$script:exportOffset; $trigger='<CalendarTrigger><StartBoundary>2026-07-16T'+$hour.ToString('00')+':' + $minute + ':00'+$zone+'</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>' }",
+      "  else { $interval=if($TaskName -eq 'AwardPing Page Audit Lane' -and $script:badTask -ne $TaskName){'PT1H'}else{'PT15M'}; $hour=12-$script:exportOffset; $trigger='<TimeTrigger><StartBoundary>2026-07-16T'+$hour.ToString('00')+':' + ([int]$lane[1]).ToString('00') + ':00'+$zone+'</StartBoundary><Repetition><Interval>'+$interval+'</Interval><Duration>P3650D</Duration></Repetition></TimeTrigger>' }",
+      "  return '<Task xmlns=\"' + $ns + '\"><Triggers>'+$trigger+'</Triggers><Actions><Exec><Command>powershell.exe</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>'",
       "}",
       "$clean = @(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root)",
       "$script:badTask = 'AwardPing Visual Snapshot Worker Shard 2'",
@@ -334,12 +342,20 @@ describe("Windows worker update safety", () => {
       "'CLEAN_COUNT=' + $clean.Count",
       "'BAD_COUNT=' + $bad.Count",
       "'BAD=' + ($bad -join ' | ')",
+      "$script:badTask = 'AwardPing Page Audit Lane'; 'BAD_AUDIT=' + (@(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root).Count)",
+      "$script:badTask = 'AwardPing Coverage Report'; 'BAD_REPORT=' + (@(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root).Count)",
+      "$script:badTask='';$script:exportOffset=5;'SUMMER_EXPORT=' + (@(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root).Count)",
+      "$script:exportOffset=6;'WINTER_EXPORT=' + (@(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root).Count)",
     ].join("\n");
     const result = runPowerShellCommand(simulation);
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("CLEAN_COUNT=0");
-    expect(result.stdout).toContain("BAD_COUNT=1");
+    expect(result.stdout).toContain("BAD_COUNT=2");
+    expect(result.stdout).toContain("BAD_AUDIT=1");
+    expect(result.stdout).toContain("BAD_REPORT=1");
+    expect(result.stdout).toContain("SUMMER_EXPORT=0");
+    expect(result.stdout).toContain("WINTER_EXPORT=0");
     expect(result.stdout).toContain(
       "noncanonical visual trigger for AwardPing Visual Snapshot Worker Shard 2",
     );
@@ -1000,7 +1016,7 @@ describe("Windows worker update safety", () => {
     const definitions = [
       ["changed_page_review", "AwardPing Changed Page Review Lane", 2, 10, 12],
       ["page_audit", "AwardPing Page Audit Lane", 10, 6, 8],
-      ["nightly_report", "AwardPing Coverage Report", 14, 4, 6],
+      ["nightly_report", "AwardPing Coverage Report", 30, 4, 6],
     ];
     const managedNames = extractPowerShellFunction(
       installer, "Get-AwardPingManagedTaskNames", "Get-AwardPingPreservedMaintenanceTaskNames",
@@ -1025,6 +1041,10 @@ describe("Windows worker update safety", () => {
     );
     expect(registration).toContain("-RepetitionInterval (New-TimeSpan -Minutes 15)");
     expect(registration).toContain("$quarterStartMinute");
+    expect(registration).toContain("-RepetitionInterval (New-TimeSpan -Hours 1)");
+    expect(registration).toContain("$trigger = New-ScheduledTaskTrigger -Daily -At $startUtc.LocalDateTime");
+    expect(registration).toContain("Get-AwardPingDailyCoverageBoundaryUtc -InstallRoot $InstallRoot");
+    expect(registration).toContain("$trigger.StartBoundary = $startUtc.ToString");
     expect(registration).toContain("-TimeoutMinutes $($lane.TimeoutMinutes)");
     expect(registration).toContain("-ExecutionTimeLimit (New-TimeSpan -Minutes $lane.ExecutionTimeLimitMinutes)");
     expect(registration).toContain("This lane never submits pages to Gemini.");
