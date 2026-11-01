@@ -1,0 +1,163 @@
+.card {
+  container: public-alert / inline-size;
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 1.25rem;
+  box-shadow: none;
+  overflow-wrap: anywhere;
+}
+
+.header {
+  display: grid;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.card :global(.public-live-update-title-row) {
+  min-width: 0;
+  margin: 0;
+}
+
+.card :global(.public-live-update-title-row) a {
+  color: var(--text);
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.card :global(.public-live-update-title-row) a:hover {
+  color: var(--accent);
+}
+
+.card :global(.public-live-update-time) {
+  gap: 0.5rem 0.875rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.card :global(.public-live-update-time) strong {
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.panel {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent-tint);
+  padding: 1rem;
+}
+
+.panel :global(.public-live-update-source) {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.panel :global(.change-summary) {
+  margin: 0;
+}
+
+.card .panel :global(.change-summary) p {
+  font-size: 0.9375rem;
+  line-height: 1.7;
+}
+
+.panel :global(.change-summary-context) {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.panel :global([aria-label="Related changes"]) > section + section {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.panel :global([aria-label="Related changes"]) a {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 2.75rem;
+  align-items: center;
+}
+
+.panel :global(.public-live-update-actions) {
+  align-items: center;
+  gap: 0.75rem;
+  padding-top: 0.25rem;
+}
+
+.card :global(.public-live-update-detail-link) {
+  min-height: 2.75rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  padding: 0.625rem 0.875rem;
+  color: var(--accent-contrast);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+.card :global(.public-live-update-detail-link):hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: var(--accent-contrast);
+}
+
+.card :global(.public-live-update-source-link) {
+  min-height: 2.75rem;
+  background: transparent;
+  padding: 0.625rem 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.card :global(.public-live-update-source-link):hover {
+  background: var(--accent-quiet);
+  color: var(--text);
+}
+
+.card a:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@container public-alert (max-width: 32rem) {
+  .card :global(.public-live-update-title-row) a {
+    font-size: 1.125rem;
+    line-height: 1.39;
+  }
+
+  .card :global(.public-live-update-time) {
+    align-items: start;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .panel :global(.public-live-update-actions) {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .card :global(.public-live-update-actions) > a {
+    width: 100%;
+  }
+}

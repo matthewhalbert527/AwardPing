@@ -90,6 +90,51 @@
       "canonical_name": "The Voyager Scholarship",
       "canonical_slug": "the-voyager-scholarship",
       "official_homepage": "https://www.obama.org/programs/voyager-scholarship/"
+    },
+    {
+      "cohort_key": "nih_oxcam",
+      "batch": 3,
+      "launch_rank": 36,
+      "canonical_shared_award_id": "dc1674f0-0bd2-4546-afc8-1034ea213274",
+      "canonical_name": "NIH Oxford-Cambridge Scholars Program",
+      "canonical_slug": "national-institutes-of-health-oxford-cambridge-scholars-program",
+      "official_homepage": "https://oxcam.gpp.nih.gov/prospective-students"
+    },
+    {
+      "cohort_key": "fait",
+      "batch": 3,
+      "launch_rank": 37,
+      "canonical_shared_award_id": "fe11c501-8d14-41bf-8cc8-a7a2edb2ca50",
+      "canonical_name": "Foreign Affairs Information Technology (FAIT) Fellowship",
+      "canonical_slug": "foreign-affairs-information-technology-fellowship",
+      "official_homepage": "https://www.faitfellowship.org/fellowship/"
+    },
+    {
+      "cohort_key": "princeton_asia",
+      "batch": 3,
+      "launch_rank": 38,
+      "canonical_shared_award_id": "d80105aa-41c2-454d-9afa-a8639d63ce0a",
+      "canonical_name": "Princeton in Asia Fellowships",
+      "canonical_slug": "princeton-in-asia-fellowship",
+      "official_homepage": "https://www.princetoninasia.org/fellowships"
+    },
+    {
+      "cohort_key": "blakemore_freeman",
+      "batch": 3,
+      "launch_rank": 39,
+      "canonical_shared_award_id": "f7cea269-67b7-4372-bd68-4a995c096db4",
+      "canonical_name": "Blakemore Freeman Fellowships",
+      "canonical_slug": "blakemore-freeman-fellowship",
+      "official_homepage": "https://www.blakemorefoundation.org/fellowships"
+    },
+    {
+      "cohort_key": "princeton_africa",
+      "batch": 3,
+      "launch_rank": 40,
+      "canonical_shared_award_id": "ecc92ab9-beac-4771-8bd4-c7e305519dfc",
+      "canonical_name": "Princeton in Africa Fellowships",
+      "canonical_slug": "princeton-in-africa-fellowship",
+      "official_homepage": "https://www.princetoninafrica.org/applicants/how-to-apply/"
     }
   ]
 }

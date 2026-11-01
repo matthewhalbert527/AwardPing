@@ -34,7 +34,7 @@ function publication(count = 5) {
     })) };
 }
 describe("bounded text-only award expansion", () => {
-  it.each([5, 10])("adds the complete reviewed batch of %i without changing the accepted25", count => {
+  it.each([5, 10, 15])("adds the complete reviewed batch of %i without changing the accepted25", count => {
     const before = original(), result = applyProgramAwardExpansion(before, publication(count), epoch);
     expect(result.entries).toHaveLength(25 + count); expect(result.verifiedCanonicalAwardIds).toHaveLength(25 + count);
     expect(result.entries.slice(0, 25)).toEqual(before.entries); expect(before.entries).toHaveLength(25);
@@ -42,6 +42,34 @@ describe("bounded text-only award expansion", () => {
     expect(result.entries[25].basicFactSnapshot?.current).toBe(true);
     expect(result.entries[25].textFactReview).toBeUndefined();
     expect(result.entryByMemberAwardId.get(cohort.awards[0].canonical_shared_award_id)).toBe(result.entries[25]);
+  });
+  it("keeps the existing35 identities and facts intact when the third batch becomes public", () => {
+    const existing = applyProgramAwardExpansion(original(), publication(10), epoch);
+    const expanded = applyProgramAwardExpansion(original(), publication(15), epoch);
+    expect(expanded.entries).toHaveLength(40);
+    expect(expanded.entries.slice(0, 35)).toEqual(existing.entries);
+    expect(expanded.entries.slice(35).map(entry => entry.registry.launch_rank)).toEqual([36, 37, 38, 39, 40]);
+  });
+  it("rejects a third batch published without either earlier batch", () => {
+    const input = publication(15);
+    input.awards = input.awards.slice(10);
+    expect(() => applyProgramAwardExpansion(original(), input, epoch)).toThrow();
+  });
+  it("keeps all40 identities when a third-batch basic detail becomes stale", () => {
+    const input = publication(15);
+    Object.assign(input.awards[14].basic_fact, { current: false, public_facts: null });
+    const expanded = applyProgramAwardExpansion(original(), input, epoch);
+    expect(expanded.entries).toHaveLength(40);
+    expect(expanded.entries[39].publishedFacts).toEqual(emptyBasicAwardFacts());
+    expect(expanded.entries[39].basicFactSnapshot?.current).toBe(false);
+  });
+  it("rejects a rank or publication count beyond the reviewed40", () => {
+    const overRank = publication(15);
+    overRank.awards[14].registry.launch_rank = 41;
+    expect(() => applyProgramAwardExpansion(original(), overRank, epoch)).toThrow();
+    const overCount = publication(15);
+    overCount.awards.push(overCount.awards[14]);
+    expect(() => applyProgramAwardExpansion(original(), overCount, epoch)).toThrow();
   });
   it("retains identity but clears stale details after a subsequent real change", () => {
     const input = publication(); Object.assign(input.awards[0].basic_fact, { current: false, public_facts: null });

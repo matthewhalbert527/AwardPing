@@ -175,7 +175,7 @@ export async function loadProgramTextBasicStatus(supabase, roster) {
   const cohorts = new Set(roster.manifest.map(role => role.cohort_key));
   const { data, error } = await supabase.rpc("get_program_award_monitoring_basics");
   if (error || data?.schema !== "awardping.program-award-monitoring-basics.v1" ||
-      !Array.isArray(data.awards) || data.awards.length !== cohorts.size || data.awards.length > 35) {
+      !Array.isArray(data.awards) || data.awards.length !== cohorts.size) {
     throw new Error("Current basic-information coverage is unavailable");
   }
   const rows = new Map(), owners = new Set();

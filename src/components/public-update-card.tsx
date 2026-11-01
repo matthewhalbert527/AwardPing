@@ -6,6 +6,7 @@ import { programChangePresentation } from "@/lib/program-change-presentation";
 import type { LiveUpdateItem } from "@/lib/live-updates";
 import { liveUpdateAwardHref } from "@/lib/public-award-links";
 import { PublicAlertGroupSummary } from "@/components/public-alert-group-summary";
+import styles from "./public-update-card.module.css";
 
 /** One reader-facing update presentation shared by home and the full feed. */
 export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
@@ -19,51 +20,57 @@ export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
     !presentation.paragraphs.some((paragraph) => normalizedSentence(paragraph) === normalizedTitle);
   return (
     <article className="public-live-update-row">
-      <h3 className="public-live-update-title-row">
-        <Link href={awardHref}>{update.awardName}</Link>
-      </h3>
-      <div className="public-live-update-time">
-        <span>
-          {update.detectedDateTime ? (
-            <time dateTime={update.detectedDateTime} title={update.detectedTitle}>
-              {update.detectedLabel}
-              <span className="sr-only"> ({update.detectedTitle})</span>
-            </time>
-          ) : (
-            update.detectedLabel
+      <div className={styles.card}>
+        <header className={styles.header}>
+          <h3 className="public-live-update-title-row">
+            <Link href={awardHref}>{update.awardName}</Link>
+          </h3>
+          <div className="public-live-update-time">
+            <span>
+              {update.detectedDateTime ? (
+                <time dateTime={update.detectedDateTime} title={update.detectedTitle}>
+                  {update.detectedLabel}
+                  <span className="sr-only"> ({update.detectedTitle})</span>
+                </time>
+              ) : (
+                update.detectedLabel
+              )}
+            </span>
+            {update.group ? <strong>Related award changes</strong> : showTitle && <strong>{presentation.title}</strong>}
+          </div>
+        </header>
+        <div className={styles.panel}>
+          {!update.group && update.sourceTitle && (
+            <p className="public-live-update-source">{update.sourceTitle}</p>
           )}
-        </span>
-        {update.group ? <strong>Related award changes</strong> : showTitle && <strong>{presentation.title}</strong>}
-      </div>
-      {!update.group && update.sourceTitle && (
-        <p className="public-live-update-source">{update.sourceTitle}</p>
-      )}
-      {update.group ? <PublicAlertGroupSummary members={update.group.members} /> : <ChangeSummaryDisplay
-        compact
-        summary={update.summary}
-        sourceUrl={update.sourceUrl}
-        sourceTitle={update.sourceTitle}
-        changeDetails={update.changeDetails}
-      />}
-      <div className="public-live-update-actions">
-        <Link
-          className="public-live-update-detail-link"
-          href={awardHref}
-          aria-label={`View update for ${update.awardName}`}
-        >
-          View update
-          <ArrowRight size={15} aria-hidden="true" />
-        </Link>
-        {!update.group && <a
-          className="public-live-update-source-link"
-          href={update.sourceUrl}
-          rel="noreferrer"
-          target="_blank"
-          aria-label={`Official source: ${update.sourceTitle}`}
-        >
-          Official source
-          <ExternalLink size={15} aria-hidden="true" />
-        </a>}
+          {update.group ? <PublicAlertGroupSummary members={update.group.members} /> : <ChangeSummaryDisplay
+            compact
+            summary={update.summary}
+            sourceUrl={update.sourceUrl}
+            sourceTitle={update.sourceTitle}
+            changeDetails={update.changeDetails}
+          />}
+          <div className="public-live-update-actions">
+            <Link
+              className="public-live-update-detail-link"
+              href={awardHref}
+              aria-label={`View update for ${update.awardName}`}
+            >
+              View update
+              <ArrowRight size={15} aria-hidden="true" />
+            </Link>
+            {!update.group && <a
+              className="public-live-update-source-link"
+              href={update.sourceUrl}
+              rel="noreferrer"
+              target="_blank"
+              aria-label={`Official source: ${update.sourceTitle}`}
+            >
+              Official source
+              <ExternalLink size={15} aria-hidden="true" />
+            </a>}
+          </div>
+        </div>
       </div>
     </article>
   );

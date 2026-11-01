@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import styles from "./admin-alert-review-board.module.css";
 import { formatCentralDateTime } from "@/lib/time-zone";
 import { alertSourceLink as sourceLink, parseAlertReviewList, parseMergePreview, mergePreviewMatchesSelection, relatedMergeOptions,
   type AlertReview, type AlertReviewLeaf, type AlertReviewStatus, type MergeOption, type MergePreview } from "@/lib/alert-group-review";
@@ -27,16 +28,16 @@ async function request(body: unknown, api = API): Promise<unknown> {
 }
 
 function supportingDetails(details: AlertReviewLeaf["details"]) {
-  return <ul className="mt-3 space-y-4">{details.map((detail, index) => <li key={index} className="space-y-2 text-sm"><p className="font-semibold">{detail.category}</p><p>{detail.summary}</p>
-    {detail.previous ? <div><p className="font-semibold text-[var(--muted)]">Previously</p><blockquote className="border-l-2 pl-3">{detail.previous}</blockquote></div> : null}
-    {detail.current ? <div><p className="font-semibold text-[var(--muted)]">Now</p><blockquote className="border-l-2 pl-3">{detail.current}</blockquote></div> : null}</li>)}</ul>;
+  return <ul className={styles.supportList}>{details.map((detail, index) => <li key={index} className={styles.supportItem}><p className={styles.detailLabel}>{detail.category}</p><p>{detail.summary}</p>
+    {detail.previous ? <div><p className={styles.detailLabel}>Previously</p><blockquote className={styles.quote}>{detail.previous}</blockquote></div> : null}
+    {detail.current ? <div><p className={styles.detailLabel}>Now</p><blockquote className={styles.quote}>{detail.current}</blockquote></div> : null}</li>)}</ul>;
 }
 function memberDetails(members: AlertReviewLeaf[], publishedIds: string[]) {
-  return <ul className="space-y-3" aria-label="Included source updates">{members.map(member => <li key={member.id} className="space-y-2 rounded-md border p-3 text-sm">
-    <div className="flex flex-wrap justify-between gap-2"><span className="font-semibold">{publishedIds.includes(member.id) ? "Previously approved" : "Needs review"}</span>
-      <time className="text-[var(--muted)]" dateTime={member.detectedAt}>{formatCentralDateTime(member.detectedAt)}</time></div>
-    <p>{member.summary}</p><a className="font-semibold underline" href={sourceLink(member.sourceUrl)!} target="_blank" rel="noopener noreferrer">View official page</a>
-    {member.details.length ? <details><summary className="cursor-pointer font-semibold">Exact source wording</summary>{supportingDetails(member.details)}</details> : null}
+  return <ul className={styles.memberList} aria-label="Included source updates">{members.map(member => <li key={member.id} className={styles.memberCard}>
+    <div className={styles.memberHeader}><span className={styles.detailLabel}>{publishedIds.includes(member.id) ? "Previously approved" : "Needs review"}</span>
+      <time className={styles.timestamp} dateTime={member.detectedAt}>{formatCentralDateTime(member.detectedAt)}</time></div>
+    <p>{member.summary}</p><a className={styles.sourceLink} href={sourceLink(member.sourceUrl)!} target="_blank" rel="noopener noreferrer">View official page</a>
+    {member.details.length ? <details className={styles.memberDetails}><summary>Exact source wording</summary>{supportingDetails(member.details)}</details> : null}
   </li>)}</ul>;
 }
 
@@ -150,53 +151,56 @@ export function AdminAlertReviewBoard({ initialAlerts, initialStatus = "pending"
     }
   });
 
-  return <section className="space-y-5" aria-label="Alert review" aria-busy={busy}>
-    <header className="flex flex-wrap items-start justify-between gap-3">
-      <div><h1 className="admin-page-title">Review alerts</h1><p className="mt-2 text-[var(--muted)]">Review proposed award changes before subscribers are notified.</p></div>
-      <button type="button" className="button-secondary text-sm" disabled={busy} onClick={() => show(status)}>Refresh</button>
+  return <section className={styles.board} aria-label="Alert review" aria-busy={busy}>
+    <header className={styles.toolbar}>
+      <div><h1 className="admin-page-title">Review alerts</h1><p className={styles.intro}>Review proposed award changes before subscribers are notified.</p></div>
+      <button type="button" className={`button-secondary ${styles.refresh}`} disabled={busy} onClick={() => show(status)}>Refresh</button>
     </header>
-    <nav aria-label="Alert review views" className="flex flex-wrap gap-2">{views.map(view => <button key={view.status} type="button"
-      className={status === view.status ? "button-primary text-sm" : "button-secondary text-sm"} aria-pressed={status === view.status}
+    <nav aria-label="Alert review views" className={styles.views}>{views.map(view => <button key={view.status} type="button"
+      className={styles.viewButton} aria-pressed={status === view.status}
       disabled={busy} onClick={() => show(view.status)}>{view.label}</button>)}</nav>
-    <div aria-live="polite" role="status" className="text-sm">{busy ? "Updating alerts…" : notice}</div>
-    {error ? <p role="alert" className="rounded-md border p-3 text-sm">{error}</p> : null}
-    {loaded && alerts.length === 0 ? <p className="card p-5 text-[var(--muted)]">{status === "pending" ? "No alerts waiting for review." : status === "approved" ? "No approved alerts yet." : "No dismissed alerts yet."}</p> : null}
-    {loaded ? <ul className="space-y-4">{alerts.map(alert => {
+    <div aria-live="polite" role="status" className={styles.notice}>{busy ? "Updating alerts…" : notice}</div>
+    {error ? <p role="alert" className={styles.error}>{error}</p> : null}
+    {loaded && alerts.length === 0 ? <p className={styles.empty}>{status === "pending" ? "No alerts waiting for review." : status === "approved" ? "No approved alerts yet." : "No dismissed alerts yet."}</p> : null}
+    {loaded ? <ul className={styles.list}>{alerts.map(alert => {
       const related = relatedMergeOptions(alert, mergeOptions), merging = mergeSourceId === alert.id;
-      return <li key={alert.id}><article className="card space-y-4 p-5" aria-label={`${alert.awardName} alert`}>
-      <div className="flex flex-wrap justify-between gap-2"><h2 className="text-lg font-bold">{alert.awardName}</h2><time className="text-sm text-[var(--muted)]" dateTime={alert.detectedAt}>{formatCentralDateTime(alert.detectedAt)}</time></div>
-      {alert.group ? <p className="text-sm font-semibold">{status === "pending" ? "Combined draft" : "Combined update"} · {alert.group.members.length} source updates</p> : null}
-      {alert.group?.hasPendingDraft ? <p className="text-sm text-[var(--muted)]">A newer combined draft is waiting in Needs review.</p> : null}
-      <p className="leading-relaxed">{alert.summary}</p>
-      {alert.context ? <p className="change-summary-context text-sm leading-relaxed text-[var(--muted)]">{alert.context}</p> : null}
-      {alert.group ? <>{status === "pending" && alert.group.publishedMemberIds.length ? <p className="text-sm text-[var(--muted)]">Previously approved updates stay live until this combined draft is approved.</p> : null}
+      return <li key={alert.id}><article className={styles.card} aria-label={`${alert.awardName} alert`}>
+      <div className={styles.cardHeader}><div><h2 className={styles.title}>{alert.awardName}</h2>
+        {alert.group ? <p className={styles.groupLabel}>{status === "pending" ? "Combined draft" : "Combined update"} · {alert.group.members.length} source updates</p> : null}</div>
+        <time className={styles.timestamp} dateTime={alert.detectedAt}>{formatCentralDateTime(alert.detectedAt)}</time></div>
+      {alert.group?.hasPendingDraft ? <p className={styles.meta}>A newer combined draft is waiting in Needs review.</p> : null}
+      <div className={styles.summaryPanel}><p className={styles.summary}>{alert.summary}</p>
+        {alert.context ? <p className={`change-summary-context ${styles.context}`}>{alert.context}</p> : null}</div>
+      {alert.group ? <>{status === "pending" && alert.group.publishedMemberIds.length ? <p className={styles.meta}>Previously approved updates stay live until this combined draft is approved.</p> : null}
         {memberDetails(alert.group.members, alert.group.publishedMemberIds)}</> : <>
-        <a className="text-sm font-semibold underline" href={sourceLink(alert.sourceUrl)!} target="_blank" rel="noopener noreferrer">View official page</a>
-        {alert.details.length ? <details className="rounded-md border p-3"><summary className="cursor-pointer text-sm font-semibold">Review supporting details</summary>{supportingDetails(alert.details)}</details> : null}</>}
-      {status === "pending" ? <div className="flex flex-wrap gap-2"><button type="button" className="button-primary text-sm" disabled={busy || decisionsBlocked} onClick={() => decide(alert, "approve")}>{alert.group ? "Approve combined update" : "Approve alert"}</button>
-        <button type="button" className="button-secondary text-sm" disabled={busy || decisionsBlocked} onClick={() => decide(alert, alert.group ? "undo" : "dismiss")}>{alert.group ? "Undo merge" : "Dismiss"}</button></div> : null}
-      {status !== "dismissed" && related.length ? <button type="button" className="button-secondary text-sm" aria-expanded={merging} aria-controls={`merge-${alert.id}`}
-        disabled={busy || decisionsBlocked} onClick={() => openMerge(alert)}>Combine with another update</button> : null}
-      {merging ? <section id={`merge-${alert.id}`} className="space-y-3 rounded-md border p-3" aria-label="Combine related updates">
-        <p className="text-sm text-[var(--muted)]">Choose another update for this award. A combination is saved as a draft for your review.</p>
-        <label className="block text-sm font-semibold" htmlFor={`merge-target-${alert.id}`}>Related update</label>
-        <select id={`merge-target-${alert.id}`} className="w-full rounded-md border p-2 text-sm" value={mergeTargetId} disabled={busy || decisionsBlocked}
+        <a className={styles.sourceLink} href={sourceLink(alert.sourceUrl)!} target="_blank" rel="noopener noreferrer">View official page</a>
+        {alert.details.length ? <details className={styles.supportDetails}><summary>Review supporting details</summary>{supportingDetails(alert.details)}</details> : null}</>}
+      {status === "pending" || status !== "dismissed" && related.length ? <div className={styles.actions}>
+        {status === "pending" ? <><button type="button" className="button-primary" disabled={busy || decisionsBlocked} onClick={() => decide(alert, "approve")}>{alert.group ? "Approve combined update" : "Approve alert"}</button>
+          <button type="button" className="button-secondary" disabled={busy || decisionsBlocked} onClick={() => decide(alert, alert.group ? "undo" : "dismiss")}>{alert.group ? "Undo merge" : "Dismiss"}</button></> : null}
+        {related.length ? <button type="button" className={`button-secondary ${styles.combineButton}`} aria-expanded={merging} aria-controls={`merge-${alert.id}`}
+          disabled={busy || decisionsBlocked} onClick={() => openMerge(alert)}>Combine with another update</button> : null}
+      </div> : null}
+      {merging ? <section id={`merge-${alert.id}`} className={styles.mergePanel} aria-label="Combine related updates">
+        <p className={styles.meta}>Choose another update for this award. A combination is saved as a draft for your review.</p>
+        <label className={styles.detailLabel} htmlFor={`merge-target-${alert.id}`}>Related update</label>
+        <select id={`merge-target-${alert.id}`} className="input" value={mergeTargetId} disabled={busy || decisionsBlocked}
           onChange={event => previewMerge(alert, event.target.value)}>
           <option value="">Choose an update</option>{related.map(option => <option key={option.id} value={option.id}>
             {option.relatedToIds?.includes(alert.id) ? "Possibly related · " : ""}{option.status === "approved" ? "Recently approved" : "Needs review"} · {formatCentralDateTime(option.detectedAt)} · {option.summary.length > 100 ? `${option.summary.slice(0, 100)}…` : option.summary}
           </option>)}
         </select>
         {related.find(option => option.id === mergeTargetId && option.relatedToIds?.includes(alert.id))?.relatedReason ?
-          <p className="text-sm text-[var(--muted)]">Possible match: {related.find(option => option.id === mergeTargetId)!.relatedReason}</p> : null}
-        {mergePreview ? <section className="space-y-3" aria-label="Combined update preview">
-          <h3 className="font-semibold">Combined draft preview</h3><p>{mergePreview.summary}</p>
-          {mergePreview.context ? <p className="text-sm text-[var(--muted)]">{mergePreview.context}</p> : null}
-          <p className="text-sm">{mergePreview.message}</p>
-          {mergePreview.publishedMemberIds.length ? <p className="text-sm text-[var(--muted)]">Previously approved updates stay live while you review this draft. Combining updates does not resend emails already sent.</p> : null}
+          <p className={styles.meta}>Possible match: {related.find(option => option.id === mergeTargetId)!.relatedReason}</p> : null}
+        {mergePreview ? <section className={styles.preview} aria-label="Combined update preview">
+          <h3 className={styles.detailLabel}>Combined draft preview</h3><p>{mergePreview.summary}</p>
+          {mergePreview.context ? <p className={styles.meta}>{mergePreview.context}</p> : null}
+          <p className={styles.meta}>{mergePreview.message}</p>
+          {mergePreview.publishedMemberIds.length ? <p className={styles.meta}>Previously approved updates stay live while you review this draft. Combining updates does not resend emails already sent.</p> : null}
           {memberDetails(mergePreview.members, mergePreview.publishedMemberIds)}
-          <button type="button" className="button-primary text-sm" disabled={busy || decisionsBlocked} onClick={saveMerge}>Save combined draft</button>
+          <button type="button" className="button-primary" disabled={busy || decisionsBlocked} onClick={saveMerge}>Save combined draft</button>
         </section> : null}
-        <button type="button" className="button-secondary text-sm" disabled={busy} onClick={clearMerge}>Cancel</button>
+        <button type="button" className="button-secondary" disabled={busy} onClick={clearMerge}>Cancel</button>
       </section> : null}
     </article></li>;
     })}</ul> : null}
