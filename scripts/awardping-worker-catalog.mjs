@@ -3,7 +3,7 @@ export const workerLanes = [
     id: "orchestration",
     label: "Monitoring System",
     detail:
-      "Independent permanent lanes for promotion, quarantine accounting, and the nightly report.",
+      "A single coverage report tracks source readiness and published core details; historical promotion and quarantine workflows remain unscheduled.",
     profileIds: [],
     taskIds: [
       "health",
@@ -12,8 +12,6 @@ export const workerLanes = [
       "nightly-report",
     ],
     workerIds: [
-      "feedback-promotion-lane",
-      "manual-quarantine-lane",
       "nightly-report-lane",
     ],
   },
@@ -21,16 +19,16 @@ export const workerLanes = [
     id: "source-quality",
     label: "Suppression & Retention",
     detail:
-      "Applies the verified suppression policy and retains bounded snapshot history without a source-quality worker.",
+      "Operator tools for historical suppression and retention; no recurring suppression schedule is installed.",
     profileIds: [],
     taskIds: ["change-event-noise", "prune-history"],
-    workerIds: ["suppression-lane"],
+    workerIds: [],
   },
   {
     id: "visual-capture",
     label: "Visual Capture",
     detail:
-      "Runs stable capture plus expandable-section extraction for approved sources, and the 6 PM shards safely seed then discover newly linked official PDFs.",
+      "Three daily collectors capture approved source text; changed-page review processes comparisons separately.",
     profileIds: ["snapshots"],
     taskIds: ["visual-snapshots", "visual-review-batch"],
     workerIds: [
@@ -44,19 +42,19 @@ export const workerLanes = [
     id: "source-discovery",
     label: "Source Intake & Discovery",
     detail:
-      "Reviews pasted and 6 PM-discovered source requests; operator bulk discovery remains a separate baseline-only onboarding tool.",
+      "Operator source intake and discovery tools; discovery has no recurring review schedule.",
     profileIds: ["source-intake", "discovery"],
     taskIds: ["source-intake", "source-discovery"],
-    workerIds: ["new-page-review-lane"],
+    workerIds: [],
   },
   {
     id: "facts-cycle",
     label: "Facts & Cycle Intelligence",
     detail:
-      "Runs independent reconciliation and deterministic public-page audit lanes.",
+      "Runs deterministic public-page audits; historical reconciliation remains an operator tool.",
     profileIds: [],
     taskIds: ["reconcile-awards", "page-audit-batch"],
-    workerIds: ["reconciliation-lane", "page-audit-lane"],
+    workerIds: ["page-audit-lane"],
   },
 ];
 
@@ -120,7 +118,7 @@ export const atomicTasks = [
         "--apply=true",
       ],
     },
-    scheduledWorkerIds: ["feedback-promotion-lane"],
+    scheduledWorkerIds: [],
   },
   {
     id: "manual-quarantine-registry",
@@ -133,18 +131,18 @@ export const atomicTasks = [
       kind: "script",
       args: ["scripts/sync-manual-quarantine-registry.mjs", "--apply=true"],
     },
-    scheduledWorkerIds: ["manual-quarantine-lane"],
+    scheduledWorkerIds: [],
   },
   {
     id: "nightly-report",
     laneId: "orchestration",
-    label: "6 PM Capture Report",
+    label: "Coverage Report",
     detail:
-      "Finalizes the due three-shard capture report independently of all review and repair queues.",
+      "Reports approved-source coverage and current core details without processing discovery or historical mutation queues.",
     cost: "$0 direct AI/API cost.",
     run: {
       kind: "script",
-      args: ["scripts/report-visual-nightly.mjs", "--write=true"],
+      args: ["scripts/program-text-worker.mjs", "--env=.env.worker.local", "--mode=report", "--apply=true"],
     },
     scheduledWorkerIds: ["nightly-report-lane"],
   },
@@ -159,7 +157,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["change-event-noise"],
     },
-    scheduledWorkerIds: ["suppression-lane"],
+    scheduledWorkerIds: [],
   },
   {
     id: "visual-snapshots",
@@ -198,7 +196,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["source-intake"],
     },
-    scheduledWorkerIds: ["new-page-review-lane"],
+    scheduledWorkerIds: [],
   },
   {
     id: "source-discovery",
@@ -224,7 +222,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["reconcile-awards"],
     },
-    scheduledWorkerIds: ["reconciliation-lane"],
+    scheduledWorkerIds: [],
   },
   {
     id: "page-audit-batch",
@@ -260,16 +258,7 @@ export const atomicTasks = [
 ];
 
 export const scheduledWorkers = [
-  {
-    id: "new-page-review-lane",
-    laneKey: "new_page_review",
-    laneId: "source-discovery",
-    taskName: "AwardPing New Page Review Lane",
-    label: "New Page Review",
-    detail:
-      "Every 15 minutes: reviews submitted pages and newly linked PDFs queued by the 6 PM scan, independently from changed-page review.",
-    cost: "Gemini Batch API with a $5/day hard cap.",
-  },
+
   {
     id: "changed-page-review-lane",
     laneKey: "changed_page_review",
@@ -277,39 +266,12 @@ export const scheduledWorkers = [
     taskName: "AwardPing Changed Page Review Lane",
     label: "Changed Page Review",
     detail:
-      "Every 15 minutes: processes queued visual-change candidates independently from new-page intake and all zero-cost lanes.",
+      "Every 15 minutes: reviews changed source text under its own lease and timeout.",
     cost: "Gemini Batch API with a $5/day hard cap.",
   },
-  {
-    id: "feedback-promotion-lane",
-    laneKey: "feedback_promotion",
-    laneId: "orchestration",
-    taskName: "AwardPing Feedback Promotion Lane",
-    label: "Feedback Promotion",
-    detail:
-      "Every 15 minutes: advances verified promotion, canary, sweep, and rollback state under its own lease and timeout.",
-    cost: "$0 direct AI/API cost.",
-  },
-  {
-    id: "suppression-lane",
-    laneKey: "suppression",
-    laneId: "source-quality",
-    taskName: "AwardPing Suppression Lane",
-    label: "Suppression",
-    detail:
-      "Every 15 minutes: applies current suppression policy and bounded retroactive sweep work independently.",
-    cost: "$0 direct AI/API cost.",
-  },
-  {
-    id: "reconciliation-lane",
-    laneKey: "reconciliation",
-    laneId: "facts-cycle",
-    taskName: "AwardPing Reconciliation Lane",
-    label: "Award Reconciliation",
-    detail:
-      "Every 15 minutes: reconciles pending public award facts without waiting for a review lane to finish.",
-    cost: "$0 direct AI/API cost.",
-  },
+
+
+
   {
     id: "page-audit-lane",
     laneKey: "page_audit",
@@ -320,24 +282,15 @@ export const scheduledWorkers = [
       "Every 15 minutes: runs deterministic public-page checks and never submits pages to Gemini.",
     cost: "$0 direct AI/API cost.",
   },
-  {
-    id: "manual-quarantine-lane",
-    laneKey: "manual_quarantine",
-    laneId: "orchestration",
-    taskName: "AwardPing Manual Quarantine Lane",
-    label: "Manual Quarantine",
-    detail:
-      "Every 15 minutes: refreshes the durable operator registry independently from producers and reviewers.",
-    cost: "$0 direct AI/API cost.",
-  },
+
   {
     id: "nightly-report-lane",
     laneKey: "nightly_report",
     laneId: "orchestration",
-    taskName: "AwardPing Nightly Report Lane",
-    label: "6 PM Capture Report",
+    taskName: "AwardPing Coverage Report",
+    label: "Coverage Report",
     detail:
-      "Every 15 minutes: safely finalizes the due three-shard report when its reporting window is ready.",
+      "Every 15 minutes: reports approved-source coverage and current core details without capture, AI review or historical queue mutations.",
     cost: "$0 direct AI/API cost.",
   },
   {
@@ -346,7 +299,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 1",
     label: "Visual Snapshot Shard 1",
     detail:
-      "Captures the first source shard and safely records newly linked official PDFs for the new-page review lane.",
+      "Captures approved source text for the first daily collection shard.",
     cost: "$0 direct AI/API cost during capture.",
   },
   {
@@ -355,7 +308,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 2",
     label: "Visual Snapshot Shard 2",
     detail:
-      "Captures the second source shard and safely records newly linked official PDFs for the new-page review lane.",
+      "Captures approved source text for the second daily collection shard.",
     cost: "$0 direct AI/API cost during capture.",
   },
   {
@@ -364,7 +317,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 3",
     label: "Visual Snapshot Shard 3",
     detail:
-      "Captures the third source shard and safely records newly linked official PDFs for the new-page review lane.",
+      "Captures approved source text for the third daily collection shard.",
     cost: "$0 direct AI/API cost during capture.",
   },
 ];

@@ -1,0 +1,10 @@
+import{describe,it,expect}from'vitest';
+import{parse}from'libpg-query';
+import{currentBasicReviewedRepeatRollbackSql,REVIEWED_REPEAT_ROLLBACK_CASES}from'../test-support/current-basic-reviewed-repeat-rollback.mjs';
+const actor='11111111-1111-4111-8111-111111111111',head='22222222-2222-4222-8222-222222222222';
+const plan={schema:'awardping.private-reviewed-repeat-native-e2e-template.v1',status:'TEMPLATE_NOT_DATABASE_PROOF',cohort:'schwarzman',expected_head:head,reviewed_validation:{source_id:'f322a07c-f78c-47fd-aafb-ab6422a4248f',kind:'reviewed_no_program_change',expected_head:head,untrusted:"A quote ' \\ $$; COMMIT; $ap_rr_fake$"},byte_attestations:[],client_validation_template:{review:{capture_refs:[]}},receipt_template:{},public_preview:{}};
+describe('bounded actual reviewed-repeat native rollback renderer',()=>{
+ it.each(REVIEWED_REPEAT_ROLLBACK_CASES)('renders one parseable terminal-rollback transaction: %s',async caseName=>{const sql=currentBasicReviewedRepeatRollbackSql({plan,actor,caseName});expect((await parse(sql)).stmts.length).toBeGreaterThan(7);expect(sql.trim().endsWith('ROLLBACK;')).toBe(true);expect(sql).toContain("statement_timeout='20s'");expect(sql).toContain("lock_timeout='1s'");expect(sql).toContain('SET LOCAL application_name=');expect(sql).not.toMatch(/^\s*COMMIT\s*;/im);expect(sql).not.toContain('SELECT jsonb_agg(to_jsonb(s))');});
+ it('uses real returned IDs/hash and getter currentness after the new head',()=>{const sql=currentBasicReviewedRepeatRollbackSql({plan,actor});for(const phrase of ['result:=public.attest_program_basic_reviewed_repeat','draft:=public.save_current_program_basic_fact_review','committed:=public.commit_current_program_basic_facts','getter:=public.get_program_basic_facts',"getter#>'{0,current}'='true'",'Foreign epoch survived new-kind currentness'])expect(sql).toContain(phrase);});
+ it.each([{actor:'operator label'},{caseName:'invented'},{migrationSql:'COMMIT;'},{plan:{...plan,status:'CONFIRMED_PUBLISHED'}}])('refuses wrong actor/case/transaction-control or non-template identity %#',override=>{expect(()=>currentBasicReviewedRepeatRollbackSql({plan,actor,...override})).toThrow();});
+});

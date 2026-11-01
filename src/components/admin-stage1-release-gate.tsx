@@ -159,7 +159,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
 
       <section aria-labelledby="release-lanes-title" className="rounded-2xl border border-[var(--border)] p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-bold" id="release-lanes-title">Eight downstream lanes</h3>
+          <h3 className="text-sm font-bold" id="release-lanes-title">Three downstream lanes</h3>
           <span className="text-xs font-bold text-[var(--muted)]">
             {summary.lanes.filter((lane) => lane.status === "pass").length}/8 healthy
           </span>
