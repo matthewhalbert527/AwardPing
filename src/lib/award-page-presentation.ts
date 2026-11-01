@@ -9,6 +9,21 @@ export type AwardDeadlinePresentation = {
   notice: string | null;
 };
 
+/** Keep reviewed cycle status and opening separate from application deadlines.
+ * In particular, a closed earlier cycle does not decide the next cycle's status,
+ * and a qualified month-only opening must never become an exact due date.
+ */
+export function presentAwardApplicationContext(
+  facts: { cycleStatus?: string | null; openingDate?: string | null },
+  awardName?: string,
+): Array<{ kind: "status" | "opening"; label: string; value: string }> {
+  const entries: Array<{ kind: "status" | "opening"; label: string; value: string }> = [];
+  if (facts.cycleStatus?.trim()) entries.push({ kind: "status", label: "Application status", value: facts.cycleStatus });
+  const opening = presentAwardDateField(facts.openingDate, awardName, "Opening date");
+  if (opening.value?.trim()) entries.push({ kind: "opening", label: opening.label, value: opening.value });
+  return entries;
+}
+
 /** Display projection only. No inferred next cycle, dates or applicant groups. */
 export function presentAwardDeadlines(
   facts: { deadline?: string | null; importantDates?: string[] },

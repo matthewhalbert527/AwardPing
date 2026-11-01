@@ -200,6 +200,19 @@ describe("award directory page", () => {
     expectNoCardDateMetadata(html);
     expect(html).not.toContain("October 28, 2026"); expect(html).not.toContain("Application routes");
   });
+  it("carries reviewed application status and expected month-only opening into the public card", async () => {
+    const index = publicationIndex(), entry = index.verifiedEntries[0];
+    entry.publishedFacts = { ...emptyBasicAwardFacts(), reviewed_cycle: "AY 2027–28",
+      overview: "Current official basic details.", cycle_status: "AY 2026–27 applications are closed.",
+      opening_date: "AY 2027–28 applications are expected to open in February 2027." };
+    entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: true, verifiedAt: "2026-10-28T12:00:00.000Z" };
+    mocks.loadStage1PublicationIndex.mockResolvedValue(index);
+    const $ = load(await renderDirectory()), card = $(".award-row-deadline");
+    expect(card.find("[data-application-context='status'] dd").text()).toBe("AY 2026–27 applications are closed.");
+    expect(card.find("[data-application-context='opening'] dd").text()).toBe("AY 2027–28 applications are expected to open in February 2027.");
+    expect(card.find("[data-deadline-status]")).toHaveLength(0);
+    expect(card.text()).not.toMatch(/Unconfirmed|Not listed|January 31, 2026|February 1, 2027/);
+  });
   it.each(["stale", "unavailable"])("keeps a %s basic snapshot card visible without reviving old fields or inventing updates", async kind => {
     const index = publicationIndex(), entry = index.verifiedEntries[0]; entry.publishedFacts = emptyBasicAwardFacts();
     if (kind === "stale") entry.basicFactSnapshot = { id: AWARD_ID, kind: "automated_source_verified_basics", current: false, verifiedAt: "2026-10-28T12:00:00.000Z" };

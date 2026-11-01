@@ -20,7 +20,7 @@ import { presentAwardDateField, presentAwardTimelineDate } from "@/lib/award-dat
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import { readableSourceTitle } from "@/lib/display-text";
 import { publicAwardHref, publicAwardQueryId, publicAwardSection } from "@/lib/public-award-links";
-import { awardFactCurrentnessNotices, presentAwardDeadlines, type AwardFactCurrentnessNotice, type AwardDeadlinePresentation } from "@/lib/award-page-presentation";
+import { awardFactCurrentnessNotices, presentAwardApplicationContext, presentAwardDeadlines, type AwardFactCurrentnessNotice, type AwardDeadlinePresentation } from "@/lib/award-page-presentation";
 import { changeSummaryPresentation } from "@/lib/change-summary";
 import { programChangePresentation } from "@/lib/program-change-presentation";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
@@ -683,6 +683,7 @@ function OverviewPanel({
 }) {
   const keyFacts = factRows.filter((fact) => ["Award amount", "Academic level", "Citizenship"].includes(fact.label));
   const deadlines = presentAwardDeadlines(data.facts, data.award.name, data.presentationAsOf ? new Date(data.presentationAsOf) : undefined);
+  const applicationContext = presentAwardApplicationContext(data.facts, data.award.name);
   const latestRow = publicAlertDisplayRows(data.changes)[0];
   const latestChange = latestRow?.members[0];
 
@@ -695,14 +696,21 @@ function OverviewPanel({
         {data.factsNeedReview && <p role="status" className="public-award-date-notice">Some award details are being checked. Use the official website for the latest requirements.</p>}
       </div>
       <dl className="public-award-deadlines">
-        <div>
+        {applicationContext.map((entry) => <div key={entry.kind} data-application-context={entry.kind}>
+          <dt>{entry.label}</dt>
+          <dd>
+            <FactConflictNotice conflict={factRows.find((fact) => fact.label === (entry.kind === "status" ? "Application status" : "Opening date"))?.conflict} onReviewChange={onViewUpdates} />
+            {entry.value}
+          </dd>
+        </div>)}
+        {(deadlines.entries.length > 0 || applicationContext.length === 0) && <div>
           <dt>{deadlines.label}</dt>
           <dd>
             <FactConflictNotice conflict={deadlineConflict} onReviewChange={onViewUpdates} />
             {deadlines.entries.length > 0 && <DeadlineList entries={deadlines.entries} />}
             {deadlines.notice && <p className="public-award-date-notice">{deadlines.notice}</p>}
           </dd>
-        </div>
+        </div>}
       </dl>
       {keyFacts.length > 0 && (
         <dl className="public-award-key-facts">
@@ -940,7 +948,7 @@ function FactConflictNotice({ conflict, onReviewChange }: { conflict?: FactConfl
 }
 
 const FACT_FIELD_LABELS: Record<string, string> = {
-  deadline: "Deadline", openingDate: "Opening date", awardAmount: "Award amount",
+  deadline: "Deadline", openingDate: "Opening date", cycleStatus: "Application status", awardAmount: "Award amount",
   academicLevels: "Academic level", disciplines: "Discipline", citizenship: "Citizenship",
   eligibility: "Eligibility", requirements: "Requirements", applicationMaterials: "Application materials",
   howToApply: "How to apply", importantDates: "Important dates", documents: "Documents", contacts: "Contact",

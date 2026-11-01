@@ -8,7 +8,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { presentAwardDeadlines } from "@/lib/award-page-presentation";
+import { presentAwardApplicationContext, presentAwardDeadlines } from "@/lib/award-page-presentation";
 import { directoryFilterOptions, getAwardDirectoryCategories } from "@/lib/award-directory-filters";
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
@@ -26,6 +26,8 @@ export type SharedAwardCard = {
   officialHomepage: string | null;
   summary: string | null;
   deadline: string | null;
+  cycleStatus?: string | null;
+  openingDate?: string | null;
   hasApplicationRoutes?: boolean;
   importantDates?: string[];
   academicLevels: string[];
@@ -611,6 +613,7 @@ function AwardDirectoryCardContent({
   presentationAsOf?: string;
 }) {
   const deadline = presentAwardDeadlines(award, award.name, presentationAsOf ? new Date(presentationAsOf) : undefined);
+  const applicationContext = presentAwardApplicationContext(award, award.name);
   return (
     <div className={`award-row-grid ${styles.rowGrid}`}>
       <div className={styles.titleRegion}>
@@ -619,6 +622,10 @@ function AwardDirectoryCardContent({
       </div>
       <div className={styles.deadlinePanel}>
         <dl className={`award-row-deadline ${styles.deadlines}`}>
+          {applicationContext.map((entry) => <div className={styles.deadlineItem} key={entry.kind} data-application-context={entry.kind}>
+            <dt className={styles.deadlineLabel}>{entry.label}</dt>
+            <dd className={styles.deadlineDate}>{entry.value}</dd>
+          </div>)}
           {deadline.entries.length ? deadline.entries.map((entry) => {
             const item = presentAwardCardDeadline(entry);
             const zone = awardDateZoneSlices(entry.value)?.zone;
@@ -629,10 +636,10 @@ function AwardDirectoryCardContent({
               {item.time && <dd className={styles.deadlineTime}>{timeZone ? <>{item.time.slice(0, -timeZone.length)}<span className="award-date-zone">{timeZone}</span></> : item.time}</dd>}
               {item.closedCycle || entry.status === "past" ? <dd className={styles.deadlineStatus}>{item.closedCycle ? "Closed cycle" : "Deadline passed"}</dd> : null}
             </div>;
-          }) : <div className={styles.deadlineItem}>
+          }) : award.hasApplicationRoutes || applicationContext.length === 0 ? <div className={styles.deadlineItem}>
             <dt className={styles.deadlineLabel}>{award.hasApplicationRoutes ? "Route deadlines" : "Deadline · Unconfirmed"}</dt>
             <dd className={styles.deadlineDate}>{award.hasApplicationRoutes ? "View route deadlines" : "Not listed"}</dd>
-          </div>}
+          </div> : null}
         </dl>
         <span className={`button-primary ${styles.viewAward}`}>View award</span>
       </div>

@@ -181,6 +181,8 @@ function mapSharedAwards(
       officialHomepage: award.official_homepage,
       summary: compactAwardDirectorySummary(facts.overview || award.summary, award.name),
       deadline: facts.deadline,
+      cycleStatus: facts.cycleStatus,
+      openingDate: facts.openingDate,
       hasApplicationRoutes: award.hasApplicationRoutes,
       importantDates: facts.importantDates,
       academicLevels: facts.academicLevels,

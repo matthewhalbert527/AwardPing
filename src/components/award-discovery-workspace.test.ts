@@ -636,6 +636,36 @@ function expectNoCardDateMetadata(html: string) {
 }
 
 describe("AwardDiscoveryWorkspace card information", () => {
+  it("retains scoped status and expected next opening in browse and search without an invented deadline", () => {
+    const row = { ...goldwaterRow, deadline: null,
+      cycleStatus: "AY 2026–27 applications are closed. AY 2027–28 applications are expected to open in February 2027; dates are provisional and may change. Applicants must consult the official application instructions for the exact next-cycle opening announcement.",
+      openingDate: "AY 2027–28 applications are expected to open in February 2027." };
+    const before = structuredClone(row);
+    for (const preset of [[], ["Goldwater", true]]) {
+      const $ = load(renderRows([row], preset));
+      const cards = $(".award-row-card, .award-search-option");
+      expect(cards.length).toBeGreaterThan(0);
+      cards.each((_index, card) => {
+        const dates = $(card).find(".award-row-deadline");
+        expect(dates.find("[data-application-context='status'] dt").text()).toBe("Application status");
+        expect(dates.find("[data-application-context='status'] dd").text()).toBe(row.cycleStatus);
+        expect(dates.find("[data-application-context='opening'] dt").text()).toBe("Opening date");
+        expect(dates.find("[data-application-context='opening'] dd").text()).toBe(row.openingDate);
+        expect(dates.find("[data-deadline-status]")).toHaveLength(0);
+        expect(dates.text()).not.toMatch(/Unconfirmed|Not listed|February 1, 2027|AY 2027–28 applications are closed/);
+      });
+    }
+    expect(row).toEqual(before);
+  });
+
+  it("keeps actual deadlines beside reviewed application context", () => {
+    const row = { ...goldwaterRow, deadline: "January 29, 2027", cycleStatus: "2027 applications open", openingDate: "September 2026" };
+    const $ = load(renderRows([row]));
+    const dates = $(".award-row-deadline");
+    expect(dates.find("[data-application-context]")).toHaveLength(2);
+    expect(dates.find("[data-deadline-status]").text()).toBe("DeadlineJanuary 29, 2027");
+  });
+
   it("keeps the award name and deadline without date stamps, descriptions or eligibility fields", () => {
     const html = renderRows([{ ...goldwaterRow, deadline: "January 29, 2027", summary: "Supports undergraduate STEM researchers." }]);
     const $ = load(html);

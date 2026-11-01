@@ -1,10 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { awardFactCurrentness, awardFactCurrentnessNotices, presentAwardDeadlines } from "@/lib/award-page-presentation";
+import { awardFactCurrentness, awardFactCurrentnessNotices, presentAwardApplicationContext, presentAwardDeadlines } from "@/lib/award-page-presentation";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 
 const now = new Date("2026-10-17T20:00:00Z");
 const usDeadline = "US citizens resident in the USA round — Wednesday 14 October 2026 at 11:59 p.m. GMT: Application deadline";
 const otherDeadline = "All other eligible applicants round — Tuesday 8 December 2026 or Wednesday 6 January 2027 at 11:59 p.m. GMT (dependent on course): Application deadline";
+
+describe("reviewed application context", () => {
+  it("keeps a closed earlier cycle separate from a qualified month-only next opening", () => {
+    const facts = {
+      deadline: null,
+      cycleStatus: "AY 2026–27 applications are closed.",
+      openingDate: "AY 2027–28 applications are expected to open in February 2027.",
+    };
+    const before = structuredClone(facts);
+    expect(presentAwardApplicationContext(facts, "Example Award")).toEqual([
+      { kind: "status", label: "Application status", value: facts.cycleStatus },
+      { kind: "opening", label: "Opening date", value: facts.openingDate },
+    ]);
+    expect(presentAwardDeadlines(facts, "Example Award", now).entries).toEqual([]);
+    expect(facts).toEqual(before);
+  });
+
+  it.each([
+    { facts: {}, expected: [] },
+    { facts: { cycleStatus: " ", openingDate: " " }, expected: [] },
+    { facts: { cycleStatus: "Applications are open for the 2027 cycle." }, expected: [{ kind: "status", label: "Application status", value: "Applications are open for the 2027 cycle." }] },
+    { facts: { openingDate: "February 2027 (expected)" }, expected: [{ kind: "opening", label: "Opening date", value: "February 2027 (expected)" }] },
+  ])("shows only supplied context: $facts", ({ facts, expected }) => {
+    expect(presentAwardApplicationContext(facts)).toEqual(expected);
+  });
+
+  it("does not infer cycle status from a passed deadline or opening", () => {
+    const facts = { deadline: "October 1, 2026", openingDate: "January 1, 2026" };
+    expect(presentAwardDeadlines(facts, "Example", now).entries[0].status).toBe("past");
+    expect(presentAwardApplicationContext(facts, "Example")).toEqual([
+      { kind: "opening", label: "Opening date", value: "January 1, 2026" },
+    ]);
+  });
+});
 
 describe("shared award deadline presentation", () => {
   it("finds both Gates application rounds without moving outcomes into deadlines", () => {

@@ -233,7 +233,67 @@ describe("award key-facts actual rendered content", () => {
     expect($(".public-award-deadlines .public-award-past-date")).toHaveLength(0);
     expect($(".public-award-deadlines").text()).toContain("A later deadline is not confirmed here.");
     expect($(".public-award-deadlines").text()).not.toContain("Applications closed");
-    expect($(".public-award-deadlines").text()).not.toContain("January 5");
+    expect($(".public-award-deadlines [data-application-context='opening']").text()).toBe("Opening dateJanuary 5, 2026");
+  });
+
+  it("shows scoped closure and expected next opening in Overview without inventing a deadline", () => {
+    const data = pageData(0);
+    data.facts.cycleStatus = "AY 2026–27 applications are closed.";
+    data.facts.openingDate = "AY 2027–28 applications are expected to open in February 2027.";
+    const before = structuredClone(data);
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    const dates = $(".public-award-deadlines");
+    expect(dates.find("[data-application-context='status'] dt").text()).toBe("Application status");
+    expect(dates.find("[data-application-context='status'] dd").text()).toBe(data.facts.cycleStatus);
+    expect(dates.find("[data-application-context='opening'] dt").text()).toBe("Opening date");
+    expect(dates.find("[data-application-context='opening'] dd").text()).toBe(data.facts.openingDate);
+    expect(dates.find(".public-award-deadline-list li")).toHaveLength(0);
+    expect(dates.text()).not.toMatch(/No application deadline|February 1, 2027|AY 2027–28 applications are closed/);
+    expect(data).toEqual(before);
+  });
+
+  it("puts a newer conflicting public status update beside the old status without warning on unchanged opening", () => {
+    const data = pageData(0);
+    const oldStatus = "Applications for the AY 2027–28 cycle are not yet open.";
+    const newStatus = "Applications for the AY 2027–28 cycle are now open.";
+    data.facts.cycleStatus = oldStatus;
+    data.facts.openingDate = "February 2027 (expected)";
+    data.factsReviewedAt = "2026-10-28T12:00:00Z";
+    data.changes = [{
+      id: "status-change", sourceId: null, sourceTitle: "Application instructions",
+      sourceUrl: "https://example.edu/fellowship/apply", sourcePageType: "application",
+      summary: "Applications for the next cycle are now open.", detectedAt: "2026-11-01T12:00:00Z",
+      changeDetails: { reader_summary: "The application status changed.", before: oldStatus, after: newStatus,
+        change_type: "cycle_status", is_alert_worthy: true },
+    }];
+    const before = structuredClone(data);
+    for (const initialSection of ["overview", "applying"]) {
+      const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection })));
+      const status = $("dt").filter((_index, item) => $(item).text() === "Application status").parent();
+      expect(status.find("dd").text()).toContain(oldStatus);
+      expect(status.find("[role='note']").text()).toContain("These details need review.");
+      expect(status.find("a").attr("href")).toBe(`${data.canonicalPath}?change=status-change`);
+      const opening = $("dt").filter((_index, item) => $(item).text() === "Opening date").parent();
+      expect(opening.find("dd").text()).toBe("February 2027 (expected)");
+      expect(opening.find("[role='note']")).toHaveLength(0);
+    }
+    expect(data).toEqual(before);
+    data.facts.cycleStatus = newStatus;
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect($("[data-application-context='status'] dd").text()).toBe(newStatus);
+    expect($("[data-application-context='status'] [role='note']")).toHaveLength(0);
+  });
+
+  it.each([
+    { cycleStatus: "2027 applications open", openingDate: null, label: "Application status", value: "2027 applications open" },
+    { cycleStatus: null, openingDate: "February 2027 (expected)", label: "Opening date", value: "February 2027 (expected)" },
+  ])("shows the available $label without an unknown-deadline notice", ({ cycleStatus, openingDate, label, value }) => {
+    const data = pageData(0);
+    Object.assign(data.facts, { cycleStatus, openingDate });
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect($(".public-award-deadlines dt").text()).toBe(label);
+    expect($(".public-award-deadlines dd").text()).toBe(value);
+    expect($(".public-award-deadlines").text()).not.toContain("No application deadline");
   });
 
   it("shows applicant-specific application dates from the full schedule without dropping course conditions", () => {
