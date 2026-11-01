@@ -696,10 +696,10 @@ function OverviewPanel({
         {data.factsNeedReview && <p role="status" className="public-award-date-notice">Some award details are being checked. Use the official website for the latest requirements.</p>}
       </div>
       <dl className="public-award-deadlines">
-        {applicationContext.map((entry) => <div key={entry.kind} data-application-context={entry.kind}>
+        {applicationContext.map((entry) => <div key={`${entry.kind}:${entry.value}`} data-application-context={entry.kind}>
           <dt>{entry.label}</dt>
           <dd>
-            <FactConflictNotice conflict={factRows.find((fact) => fact.label === (entry.kind === "status" ? "Application status" : "Opening date"))?.conflict} onReviewChange={onViewUpdates} />
+            <FactConflictNotice conflict={factRows.find((fact) => fact.label === (entry.kind === "status" ? "Application status" : entry.kind === "opening" ? "Opening date" : "Important dates"))?.conflict} onReviewChange={onViewUpdates} />
             {entry.value}
           </dd>
         </div>)}
@@ -1024,7 +1024,7 @@ function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, 
   const now = presentationAsOf ? new Date(presentationAsOf) : undefined;
   const deadlines = presentAwardDeadlines(facts, awardName, now);
   // Application deadlines share one ordered list. Other timeline events remain
-  // in Important dates; filter whole reviewed items before any legacy splitting.
+  // in Important dates; keep reviewed item boundaries and qualifiers intact.
   const otherDates = facts.importantDates.filter((value) =>
     presentAwardDeadlines({ importantDates: [value] }, awardName, now).entries.length === 0);
   const opening = presentAwardDateField(facts.openingDate, awardName, "Opening date");
@@ -1049,7 +1049,7 @@ function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string, 
     { label: "How to apply", value: compactList(facts.howToApply) },
     { label: "Application links", value: compactList(facts.applicationUrls || []) },
     { label: "Selection", value: compactList(facts.selection || []) },
-    { label: "Important dates", value: compactList(otherDates.flatMap(splitFactItems).map((value) => presentAwardTimelineDate(value, awardName))) },
+    { label: "Important dates", value: compactList(otherDates.map((value) => presentAwardTimelineDate(value, awardName))) },
     { label: "Documents", value: compactList(facts.documents) },
     { label: "Contact", value: compactList(facts.contacts) },
   ];

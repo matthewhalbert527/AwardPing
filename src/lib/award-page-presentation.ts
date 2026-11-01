@@ -14,14 +14,38 @@ export type AwardDeadlinePresentation = {
  * and a qualified month-only opening must never become an exact due date.
  */
 export function presentAwardApplicationContext(
-  facts: { cycleStatus?: string | null; openingDate?: string | null },
+  facts: { cycleStatus?: string | null; openingDate?: string | null; importantDates?: string[] },
   awardName?: string,
-): Array<{ kind: "status" | "opening"; label: string; value: string }> {
-  const entries: Array<{ kind: "status" | "opening"; label: string; value: string }> = [];
+): Array<{ kind: "status" | "opening" | "period" | "nomination"; label: string; value: string }> {
+  const entries: Array<{ kind: "status" | "opening" | "period" | "nomination"; label: string; value: string }> = [];
   if (facts.cycleStatus?.trim()) entries.push({ kind: "status", label: "Application status", value: facts.cycleStatus });
   const opening = presentAwardDateField(facts.openingDate, awardName, "Opening date");
   if (opening.value?.trim()) entries.push({ kind: "opening", label: opening.label, value: opening.value });
+  const seen = new Set<string>();
+  for (const value of facts.importantDates || []) {
+    // A reviewed event label supplies its category. Bare months, interviews and
+    // results cannot establish an application period or a nomination schedule.
+    // Keep the entire item, including audience, cycle and conditional clauses.
+    if (applicationDeadlineItem(value, awardName) || seen.has(value)) continue;
+    const kind = applicationScheduleCategory(value);
+    if (!kind) continue;
+    const period = kind === "period";
+    entries.push({ kind: period ? "period" : "nomination", label: period ? "Application period" : "Nomination schedule", value });
+    seen.add(value);
+  }
   return entries;
+}
+
+function applicationScheduleCategory(value: string): "period" | "nomination" | null {
+  const labels = value.split(":").slice(0, -1);
+  for (const label of labels) {
+    // Earlier labels establish the event's context. Never skip an interview,
+    // results or incidental-note label to promote a nested phrase instead.
+    if (/^(?:(?:application|applicant|selection)\s+)?(?:interviews?|outcomes?|results?|notifications?|deadlines?|notes?|research schedule)\b/i.test(label.trim())) return null;
+    if (/^(?:[\p{L}\p{N}][\p{L}\p{N} ./&'’()-]{0,160} )?application (?:period|window)(?:\s+[—–-]\s+[^:;]+)?$/iu.test(label.trim())) return "period";
+    if (/^(?:standing )?nomination schedule(?:\s+[—–-]\s+[^:;]+)?$/i.test(label.trim())) return "nomination";
+  }
+  return null;
 }
 
 /** Display projection only. No inferred next cycle, dates or applicant groups. */
@@ -70,6 +94,9 @@ function applicationDeadlineItem(value: string, awardName?: string) {
   if (suffix) return { label: "Application deadline", value: presentAwardTimelineDate(suffix[1], awardName) };
   const prefix = /^((?:Applications? (?:deadline|due|close)|Deadline for applications?|Application submission deadline)(?:\s+[^:]*)?):\s*(.+)$/i.exec(clean);
   if (prefix) return { label: prefix[1], value: presentAwardTimelineDate(prefix[2], awardName) };
+  // An explicit period/schedule label outranks an incidental deadline phrase in
+  // its explanatory body. A reference to a deadline is not itself a deadline.
+  if (applicationScheduleCategory(clean)) return null;
   // Other wording is retained whole only if it explicitly calls itself an
   // application deadline. Interviews, outcomes and document dates stay secondary.
   if (/\bapplication deadline\b/i.test(clean)) {

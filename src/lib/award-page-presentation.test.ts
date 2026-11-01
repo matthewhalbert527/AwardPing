@@ -7,6 +7,51 @@ const usDeadline = "US citizens resident in the USA round — Wednesday 14 Octob
 const otherDeadline = "All other eligible applicants round — Tuesday 8 December 2026 or Wednesday 6 January 2027 at 11:59 p.m. GMT (dependent on course): Application deadline";
 
 describe("reviewed application context", () => {
+  it("shows both explicitly labelled application periods without changing their citizenship scopes or start year", () => {
+    const importantDates = [
+      "U.S./Global — Class of 2028–2029: U.S./Global application period — Class of 2028–2029: April–September 2027; programme begins August 2028.",
+      "Chinese citizenship — Class of 2028–2029: China application period — Class of 2028–2029: March–May 2027; programme begins August 2028.",
+    ];
+    const facts = { deadline: null, importantDates };
+    expect(presentAwardApplicationContext(facts)).toEqual(importantDates.map(value => ({ kind: "period", label: "Application period", value })));
+    expect(presentAwardDeadlines(facts).entries).toEqual([]);
+  });
+
+  it("keeps the standing nomination rule and its weekend and campus conditions together", () => {
+    const value = "Standing nomination schedule: National nominations are normally due January 15; the date can change when January 15 falls on a weekend or holiday. Check the latest application materials for the current deadline; internal university deadlines vary.";
+    const facts = { importantDates: [value, value] };
+    expect(presentAwardApplicationContext(facts)).toEqual([{ kind: "nomination", label: "Nomination schedule", value }]);
+    expect(presentAwardDeadlines(facts).entries).toEqual([]);
+  });
+
+  it("uses explicit schedule labels instead of incidental deadline wording in their body", () => {
+    const value = "Standing nomination schedule: National nominations are normally due January 15; confirm the current application deadline on the official website.";
+    const facts = { importantDates: [value] };
+    expect(presentAwardApplicationContext(facts)).toEqual([{ kind: "nomination", label: "Nomination schedule", value }]);
+    expect(presentAwardDeadlines(facts).entries).toEqual([]);
+    const deadline = "Application deadline — International: January 15, 2027; the application period starts in September.";
+    expect(presentAwardDeadlines({ importantDates: [deadline] }).entries).toHaveLength(1);
+    expect(presentAwardApplicationContext({ importantDates: [deadline] })).toEqual([]);
+  });
+
+  it("does not treat interviews, results, bare months or actual deadlines as additional application context", () => {
+    const facts = { importantDates: ["Interviews: April 2027", "Application results: May 2027", "Interview results during the application period: April 2027", "Interview results: application period: April–September 2027", "Notes about application period: research schedule unchanged", "Notes: Application window: April–September 2027", "Research schedule: Application period: April–September 2027", "Applicant results: Application window: May 2027", "April–September 2027", "Application deadline — International: January 15, 2027"] };
+    expect(presentAwardApplicationContext(facts)).toEqual([]);
+    expect(presentAwardDeadlines(facts).entries).toHaveLength(1);
+  });
+
+  it("keeps legitimate research subject scopes on explicitly labelled application periods", () => {
+    const importantDates = ["Research fellowship application period: April–September 2027", "Application period — Research grants: March–May 2027"];
+    expect(presentAwardApplicationContext({ importantDates })).toEqual(importantDates.map(value => ({ kind: "period", label: "Application period", value })));
+  });
+
+  it("retains a Gates round's reference condition on its deadline entry", () => {
+    const value = "Application deadline — U.S. citizens resident in the U.S. — October round: October 14, 2026 at 11:59 p.m. UK time; all documents, including references, due in this round.";
+    const facts = publicAwardFactsFromAward({ completeSnapshot: true, publicFacts: { important_dates: [value] } });
+    expect(presentAwardDeadlines(facts).entries[0].value).toContain("; all documents, including references, due in this round.");
+    expect(presentAwardApplicationContext(facts)).toEqual([]);
+  });
+
   it("keeps a closed earlier cycle separate from a qualified month-only next opening", () => {
     const facts = {
       deadline: null,

@@ -5,6 +5,7 @@ import { load } from "cheerio";
 import { describe, expect, it } from "vitest";
 import { PublicAwardWorkspace } from "@/components/public-award-workspace";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
+import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 
 type CssBlock = { header: string; body: string };
 
@@ -171,6 +172,42 @@ function pageData(mask: number): PublicAwardPageData {
 }
 
 describe("award key-facts actual rendered content", () => {
+  it.each([
+    { kind: "nomination", label: "Nomination schedule", values: ["Standing nomination schedule: National nominations are normally due January 15; the date can change when January 15 falls on a weekend or holiday. Check the latest application materials for the current deadline; internal university deadlines vary."] },
+    { kind: "period", label: "Application period", values: [
+      "U.S./Global — Class of 2028–2029: U.S./Global application period — Class of 2028–2029: April–September 2027; programme begins August 2028.",
+      "Chinese citizenship — Class of 2028–2029: China application period — Class of 2028–2029: March–May 2027; programme begins August 2028.",
+    ] },
+  ])("shows whole reviewed $label context in Overview and full Applying", ({ kind, label, values }) => {
+    const data = pageData(0);
+    data.facts = publicAwardFactsFromAward({ completeSnapshot: true, publicFacts: { important_dates: values } });
+    const before = structuredClone(data);
+    const overview = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    const entries = overview(`.public-award-deadlines [data-application-context='${kind}']`);
+    expect(entries).toHaveLength(values.length);
+    expect(entries.find("dt").map((_index, item) => overview(item).text()).get()).toEqual(values.map(() => label));
+    expect(entries.find("dd").map((_index, item) => overview(item).text()).get()).toEqual(values);
+    expect(overview(".public-award-deadlines").text()).not.toContain("No application deadline");
+    expect(overview(".public-award-deadline-list")).toHaveLength(0);
+    const applying = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSection: "applying" })));
+    const dates = applying(".public-award-fact-line").filter((_index, item) => applying(item).find("dt").text() === "Important dates").find("dd");
+    if (values.length === 1) expect(dates.text()).toBe(values[0]);
+    else expect(dates.find("li").map((_index, item) => applying(item).text()).get()).toEqual(values);
+    expect(data).toEqual(before);
+  });
+
+  it("keeps the Gates references condition beside its application round in Overview", () => {
+    const data = pageData(0);
+    data.facts = publicAwardFactsFromAward({ completeSnapshot: true, publicFacts: {
+      important_dates: ["Application deadline — U.S. citizens resident in the U.S. — October round: October 14, 2026 at 11:59 p.m. UK time; all documents, including references, due in this round."],
+    } });
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    const round = $(".public-award-deadline-list li");
+    expect(round).toHaveLength(1);
+    expect($(".public-award-deadlines").text()).toContain("U.S. citizens resident in the U.S. — October round");
+    expect(round.text()).toContain("all documents, including references, due in this round.");
+  });
+
   it.each(Array.from({ length: 8 }, (_, mask) => ({
     mask, labels: factValues.filter((_fact, index) => mask & (1 << index)).map((fact) => fact.label).join(" + ") || "no facts",
   })))("preserves $labels without changing facts or adding actions", ({ mask }) => {

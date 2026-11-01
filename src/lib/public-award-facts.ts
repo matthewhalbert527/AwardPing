@@ -114,11 +114,10 @@ export function publicAwardFactsFromAward(input: {
     cleanString(structured.opening_date) ||
     cleanString(factMap.get("opening date")) ||
     firstValue(sourceFacts.map((facts) => cleanString(facts.opening_date)));
-  // Structured important dates skip the legacy date filter and ten-item cap;
-  // splitting and cleanup still apply. The caller is responsible for ensuring
-  // that each date includes the context required by the editorial policy.
+  // Reviewed items keep their scope and qualifying clauses together. Legacy
+  // summary-derived dates still use their existing splitting/filtering below.
   const importantDates = hasStructuredFacts
-    ? structuredArrayField(rawImportantDates.flatMap(splitFactItems))
+    ? structuredArrayField(rawImportantDates)
     : normalizeImportantDateItems(rawImportantDates, { deadline, openingDate });
 
   return {

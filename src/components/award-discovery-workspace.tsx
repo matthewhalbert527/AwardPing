@@ -623,7 +623,7 @@ function AwardDirectoryCardContent({
       </div>
       <div className={styles.deadlinePanel}>
         <dl className={`award-row-deadline ${styles.deadlines}`}>
-          {applicationContext.map((entry) => <div className={styles.deadlineItem} key={entry.kind} data-application-context={entry.kind}>
+          {applicationContext.map((entry) => <div className={styles.deadlineItem} key={`${entry.kind}:${entry.value}`} data-application-context={entry.kind}>
             <dt className={styles.deadlineLabel}>{entry.label}</dt>
             <dd className={styles.deadlineDate}>{entry.value}</dd>
           </div>)}

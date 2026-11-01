@@ -652,6 +652,38 @@ function expectNoCardDateMetadata(html: string) {
 }
 
 describe("AwardDiscoveryWorkspace card information", () => {
+  it.each([
+    { kind: "nomination", values: ["Standing nomination schedule: National nominations are normally due January 15; the date can change when January 15 falls on a weekend or holiday; internal university deadlines vary."] },
+    { kind: "period", values: [
+      "U.S./Global — Class of 2028–2029: U.S./Global application period — Class of 2028–2029: April–September 2027; programme begins August 2028.",
+      "Chinese citizenship — Class of 2028–2029: China application period — Class of 2028–2029: March–May 2027; programme begins August 2028.",
+    ] },
+  ])("shows complete $kind context in browse and search without calling it a deadline", ({ kind, values }) => {
+    const row = { ...goldwaterRow, deadline: null, importantDates: values };
+    for (const preset of [[], ["Goldwater", true]]) {
+      const $ = load(renderRows([row], preset));
+      $(".award-row-card, .award-search-option").each((_index, card) => {
+        const dates = $(card).find(".award-row-deadline");
+        expect(dates.find(`[data-application-context='${kind}'] dd`).map((_index, item) => $(item).text()).get()).toEqual(values);
+        expect(dates.find("[data-deadline-status]")).toHaveLength(0);
+        expect(dates.text()).not.toMatch(/Unconfirmed|Not listed/);
+      });
+    }
+  });
+
+  it("keeps the Gates references condition on the same scoped deadline in browse and search", () => {
+    const row = { ...goldwaterRow, deadline: null, importantDates: ["Application deadline — U.S. citizens resident in the U.S. — October round: October 14, 2026 at 11:59 p.m. UK time; all documents, including references, due in this round."] };
+    for (const preset of [[], ["Goldwater", true]]) {
+      const $ = load(renderRows([row], preset));
+      $(".award-row-card, .award-search-option").each((_index, card) => {
+        const dates = $(card).find(".award-row-deadline [data-deadline-status]");
+        expect(dates).toHaveLength(1);
+        expect(dates.text()).toContain("U.S. citizens resident in the U.S. — October round");
+        expect(dates.text()).toContain("all documents, including references, due in this round.");
+      });
+    }
+  });
+
   it("retains scoped status and expected next opening in browse and search without an invented deadline", () => {
     const row = { ...goldwaterRow, deadline: null,
       cycleStatus: "AY 2026–27 applications are closed. AY 2027–28 applications are expected to open in February 2027; dates are provisional and may change. Applicants must consult the official application instructions for the exact next-cycle opening announcement.",

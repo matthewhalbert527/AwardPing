@@ -82,15 +82,26 @@ describe("public award deadline descriptions", () => {
 });
 
 describe("public award facts", () => {
-  it("deduplicates exact split amounts and timeline items without merging conditions", () => {
+  it("deduplicates split amounts while preserving whole structured timeline items", () => {
     const facts = publicAwardFactsFromAward({ publicFacts: {
       award_amounts: ["Full tuition; Living stipend", "Full tuition"],
       important_dates: ["Application deadline: January 1, 2027; Application deadline: January 1, 2027", "Application deadline for US applicants: January 1, 2027"],
       disciplines: ["Social sciences", "Social sciences (excluding clinical psychology)", "Social sciences"],
     } });
     expect(facts.awardAmount).toEqual(["Full tuition", "Living stipend"]);
-    expect(facts.importantDates).toEqual(["Application deadline: January 1, 2027", "Application deadline for US applicants: January 1, 2027"]);
+    expect(facts.importantDates).toEqual(["Application deadline: January 1, 2027; Application deadline: January 1, 2027", "Application deadline for US applicants: January 1, 2027"]);
     expect(facts.disciplines).toEqual(["Social sciences", "Social sciences (excluding clinical psychology)"]);
+  });
+  it("keeps reviewed round and nomination qualifiers together while retaining legacy summary splitting", () => {
+    const important_dates = [
+      "Application deadline — U.S. citizens resident in the U.S. — October round: October 14, 2026 at 11:59 p.m. UK time; all documents, including references, due in this round.",
+      "Standing nomination schedule: National nominations are normally due January 15; the date can change when January 15 falls on a weekend or holiday. Check the latest application materials for the current deadline; internal university deadlines vary.",
+    ];
+    const before = structuredClone(important_dates);
+    expect(publicAwardFactsFromAward({ completeSnapshot: true, publicFacts: { important_dates } }).importantDates).toEqual(important_dates);
+    expect(publicAwardFactsFromAward({ summary: "Legacy award. Important dates: Interviews: March 1, 2027; Ceremony: May 1, 2027" }).importantDates)
+      .toEqual(["Interviews: March 1, 2027", "Ceremony: May 1, 2027"]);
+    expect(important_dates).toEqual(before);
   });
   it("uses reconciled public facts for public details", () => {
     const facts = publicAwardFactsFromAward({

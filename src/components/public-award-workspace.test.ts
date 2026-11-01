@@ -1540,19 +1540,12 @@ describe("focused award sections", () => {
     expect(data).toEqual(before);
   });
 
-  it("groups semicolon-separated Important dates itemwise while keeping the separate prose item literal", () => {
+  it("keeps a reviewed Important dates item and its semicolon qualifier together", () => {
     const importantDates = ["Interviews: 2026-03-27T09:00:00Z; Office note (UTC-05:00)"];
     const before = [...importantDates];
     const value = factValue(datesPanel({ importantDates }), "Important dates");
-    const $ = load(value.html() || "");
-    const items = $("ul.public-award-fact-list > li");
-    expect(items.length).toBe(2);
-    expect(items.map((_index, item) => $(item).text()).get()).toEqual([
-      "Interviews: March 27, 2026 at 9:00 a.m. (UTC)", "Office note (UTC-05:00)",
-    ]);
-    expect(items.eq(0).find("span.award-date-zone").length).toBe(1);
-    expect(items.eq(0).find("span.award-date-zone").text()).toBe("(UTC)");
-    expect(items.eq(1).find(".award-date-zone").length).toBe(0);
+    expect(value.text()).toBe(importantDates[0]);
+    expect(value.find("li, .award-date-zone")).toHaveLength(0);
     expect(importantDates).toEqual(before);
   });
 
@@ -1688,10 +1681,10 @@ describe("focused award sections", () => {
     expect(html).not.toContain("T09:00:00");
   });
 
-  it("formats each semicolon-separated timeline item without losing an event label", () => {
+  it("keeps compound reviewed timeline items whole without inventing item boundaries", () => {
     const html = datesPanel({ importantDates: ["Interviews: 2027-03-01; Ceremony: 2027-05-01"] });
-    expect(html).toContain("<li>Interviews: March 1, 2027</li>");
-    expect(html).toContain("<li>Ceremony: May 1, 2027</li>");
+    expect(factValue(html, "Important dates").text()).toBe("Interviews: 2027-03-01; Ceremony: 2027-05-01");
+    expect(factValue(html, "Important dates").find("li")).toHaveLength(0);
   });
 
   it("explains missing details and offers sources instead of inventing a value", () => {
