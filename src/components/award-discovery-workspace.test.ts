@@ -1013,9 +1013,13 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
 
   it("uses a common flexible desktop track and stacks the deadline panel within narrow card containers", () => {
     const css = readFileSync(new URL("./award-discovery-workspace.module.css", import.meta.url), "utf8");
+    const listRule = css.split(".cardList {")[1]?.split("}")[0] ?? "";
+    expect(listRule).toContain("grid-auto-rows: auto;");
+    expect(listRule).toContain("align-content: start;");
     const desktopRule = css.split(".rowGrid:global(.award-row-grid) {")[1]?.split("}")[0] ?? "";
     expect(desktopRule).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, [\d.]+rem\);/);
     expect(desktopRule).toContain("min-width: 0;");
+    expect(desktopRule).toContain("height: auto;");
     expect(css).toContain("container: award-cards / inline-size;");
     const narrowContainer = css.split(/@container award-cards \(max-width: \d+px\)\s*\{/)[1] ?? "";
     expect(narrowContainer).toMatch(/\.rowGrid:global\(\.award-row-grid\)\s*\{\s*grid-template-columns: minmax\(0, 1fr\);/);
