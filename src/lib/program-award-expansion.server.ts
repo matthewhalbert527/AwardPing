@@ -7,7 +7,7 @@ import type { Stage1MemberRow, Stage1PublicationEntry, Stage1PublicationIndex, S
 const uuid = z.string().uuid();
 const timestamp = z.string().datetime({ offset: true }).refine(value => Date.parse(value) <= Date.now() + 300_000);
 const registry = z.object({
-  cohort_key: z.string(), launch_rank: z.number().int().min(26).max(40), canonical_name: z.string(),
+  cohort_key: z.string(), launch_rank: z.number().int().min(26).max(45), canonical_name: z.string(),
   canonical_shared_award_id: uuid, canonical_slug: z.string(), official_homepage: z.string().url().startsWith("https://"),
   publication_state: z.enum(["pending", "verified_beta", "revalidation_pending", "suspended"]),
   state_reason: z.string().min(1), policy_version: z.literal("program-basic-expansion-v1"),
@@ -21,16 +21,16 @@ const snapshot = z.object({ schema: z.literal("awardping.program-award-expansion
     reviewed_homepage: z.object({ source_id: uuid, url: z.string().url().startsWith("https://") }).strict(),
     basic_fact: z.object({ award_id: uuid, cohort_key: z.string(), snapshot_id: uuid,
       kind: z.literal("automated_source_verified_basics"), current: z.boolean(), public_facts: z.unknown(), verified_at: timestamp }).strict(),
-  }).strict()).max(15),
+  }).strict()).max(20),
 }).strict();
 
-/** The original release is validated first. Only the three reviewed five-award batches can
+/** The original release is validated first. Only the four reviewed five-award batches can
  * extend it; basic information never becomes a complete-program approval.
  */
 export function applyProgramAwardExpansion(index: Stage1PublicationIndex, value: unknown, epoch: string): Stage1PublicationIndex {
   if (!index.available || index.verifiedEntries.length !== 25 || index.entries.length !== 25) throw Error("Original award release is unavailable.");
   const parsed = snapshot.parse(value);
-  if (parsed.epoch !== epoch || ![0, 5, 10, 15].includes(parsed.awards.length)) throw Error("Expansion publication is incomplete.");
+  if (parsed.epoch !== epoch || ![0, 5, 10, 15, 20].includes(parsed.awards.length)) throw Error("Expansion publication is incomplete.");
   if (!parsed.awards.length) return index;
   const known = new Map(cohort.awards.map(award => [award.cohort_key, award]));
   const seen = new Set<string>(), sources = new Set<string>();

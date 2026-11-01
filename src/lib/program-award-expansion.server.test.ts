@@ -34,7 +34,7 @@ function publication(count = 5) {
     })) };
 }
 describe("bounded text-only award expansion", () => {
-  it.each([5, 10, 15])("adds the complete reviewed batch of %i without changing the accepted25", count => {
+  it.each([5, 10, 15, 20])("adds the complete reviewed batch of %i without changing the accepted25", count => {
     const before = original(), result = applyProgramAwardExpansion(before, publication(count), epoch);
     expect(result.entries).toHaveLength(25 + count); expect(result.verifiedCanonicalAwardIds).toHaveLength(25 + count);
     expect(result.entries.slice(0, 25)).toEqual(before.entries); expect(before.entries).toHaveLength(25);
@@ -50,6 +50,19 @@ describe("bounded text-only award expansion", () => {
     expect(expanded.entries.slice(0, 35)).toEqual(existing.entries);
     expect(expanded.entries.slice(35).map(entry => entry.registry.launch_rank)).toEqual([36, 37, 38, 39, 40]);
   });
+  it("keeps every existing40 identity and approved basic fact when the fourth batch becomes public", () => {
+    const existing = applyProgramAwardExpansion(original(), publication(15), epoch);
+    const expanded = applyProgramAwardExpansion(original(), publication(20), epoch);
+    expect(expanded.entries).toHaveLength(45);
+    expect(expanded.entries.slice(0, 40)).toEqual(existing.entries);
+    expect(expanded.entries.slice(40).map(entry => entry.registry.launch_rank)).toEqual([41, 42, 43, 44, 45]);
+  });
+  it.each([1, 2, 3])("rejects a fourth batch when prior batch %i is absent", batch => {
+    const input = publication(20);
+    const missing = new Set(cohort.awards.filter(award => award.batch === batch).map(award => award.cohort_key));
+    input.awards = input.awards.filter(award => !missing.has(award.registry.cohort_key));
+    expect(() => applyProgramAwardExpansion(original(), input, epoch)).toThrow("Expansion batch order changed.");
+  });
   it("rejects a third batch published without either earlier batch", () => {
     const input = publication(15);
     input.awards = input.awards.slice(10);
@@ -63,12 +76,21 @@ describe("bounded text-only award expansion", () => {
     expect(expanded.entries[39].publishedFacts).toEqual(emptyBasicAwardFacts());
     expect(expanded.entries[39].basicFactSnapshot?.current).toBe(false);
   });
-  it("rejects a rank or publication count beyond the reviewed40", () => {
-    const overRank = publication(15);
-    overRank.awards[14].registry.launch_rank = 41;
+  it("keeps all45 identities and original40 facts when a fourth-batch basic detail becomes stale", () => {
+    const input = publication(20);
+    Object.assign(input.awards[19].basic_fact, { current: false, public_facts: null });
+    const expanded = applyProgramAwardExpansion(original(), input, epoch);
+    expect(expanded.entries).toHaveLength(45);
+    expect(expanded.entries.slice(0, 40)).toEqual(applyProgramAwardExpansion(original(), publication(15), epoch).entries);
+    expect(expanded.entries[44].publishedFacts).toEqual(emptyBasicAwardFacts());
+    expect(expanded.entries[44].basicFactSnapshot?.current).toBe(false);
+  });
+  it("rejects a rank or publication count beyond the reviewed45", () => {
+    const overRank = publication(20);
+    overRank.awards[19].registry.launch_rank = 46;
     expect(() => applyProgramAwardExpansion(original(), overRank, epoch)).toThrow();
-    const overCount = publication(15);
-    overCount.awards.push(overCount.awards[14]);
+    const overCount = publication(20);
+    overCount.awards.push(overCount.awards[19]);
     expect(() => applyProgramAwardExpansion(original(), overCount, epoch)).toThrow();
   });
   it("retains identity but clears stale details after a subsequent real change", () => {

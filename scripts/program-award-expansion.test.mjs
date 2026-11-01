@@ -14,7 +14,7 @@ const db = awards => ({ rpc: async name => {
 } });
 
 describe("expanded basic-purpose worker reporting", () => {
-  it.each([25, 30, 35, 40])("loads the exact current %i-award union without a full approval workflow", async count => {
+  it.each([25, 30, 35, 40, 45])("loads the exact current %i-award union without a full approval workflow", async count => {
     const result = await loadProgramTextBasicStatus(db(Array.from({ length: count }, (_, i) => status(i))), roster(count));
     expect(result.size).toBe(count);
     expect(result.get("award_1").basic_details_current).toBe(true);

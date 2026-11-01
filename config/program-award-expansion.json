@@ -135,6 +135,51 @@
       "canonical_name": "Princeton in Africa Fellowships",
       "canonical_slug": "princeton-in-africa-fellowship",
       "official_homepage": "https://www.princetoninafrica.org/applicants/how-to-apply/"
+    },
+    {
+      "cohort_key": "astronaut",
+      "batch": 4,
+      "launch_rank": 41,
+      "canonical_shared_award_id": "9880eddb-203a-4474-88b1-a3a877b398a3",
+      "canonical_name": "Astronaut Scholarship",
+      "canonical_slug": "astronaut-scholarship",
+      "official_homepage": "https://www.astronautscholarship.org/programs/astronaut-scholarship/"
+    },
+    {
+      "cohort_key": "watson",
+      "batch": 4,
+      "launch_rank": 42,
+      "canonical_shared_award_id": "80424f3b-1b94-4cb1-977c-b6cfdd5a8381",
+      "canonical_name": "Thomas J. Watson Fellowship",
+      "canonical_slug": "watson-fellowship",
+      "official_homepage": "https://watson.foundation/fellowships/tj"
+    },
+    {
+      "cohort_key": "mccall_macbain",
+      "batch": 4,
+      "launch_rank": 43,
+      "canonical_shared_award_id": "109337e6-5309-4ac8-8647-1bb6c67e9b38",
+      "canonical_name": "McCall MacBain Scholarships",
+      "canonical_slug": "mccall-macbain-scholarships",
+      "official_homepage": "https://mccallmacbainscholars.org/program/"
+    },
+    {
+      "cohort_key": "ellison_graduate",
+      "batch": 4,
+      "launch_rank": 44,
+      "canonical_shared_award_id": "3ed2ee95-7e6c-4f75-800e-6d42f5288dbb",
+      "canonical_name": "Graduate Ellison Scholars",
+      "canonical_slug": "graduate-ellison-scholars",
+      "official_homepage": "https://eit.org/education-and-scholarships/graduate"
+    },
+    {
+      "cohort_key": "rales",
+      "batch": 4,
+      "launch_rank": 45,
+      "canonical_shared_award_id": "56f2136d-1ecf-44e3-be75-61e49c93f571",
+      "canonical_name": "Carnegie Mellon Rales Fellows",
+      "canonical_slug": "carnegie-mellon-rales-fellows",
+      "official_homepage": "https://www.cmu.edu/graduate/rales-fellows/"
     }
   ]
 }
