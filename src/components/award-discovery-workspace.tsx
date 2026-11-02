@@ -32,6 +32,7 @@ export type SharedAwardCard = {
   openingDate?: string | null;
   hasApplicationRoutes?: boolean;
   importantDates?: string[];
+  reviewedCategories?: ReturnType<typeof getAwardDirectoryCategories>;
   academicLevels: string[];
   disciplines: string[];
   citizenship: string[];

@@ -31,12 +31,12 @@ describe("directory multi-selection", () => {
     const choices = { academicLevels: ["Undergraduate", "Graduate"], disciplines: ["STEM"], citizenship: ["U.S. citizens"] };
     expect(matchesDirectorySelections(undergraduate, choices)).toBe(true);
     expect(matchesDirectorySelections(graduate, choices)).toBe(false);
-    expect(matchesDirectorySelections({ ...undergraduate, citizenship: ["All nationalities"] }, choices)).toBe(false);
+    expect(matchesDirectorySelections({ ...undergraduate, citizenship: ["All nationalities"] }, choices)).toBe(true);
     expect(matchesDirectorySelections({ ...undergraduate, academicLevels: ["High school"] }, choices)).toBe(false);
   });
 
-  it("does not interpret a broad category as a new eligibility claim", () => {
-    expect(matchesDirectorySelections(graduate, { ...none, citizenship: ["U.S. citizens"] })).toBe(false);
+  it("includes nationality-neutral awards while keeping specific subjects scoped", () => {
+    expect(matchesDirectorySelections(graduate, { ...none, citizenship: ["U.S. citizens"] })).toBe(true);
     expect(matchesDirectorySelections(undergraduate, { ...none, disciplines: ["No field restriction"] })).toBe(false);
   });
 
@@ -72,4 +72,14 @@ describe("directory multi-selection", () => {
     expect(toggleDirectorySelection(["Graduate"], "Graduate")).toEqual([]);
     expect(matchesDirectorySelections(undergraduate, { ...none, academicLevels: toggleDirectorySelection(["Graduate"], "Graduate") })).toBe(true);
   });
+});
+
+
+describe("inclusive broad discovery scopes", () => {
+ const broad = { academicLevels: ["Graduate"], disciplines: ["No field restriction"], citizenship: ["All nationalities"] };
+ it.each(["STEM", "Engineering", "Computing & data", "Mathematics", "Natural sciences", "Environment & earth sciences", "Social sciences & policy", "Arts", "Business & law", "Health & medicine", "Education"])("includes an unrestricted award for %s", value => { expect(matchesDirectorySelections(broad, { ...none, disciplines: [value] })).toBe(true); });
+ it.each(["U.S. citizens", "U.S. nationals", "U.S. permanent residents"])("includes nationality-neutral awards for %s", value => { expect(matchesDirectorySelections(broad, { ...none, citizenship: [value] })).toBe(true); });
+ it.each(["DACA / undocumented", "New American criteria", "Work authorization", "Other / not listed", "Unknown"])("does not invent %s eligibility from unrestricted nationality", value => { expect(matchesDirectorySelections(broad, { ...none, citizenship: [value] })).toBe(false); });
+ it("never treats missing or course-specific fields as unrestricted", () => { for (const disciplines of [["Other / not listed"], ["Multiple fields (check courses)"], []]) expect(matchesDirectorySelections({ ...broad, disciplines }, { ...none, disciplines: ["STEM"] })).toBe(false); });
+ it("still requires the selected academic stage", () => { expect(matchesDirectorySelections(broad, { ...none, academicLevels: ["Undergraduate"], disciplines: ["STEM"] })).toBe(false); });
 });

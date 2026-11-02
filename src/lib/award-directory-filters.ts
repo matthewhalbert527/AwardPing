@@ -3,11 +3,12 @@ export type DirectoryFilterInput = {
   academicLevels: readonly string[];
   disciplines: readonly string[];
   citizenship: readonly string[];
+  reviewedCategories?: Record<DirectoryFilterField, readonly string[]>;
 };
 
 const OTHER = "Other / not listed";
 const categoryOrder: Record<DirectoryFilterField, readonly string[]> = {
-  academicLevels: ["High school", "Undergraduate", "Recent graduate", "Graduate", "Master's", "Doctoral", "Professional", OTHER],
+  academicLevels: ["High school", "Undergraduate", "Recent graduate", "Degree holder", "Graduate", "Master's", "Doctoral", "Professional", OTHER],
   disciplines: ["STEM", "Engineering", "Computing & data", "Mathematics", "Natural sciences", "Environment & earth sciences", "Social sciences & policy", "Arts", "Business & law", "Health & medicine", "Education", "No field restriction", "Multiple fields (check courses)", OTHER],
   citizenship: ["U.S. citizens", "U.S. nationals", "U.S. permanent residents", "DACA / undocumented", "All nationalities", "Country-specific criteria", "New American criteria", "Work authorization", OTHER],
 };
@@ -313,6 +314,12 @@ function fieldCategories(field: DirectoryFilterField, values: readonly string[])
 }
 
 export function getAwardDirectoryCategories(input: DirectoryFilterInput): Record<DirectoryFilterField, string[]> {
+  const reviewed = input.reviewedCategories;
+  if (reviewed && (Object.keys(categoryOrder) as DirectoryFilterField[]).every(field =>
+    Array.isArray(reviewed[field]) && reviewed[field].length > 0 && reviewed[field].every(value => categoryOrder[field].includes(value)))) {
+    return Object.fromEntries((Object.keys(categoryOrder) as DirectoryFilterField[]).map(field =>
+      [field, categoryOrder[field].filter(value => reviewed[field].includes(value))])) as Record<DirectoryFilterField, string[]>;
+  }
   return {
     academicLevels: fieldCategories("academicLevels", input.academicLevels),
     disciplines: fieldCategories("disciplines", input.disciplines),
@@ -326,4 +333,15 @@ export function directoryFilterOptions(field: DirectoryFilterField, categories: 
   return categoryOrder[field]
     .filter((value) => present.has(value))
     .map((value) => ({ value, label: labels.get(value) ?? value }));
+}
+
+/** Broad discovery scopes include their specific searches, never extra eligibility. */
+export function directoryCategoryMatches(field: DirectoryFilterField, categories: readonly string[], value: string): boolean {
+ if (categories.includes(value)) return true;
+ if (field === "disciplines" && categories.includes("No field restriction")) {
+  return categoryOrder.disciplines.includes(value) && !["No field restriction", "Multiple fields (check courses)", OTHER].includes(value);
+ }
+ // Nationality-neutral awards include these searches; DACA and work permission
+ // need their own reviewed statements and are never inferred from nationality.
+ return field === "citizenship" && categories.includes("All nationalities") && ["U.S. citizens", "U.S. nationals", "U.S. permanent residents"].includes(value);
 }

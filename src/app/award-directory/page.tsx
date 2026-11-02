@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { getReviewedAwardDirectoryCategories } from "@/lib/award-directory-category-reviews.server";
 import { AwardDiscoveryWorkspace } from "@/components/award-discovery-workspace";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
@@ -185,7 +186,10 @@ function mapSharedAwards(
       sharedChangesByAwardId.get(award.id) || [],
     );
 
+    const reviewedCategories = award.detailsCheckedAt && !award.factsNeedReview
+      ? getReviewedAwardDirectoryCategories(award.id, facts) : undefined;
     return {
+      ...(reviewedCategories ? { reviewedCategories } : {}),
       id: award.id,
       name: award.name,
       slug: award.slug,

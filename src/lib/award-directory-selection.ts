@@ -1,4 +1,4 @@
-import type { DirectoryFilterField, DirectoryFilterInput } from "./award-directory-filters";
+import { directoryCategoryMatches, type DirectoryFilterField, type DirectoryFilterInput } from "./award-directory-filters";
 
 export type DirectorySelections = Record<DirectoryFilterField, readonly string[]>;
 
@@ -7,7 +7,7 @@ const fields: readonly DirectoryFilterField[] = ["academicLevels", "disciplines"
 /** Choices within one category are alternatives; separate categories combine. */
 export function matchesDirectorySelections(categories: DirectoryFilterInput, selections: DirectorySelections): boolean {
   return fields.every((field) =>
-    selections[field].length === 0 || selections[field].some((value) => categories[field].includes(value)),
+    selections[field].length === 0 || selections[field].some((value) => directoryCategoryMatches(field, categories[field], value)),
   );
 }
 

@@ -9,7 +9,7 @@ import {
 const OTHER = "Other / not listed";
 const fields: DirectoryFilterField[] = ["academicLevels", "disciplines", "citizenship"];
 const ordered: Record<DirectoryFilterField, string[]> = {
-  academicLevels: ["High school", "Undergraduate", "Recent graduate", "Graduate", "Master's", "Doctoral", "Professional", OTHER],
+  academicLevels: ["High school", "Undergraduate", "Recent graduate", "Degree holder", "Graduate", "Master's", "Doctoral", "Professional", OTHER],
   disciplines: ["STEM", "Engineering", "Computing & data", "Mathematics", "Natural sciences", "Environment & earth sciences", "Social sciences & policy", "Arts", "Business & law", "Health & medicine", "Education", "No field restriction", "Multiple fields (check courses)", OTHER],
   citizenship: ["U.S. citizens", "U.S. nationals", "U.S. permanent residents", "DACA / undocumented", "All nationalities", "Country-specific criteria", "New American criteria", "Work authorization", OTHER],
 };
