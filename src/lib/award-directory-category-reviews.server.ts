@@ -4,7 +4,7 @@ import type { DirectoryFilterField } from "./award-directory-filters";
 import type { PublicAwardFacts } from "./public-award-facts";
 
 type ReviewFacts = Pick<PublicAwardFacts, "academicLevels" | "disciplines" | "citizenship" | "eligibility">;
-// Versioned 2026-11-02 review of all 50 current programs. Tags are discovery
+// Versioned 2026-11-02 review of all 60 current programs. Tags are discovery
 // aids, not new eligibility claims. Official provider guidance and the exact
 // review decisions are retained in the private release audit.
 // Only identity + relevant approved details bind a review. Dates/amounts can
@@ -918,6 +918,168 @@ const reviews: Readonly<Record<string, Record<DirectoryFilterField, readonly str
     "citizenship": [
       "U.S. citizens",
       "Country-specific criteria"
+    ]
+  },
+  "047cf528bab82e23df56615b3900e3b65e095ef8fb0d904a663b54221ee5d409": {
+    "academicLevels": [
+      "Undergraduate"
+    ],
+    "disciplines": [
+      "Social sciences & policy",
+      "Arts",
+      "Business & law",
+      "Multiple fields (check courses)"
+    ],
+    "citizenship": [
+      "U.S. citizens",
+      "Country-specific criteria"
+    ]
+  },
+  "b74194d3481be7c00a8094216d71b2fa58e241a6c4a28405510f95ef6d03772a": {
+    "academicLevels": [
+      "Graduate",
+      "Master's",
+      "Doctoral"
+    ],
+    "disciplines": [
+      "Social sciences & policy",
+      "Arts"
+    ],
+    "citizenship": [
+      "All nationalities"
+    ]
+  },
+  "1120d652dd4c166191192e57e701f0f2b9129954e68eddbfe4846e7da39272b5": {
+    "academicLevels": [
+      "Degree holder",
+      "Graduate",
+      "Master's"
+    ],
+    "disciplines": [
+      "STEM",
+      "Engineering",
+      "Computing & data",
+      "Mathematics",
+      "Natural sciences",
+      "Environment & earth sciences",
+      "Social sciences & policy",
+      "Arts",
+      "Business & law",
+      "Health & medicine",
+      "Multiple fields (check courses)"
+    ],
+    "citizenship": [
+      "Other / not listed"
+    ]
+  },
+  "0c26e4ec08bc14cf066ee72ef3e2fdd9de79bc41b3806ba8de4e902fcca8105b": {
+    "academicLevels": [
+      "Undergraduate",
+      "Graduate",
+      "Doctoral"
+    ],
+    "disciplines": [
+      "STEM",
+      "Natural sciences"
+    ],
+    "citizenship": [
+      "U.S. citizens"
+    ]
+  },
+  "51cec14247c7fd5e62cb732c98e5880609ffc9150c5d996912b8a0f10ed86a3e": {
+    "academicLevels": [
+      "Graduate",
+      "Doctoral"
+    ],
+    "disciplines": [
+      "STEM",
+      "Engineering",
+      "Computing & data",
+      "Mathematics",
+      "Natural sciences"
+    ],
+    "citizenship": [
+      "U.S. citizens"
+    ]
+  },
+  "205094e6f2c211ad68e9354ea44e6b4f02e63b4b4862a6c82bc2a11ea9973931": {
+    "academicLevels": [
+      "High school",
+      "Undergraduate",
+      "Degree holder",
+      "Professional"
+    ],
+    "disciplines": [
+      "No field restriction"
+    ],
+    "citizenship": [
+      "U.S. citizens"
+    ]
+  },
+  "beaf2f866bb2da1479df64470eea442f5b9fc4b1faf21b620f060b64bb046732": {
+    "academicLevels": [
+      "Undergraduate",
+      "Degree holder",
+      "Graduate"
+    ],
+    "disciplines": [
+      "No field restriction"
+    ],
+    "citizenship": [
+      "Other / not listed"
+    ]
+  },
+  "c0a67ab8f363a055190a9ad1208dfbfe48c5660e9b17d8620472ef837d6e310f": {
+    "academicLevels": [
+      "Undergraduate",
+      "Recent graduate",
+      "Degree holder"
+    ],
+    "disciplines": [
+      "STEM",
+      "Social sciences & policy",
+      "Arts",
+      "Business & law",
+      "Health & medicine",
+      "Education"
+    ],
+    "citizenship": [
+      "U.S. citizens",
+      "U.S. permanent residents",
+      "Country-specific criteria"
+    ]
+  },
+  "02cc85032fb3e8b024c3ebac090a73b6828540ff2da9037e6d8fa0c90021036e": {
+    "academicLevels": [
+      "Graduate",
+      "Master's",
+      "Doctoral"
+    ],
+    "disciplines": [
+      "STEM",
+      "Engineering",
+      "Computing & data",
+      "Mathematics",
+      "Natural sciences",
+      "Environment & earth sciences"
+    ],
+    "citizenship": [
+      "U.S. citizens",
+      "U.S. permanent residents",
+      "Country-specific criteria"
+    ]
+  },
+  "b46326db6af539a32c62cdaa15a0169907a35aad328de50ecfebad536dfe563e": {
+    "academicLevels": [
+      "Undergraduate",
+      "Graduate"
+    ],
+    "disciplines": [
+      "No field restriction"
+    ],
+    "citizenship": [
+      "U.S. citizens",
+      "All nationalities"
     ]
   }
 };

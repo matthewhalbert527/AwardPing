@@ -7,7 +7,7 @@ import type { Stage1MemberRow, Stage1PublicationEntry, Stage1PublicationIndex, S
 const uuid = z.string().uuid();
 const timestamp = z.string().datetime({ offset: true }).refine(value => Date.parse(value) <= Date.now() + 300_000);
 const registry = z.object({
-  cohort_key: z.string(), launch_rank: z.number().int().min(26).max(50), canonical_name: z.string(),
+  cohort_key: z.string(), launch_rank: z.number().int().min(26).max(60), canonical_name: z.string(),
   canonical_shared_award_id: uuid, canonical_slug: z.string(), official_homepage: z.string().url().startsWith("https://"),
   publication_state: z.enum(["pending", "verified_beta", "revalidation_pending", "suspended"]),
   state_reason: z.string().min(1), policy_version: z.literal("program-basic-expansion-v1"),
@@ -22,18 +22,18 @@ const identityRow = z.object({ registry, members: z.array(member).length(1), sou
 const snapshot = z.object({ schema: z.literal("awardping.program-award-expansion-publication.v1"), epoch: uuid,
   awards: z.array(identityRow.extend({ basic_fact: z.object({ award_id: uuid, cohort_key: z.string(), snapshot_id: uuid,
       kind: z.literal("automated_source_verified_basics"), current: z.boolean(), public_facts: z.unknown(), verified_at: timestamp }).strict(),
-  }).strict()).max(25),
+  }).strict()).max(35),
 }).strict();
 const identitiesSnapshot = z.object({ schema: z.literal("awardping.program-award-expansion-identities.v1"), epoch: uuid,
-  awards: z.array(identityRow).max(25),
+  awards: z.array(identityRow).max(35),
 }).strict();
 
-/** The original release is validated first. Only the five reviewed five-award batches can
+/** The original release is validated first. Only the seven reviewed five-award batches can
  * extend it; basic information never becomes a complete-program approval.
  */
 function appendExpansionIdentities(index: Stage1PublicationIndex, parsed: { epoch: string; awards: Array<z.infer<typeof identityRow>> }, epoch: string): Stage1PublicationIndex {
   if (!index.available || index.verifiedEntries.length !== 25 || index.entries.length !== 25) throw Error("Original award release is unavailable.");
-  if (parsed.epoch !== epoch || ![0, 5, 10, 15, 20, 25].includes(parsed.awards.length)) throw Error("Expansion publication is incomplete.");
+  if (parsed.epoch !== epoch || ![0, 5, 10, 15, 20, 25, 30, 35].includes(parsed.awards.length)) throw Error("Expansion publication is incomplete.");
   if (!parsed.awards.length) return index;
   const known = new Map(cohort.awards.map(award => [award.cohort_key, award]));
   const seen = new Set<string>(), sources = new Set<string>();

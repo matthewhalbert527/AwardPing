@@ -225,6 +225,96 @@
       "canonical_name": "Chevening Scholarships",
       "canonical_slug": "chevening-scholarships",
       "official_homepage": "https://www.chevening.org/scholarships/"
+    },
+    {
+      "cohort_key": "michel_david_weill",
+      "batch": 6,
+      "launch_rank": 51,
+      "canonical_shared_award_id": "26a0ac65-4d92-4974-a2bc-f5c6342127d3",
+      "canonical_name": "Michel David-Weill Scholarship",
+      "canonical_slug": "michel-david-weill-scholarship",
+      "official_homepage": "https://www.sciencespo.fr/students/en/fees-funding/bursaries-financial-aid/david-weill-scholarship/"
+    },
+    {
+      "cohort_key": "ertegun",
+      "batch": 6,
+      "launch_rank": 52,
+      "canonical_shared_award_id": "df1c758d-595f-47fc-a2ac-33b27c2217f9",
+      "canonical_name": "Ertegun Graduate Scholarship Programme in the Humanities",
+      "canonical_slug": "ertegun-graduate-scholarship-programme-in-the-humanities",
+      "official_homepage": "https://www.ertegun.ox.ac.uk/"
+    },
+    {
+      "cohort_key": "eth_esop",
+      "batch": 6,
+      "launch_rank": 53,
+      "canonical_shared_award_id": "06bc1a46-84be-44cb-b26c-c16e627da468",
+      "canonical_name": "ETH Zurich Excellence Scholarship & Opportunity Programme",
+      "canonical_slug": "eth-zurich-excellence-scholarship-opportunity-programme",
+      "official_homepage": "https://ethz.ch/students/en/studies/financial/scholarships/excellencescholarship.html"
+    },
+    {
+      "cohort_key": "nnsa_ssgf",
+      "batch": 6,
+      "launch_rank": 54,
+      "canonical_shared_award_id": "f71f5cb2-5c3f-4d6e-a7e2-db0452e24bfa",
+      "canonical_name": "DOE NNSA Stockpile Science Graduate Fellowship",
+      "canonical_slug": "ssgf",
+      "official_homepage": "https://www.krellinst.org/ssgf/"
+    },
+    {
+      "cohort_key": "cbyx_young_professionals",
+      "batch": 6,
+      "launch_rank": 55,
+      "canonical_shared_award_id": "c7194f44-c221-4cb7-a625-a718fae92011",
+      "canonical_name": "Congress-Bundestag Youth Exchange for Young Professionals",
+      "canonical_slug": "congress-bundestag-youth-exchange-for-young-professionals",
+      "official_homepage": "https://culturalvistas.org/our-programs/internships-fellowships/congress-bundestag-youth-exchange-for-young-professionals-cbyx"
+    },
+    {
+      "cohort_key": "daad_summer",
+      "batch": 7,
+      "launch_rank": 56,
+      "canonical_shared_award_id": "a122feec-a344-40f2-bd0b-1f1d5967f8fb",
+      "canonical_name": "DAAD University Summer Course Grant",
+      "canonical_slug": "university-summer-course-grant",
+      "official_homepage": "https://www.daad.org/en/find-funding/scholarship-database/?detail_to_show=0&detail_to_show=50035295&onlydaad=1&origin=44&pg=2&q=&status=0&subject=0&target=44&type=a"
+    },
+    {
+      "cohort_key": "princeton_latin_america",
+      "batch": 7,
+      "launch_rank": 57,
+      "canonical_shared_award_id": "99e55844-4652-4014-ac8a-50ac46a1306b",
+      "canonical_name": "Princeton in Latin America Fellowship",
+      "canonical_slug": "princeton-in-latin-america-fellowship",
+      "official_homepage": "https://princetoninlatinamerica.org/"
+    },
+    {
+      "cohort_key": "quad",
+      "batch": 7,
+      "launch_rank": 58,
+      "canonical_shared_award_id": "191aefc3-b4d8-4792-b53b-2511afeb36d9",
+      "canonical_name": "Quad Fellowship",
+      "canonical_slug": "the-quad-fellowship",
+      "official_homepage": "https://www.quadfellowship.org/"
+    },
+    {
+      "cohort_key": "nnsa_lrgf",
+      "batch": 7,
+      "launch_rank": 59,
+      "canonical_shared_award_id": "798ed087-dbe4-4e8f-b1ea-1b84aaae6e82",
+      "canonical_name": "DOE NNSA Laboratory Residency Graduate Fellowship",
+      "canonical_slug": "laboratory-residency-graduate-fellowship-doe-nnsa-lrgf",
+      "official_homepage": "https://www.krellinst.org/lrgf/"
+    },
+    {
+      "cohort_key": "projects_for_peace",
+      "batch": 7,
+      "launch_rank": 60,
+      "canonical_shared_award_id": "0859c2de-0f88-45b3-bd7b-98a404dbaf85",
+      "canonical_name": "Projects for Peace",
+      "canonical_slug": "projects-for-peace",
+      "official_homepage": "https://www.middlebury.edu/projects-for-peace"
     }
   ]
 }

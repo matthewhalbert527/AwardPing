@@ -4,7 +4,7 @@ import { getReviewedAwardDirectoryCategories, directoryCategoryReviewKey } from 
 import { getAwardDirectoryCategories } from "./award-directory-filters";
 import { matchesDirectorySelections } from "./award-directory-selection";
 
-// Literal independent review expectations for the actual 50 current awards.
+// Literal independent review expectations for the actual 60 current awards.
 const cases = [
   {
     "cohort": "amgen_us",
@@ -1929,18 +1929,365 @@ const cases = [
         "Country-specific criteria"
       ]
     }
+  },
+  {
+    "cohort": "michel_david_weill",
+    "id": "26a0ac65-4d92-4974-a2bc-f5c6342127d3",
+    "facts": {
+      "academicLevels": [
+        "Undergraduate seniors."
+      ],
+      "disciplines": [
+        "Eligible Sciences Po master’s programmes; journalism, external dual degrees and executive courses are excluded."
+      ],
+      "citizenship": [
+        "U.S. citizens; dual European citizens are ineligible."
+      ],
+      "eligibility": [
+        "U.S. undergraduate seniors at eligible partner institutions, aged 19–25, with at least a 3.7 GPA; admission to an eligible Sciences Po master’s is required. Dual European citizens are ineligible.",
+        "Eligible two-year Sciences Po master’s programmes exclude journalism, the joint journalism/international affairs master’s, partner-university dual degrees and executive courses."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "Undergraduate"
+      ],
+      "disciplines": [
+        "Social sciences & policy",
+        "Arts",
+        "Business & law",
+        "Multiple fields (check courses)"
+      ],
+      "citizenship": [
+        "U.S. citizens",
+        "Country-specific criteria"
+      ]
+    }
+  },
+  {
+    "cohort": "ertegun",
+    "id": "df1c758d-595f-47fc-a2ac-33b27c2217f9",
+    "facts": {
+      "academicLevels": [
+        "Master’s and doctoral applicants starting a new full-time graduate course."
+      ],
+      "disciplines": [
+        "Humanities, arts and languages, plus the specifically listed Global and Area Studies and archaeology courses."
+      ],
+      "citizenship": [
+        "All nationalities."
+      ],
+      "eligibility": [
+        "Start a new eligible full-time Oxford graduate course; funding does not cover later years of an existing course.",
+        "Select Ertegun in the graduate application and submit the required supporting statement."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "Graduate",
+        "Master's",
+        "Doctoral"
+      ],
+      "disciplines": [
+        "Social sciences & policy",
+        "Arts"
+      ],
+      "citizenship": [
+        "All nationalities"
+      ]
+    }
+  },
+  {
+    "cohort": "eth_esop",
+    "id": "06bc1a46-84be-44cb-b26c-c16e627da468",
+    "facts": {
+      "academicLevels": [
+        "Bachelor’s graduates applying for a first eligible Master’s programme."
+      ],
+      "disciplines": [
+        "Eligible ETH Zurich Master’s programmes; MAS programmes are excluded."
+      ],
+      "citizenship": [],
+      "eligibility": [
+        "A very strong bachelor’s result (top 10%, grade A by self-assessment); applicants already enrolled in an ETH master’s or holding a master’s degree are ineligible.",
+        "Apply through eApply and submit the required master’s thesis pre-proposal."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "Degree holder",
+        "Graduate",
+        "Master's"
+      ],
+      "disciplines": [
+        "STEM",
+        "Engineering",
+        "Computing & data",
+        "Mathematics",
+        "Natural sciences",
+        "Environment & earth sciences",
+        "Social sciences & policy",
+        "Arts",
+        "Business & law",
+        "Health & medicine",
+        "Multiple fields (check courses)"
+      ],
+      "citizenship": [
+        "Other / not listed"
+      ]
+    }
+  },
+  {
+    "cohort": "nnsa_ssgf",
+    "id": "f71f5cb2-5c3f-4d6e-a7e2-db0452e24bfa",
+    "facts": {
+      "academicLevels": [
+        "Undergraduate seniors and first- or second-year doctoral students."
+      ],
+      "disciplines": [
+        "High-energy-density physics, nuclear science and materials under extreme conditions."
+      ],
+      "citizenship": [
+        "U.S. citizens."
+      ],
+      "eligibility": [
+        "U.S. citizens entering full-time doctoral study at an accredited U.S. university; senior undergraduates and first- or second-year doctoral students in supported research areas may apply.",
+        "Complete a 12-week NNSA laboratory research practicum."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "Undergraduate",
+        "Graduate",
+        "Doctoral"
+      ],
+      "disciplines": [
+        "STEM",
+        "Natural sciences"
+      ],
+      "citizenship": [
+        "U.S. citizens"
+      ]
+    }
+  },
+  {
+    "cohort": "nnsa_lrgf",
+    "id": "798ed087-dbe4-4e8f-b1ea-1b84aaae6e82",
+    "facts": {
+      "academicLevels": [
+        "First-, second- or third-year doctoral students."
+      ],
+      "disciplines": [
+        "Supported engineering and applied sciences, physics, materials, mathematics and computational science."
+      ],
+      "citizenship": [
+        "U.S. citizens."
+      ],
+      "eligibility": [
+        "U.S. citizens in the first, second or third year of full-time Ph.D. study at an accredited U.S. university, with at least 18 months remaining when funding starts.",
+        "Complete at least two 12-week NNSA laboratory research residencies."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "Graduate",
+        "Doctoral"
+      ],
+      "disciplines": [
+        "STEM",
+        "Engineering",
+        "Computing & data",
+        "Mathematics",
+        "Natural sciences"
+      ],
+      "citizenship": [
+        "U.S. citizens"
+      ]
+    }
+  },
+  {
+    "cohort": "cbyx_young_professionals",
+    "id": "c7194f44-c221-4cb7-a625-a718fae92011",
+    "facts": {
+      "academicLevels": [
+        "High-school graduates, college students and young professionals meeting the age and experience requirements."
+      ],
+      "disciplines": [
+        "All career fields."
+      ],
+      "citizenship": [
+        "U.S. citizens."
+      ],
+      "eligibility": [
+        "U.S. citizens aged 18½–24 on August 1 of the programme year, with a high-school diploma and relevant career experience.",
+        "Prior German is not required; restrictions apply to certain State Department/USAID employees and their immediate families."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "High school",
+        "Undergraduate",
+        "Degree holder",
+        "Professional"
+      ],
+      "disciplines": [
+        "No field restriction"
+      ],
+      "citizenship": [
+        "U.S. citizens"
+      ]
+    }
+  },
+  {
+    "cohort": "daad_summer",
+    "id": "a122feec-a344-40f2-bd0b-1f1d5967f8fb",
+    "facts": {
+      "academicLevels": [
+        "Undergraduate students and graduates, subject to the programme’s progression and country/status rules."
+      ],
+      "disciplines": [
+        "All subject areas."
+      ],
+      "citizenship": [],
+      "eligibility": [
+        "Undergraduates must complete at least two academic years before funding begins. Final-year applicants must continue directly into postgraduate study. Courses are taught in German; country and applicant-status requirements also apply."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "Undergraduate",
+        "Degree holder",
+        "Graduate"
+      ],
+      "disciplines": [
+        "No field restriction"
+      ],
+      "citizenship": [
+        "Other / not listed"
+      ]
+    }
+  },
+  {
+    "cohort": "princeton_latin_america",
+    "id": "99e55844-4652-4014-ac8a-50ac46a1306b",
+    "facts": {
+      "academicLevels": [
+        "Graduating seniors, recent graduates and early-career degree holders."
+      ],
+      "disciplines": [
+        "Broad fields including STEM, social sciences, humanities, health, law, policy, education, international relations and communications."
+      ],
+      "citizenship": [
+        "U.S. citizens, permanent residents and eligible international graduates; some placements have nationality or visa restrictions."
+      ],
+      "eligibility": [
+        "Graduating seniors and early-career professionals with a degree from an accredited U.S. or Canadian university; professional or advanced Spanish is required for nearly all placements.",
+        "Eligible international graduates may apply, subject to graduation timing and destination-country visa requirements."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "Undergraduate",
+        "Recent graduate",
+        "Degree holder"
+      ],
+      "disciplines": [
+        "STEM",
+        "Social sciences & policy",
+        "Arts",
+        "Business & law",
+        "Health & medicine",
+        "Education"
+      ],
+      "citizenship": [
+        "U.S. citizens",
+        "U.S. permanent residents",
+        "Country-specific criteria"
+      ]
+    }
+  },
+  {
+    "cohort": "quad",
+    "id": "191aefc3-b4d8-4792-b53b-2511afeb36d9",
+    "facts": {
+      "academicLevels": [
+        "Prospective or current master’s and Ph.D. students."
+      ],
+      "disciplines": [
+        "Eligible STEM programmes; clinical healthcare and listed business degrees are excluded."
+      ],
+      "citizenship": [
+        "Citizens or legal permanent residents of Australia, India, Japan, the United States, Brunei, Cambodia, Indonesia, Laos, Malaysia, Myanmar, the Philippines, Singapore, Thailand or Vietnam."
+      ],
+      "eligibility": [
+        "For the published U.S.-study route, applicants must have applied to, or be enrolled full-time in, an eligible U.S. STEM master’s or Ph.D. programme and meet English-language requirements.",
+        "Clinical healthcare and the listed business degrees are excluded."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "Graduate",
+        "Master's",
+        "Doctoral"
+      ],
+      "disciplines": [
+        "STEM",
+        "Engineering",
+        "Computing & data",
+        "Mathematics",
+        "Natural sciences",
+        "Environment & earth sciences"
+      ],
+      "citizenship": [
+        "U.S. citizens",
+        "U.S. permanent residents",
+        "Country-specific criteria"
+      ]
+    }
+  },
+  {
+    "cohort": "projects_for_peace",
+    "id": "0859c2de-0f88-45b3-bd7b-98a404dbaf85",
+    "facts": {
+      "academicLevels": [
+        "Students in any year at participating institutions, including graduating seniors."
+      ],
+      "disciplines": [
+        "All majors."
+      ],
+      "citizenship": [
+        "U.S. and international students."
+      ],
+      "eligibility": [
+        "Students must be enrolled at an eligible partner institution at application and nomination; proposals go through the campus liaison.",
+        "Students of any age, major or year may apply, including seniors carrying out projects after graduation. Projects can take place worldwide."
+      ]
+    },
+    "expected": {
+      "academicLevels": [
+        "Undergraduate",
+        "Graduate"
+      ],
+      "disciplines": [
+        "No field restriction"
+      ],
+      "citizenship": [
+        "U.S. citizens",
+        "All nationalities"
+      ]
+    }
   }
 ];
 
-describe("current 50-award directory category review", () => {
- it("reviews exactly 50 distinct identities and relevant-field bindings", () => { expect(cases).toHaveLength(50); expect(new Set(cases.map(r => r.id)).size).toBe(50); expect(new Set(cases.map(r => directoryCategoryReviewKey(r.id, r.facts))).size).toBe(50); });
+describe("current 60-award directory category review", () => {
+ it("reviews exactly 60 distinct identities and relevant-field bindings", () => { expect(cases).toHaveLength(60); expect(new Set(cases.map(r => r.id)).size).toBe(60); expect(new Set(cases.map(r => directoryCategoryReviewKey(r.id, r.facts))).size).toBe(60); });
  it.each(cases)("returns every supported $cohort category without changing source facts", row => { const before = structuredClone(row.facts); const reviewed = getReviewedAwardDirectoryCategories(row.id, row.facts); expect(reviewed).toEqual(row.expected); expect(getAwardDirectoryCategories({ ...row.facts, reviewedCategories: reviewed })).toEqual(row.expected); expect(row.facts).toEqual(before); });
  it.each(cases)("expires $cohort review for a different award or changed eligibility/audience", row => { expect(getReviewedAwardDirectoryCategories("wrong-award", row.facts)).toBeUndefined(); for (const field of ["academicLevels", "disciplines", "citizenship", "eligibility"] as const) expect(getReviewedAwardDirectoryCategories(row.id, { ...row.facts, [field]: [...row.facts[field], "Changed official rule"] })).toBeUndefined(); });
  it("preserves review after unrelated deadline and funding updates", () => { const row = cases.find(r => r.cohort === "noaa_hollings")!; const facts = { ...row.facts, deadline: "An unrelated new date", awardAmount: "$5,000" }; expect(getReviewedAwardDirectoryCategories(row.id, facts)).toEqual(row.expected); });
  it("fixes the combined Undergraduate plus STEM search for NOAA", () => { const row = cases.find(r => r.cohort === "noaa_hollings")!; expect(matchesDirectorySelections(row.expected, { academicLevels: ["Undergraduate"], disciplines: ["STEM"], citizenship: [] })).toBe(true); expect(row.expected.academicLevels).not.toContain("Graduate"); });
  it.each(["amgen_us", "astronaut", "daad_rise", "doe_csgf", "ellison_graduate", "gem", "rales", "suli", "samvid", "nsf_grfp"])("restores STEM discovery for %s", cohort => { const row = cases.find(r => r.cohort === cohort)!; expect(row.expected.disciplines).toContain("STEM"); });
  it("includes no-field-restriction programs in STEM and arts searches", () => { for (const row of cases.filter(r => r.expected.disciplines.includes("No field restriction"))) for (const discipline of ["STEM", "Arts"]) expect(matchesDirectorySelections(row.expected, { academicLevels: [], disciplines: [discipline], citizenship: [] })).toBe(true); });
- it("keeps the four unconfirmed citizenship fields explicitly unclassified", () => { expect(cases.filter(r => r.expected.citizenship.includes("Other / not listed")).map(r => r.cohort)).toEqual(["ellison_graduate", "ppia_jsi", "rotary_peace", "tillman"]); });
+ it("keeps unconfirmed citizenship fields explicitly unclassified", () => { expect(cases.filter(r => r.expected.citizenship.includes("Other / not listed")).map(r => r.cohort)).toEqual(["ellison_graduate", "ppia_jsi", "rotary_peace", "tillman", "eth_esop", "daad_summer"]); });
  it("does not accept malformed or unknown server categories", () => { const row = cases[0]; expect(getAwardDirectoryCategories({ ...row.facts, reviewedCategories: { academicLevels: ["Invented"], disciplines: ["STEM"], citizenship: ["U.S. citizens"] } }).academicLevels).toEqual(["Other / not listed"]); });
  it("returns independent arrays rather than exposing mutable shared review state", () => { const row=cases[0]; const first=getReviewedAwardDirectoryCategories(row.id,row.facts)!; first.disciplines.length=0; expect(getReviewedAwardDirectoryCategories(row.id,row.facts)).toEqual(row.expected); });
 });
