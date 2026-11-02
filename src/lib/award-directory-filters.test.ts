@@ -114,6 +114,40 @@ describe("award directory broad filter categories", () => {
     expect(result.citizenship).not.toContain("U.S. citizens");
   });
 
+  it("maps the complete KHS citizenship summary while keeping its inclusion clause separate", () => {
+    const citizenship = [
+      "No citizenship restriction. Stanford admission requirements and location/residency restrictions still apply.",
+      "Applicants with DACA status, no formal citizenship or undocumented status are also eligible.",
+    ] as const;
+    expect(getAwardDirectoryCategories(input("citizenship", [citizenship[0]])).citizenship).toEqual(["All nationalities"]);
+    expect(getAwardDirectoryCategories(input("citizenship", [citizenship[1]])).citizenship).toEqual(["DACA / undocumented"]);
+    expect(getAwardDirectoryCategories(input("citizenship", citizenship)).citizenship).toEqual(["DACA / undocumented", "All nationalities"]);
+  });
+
+  it("keeps the complete RISE citizenship summary qualified by country-specific criteria", () => {
+    const citizenship = [
+      "Eligibility is based on enrollment at a university/college in the United States, Canada, United Kingdom or Ireland; applicants of other nationalities can qualify under the conditions below.",
+      "Applicants without U.S., Canadian, British or Irish citizenship may apply if they have studied at a university/college in one of those countries for more than twelve months by the application deadline.",
+      "German citizens are eligible only with proof of having lived outside Germany for at least six years.",
+    ] as const;
+    expect(getAwardDirectoryCategories(input("citizenship", [citizenship[0]])).citizenship).toEqual(["Country-specific criteria"]);
+    expect(getAwardDirectoryCategories(input("citizenship", citizenship.slice(1))).citizenship).toEqual(["Country-specific criteria"]);
+    expect(getAwardDirectoryCategories(input("citizenship", citizenship)).citizenship).toEqual(["Country-specific criteria"]);
+  });
+
+  it.each([
+    "DACA",
+    "No citizenship restriction.",
+    "No citizenship restriction. Stanford admission requirements still apply.",
+    "Citizenship restrictions apply. Stanford admission requirements and location/residency restrictions still apply.",
+    "Applicants with DACA status, no formal citizenship or undocumented status are not eligible.",
+    "Eligibility is based on enrollment at a university/college in the United States, Canada, United Kingdom or Ireland; applicants of other nationalities cannot qualify under the conditions below.",
+    "Applicants without U.S., Canadian, British or Irish citizenship cannot apply if they have studied at a university/college in one of those countries for more than twelve months by the application deadline.",
+    "German citizens are eligible without proof of having lived outside Germany for at least six years.",
+  ])("does not infer the corrected citizenship aliases from unknown wording: %s", value => {
+    expect(getAwardDirectoryCategories(input("citizenship", [value])).citizenship).toEqual([OTHER]);
+  });
+
   it.each(fields)("returns only present %s options, deduplicated in the frozen order", field => {
     const values = ordered[field];
     const categories = [input(field, [...values].reverse()), input(field, values)];

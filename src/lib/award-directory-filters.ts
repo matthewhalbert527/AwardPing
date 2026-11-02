@@ -137,12 +137,21 @@ register("citizenship", ["U.S. citizens", "U.S. permanent residents"], ["U.S. ci
 register("citizenship", ["U.S. citizens", "U.S. nationals", "U.S. permanent residents"], [
   "U.S. citizen, national, or permanent resident", "U.S. citizen, U.S. national, or permanent resident of the United States.",
 ]);
-register("citizenship", ["DACA / undocumented"], ["DACA Recipient", "Undocumented students and applicants with DACA status"]);
-register("citizenship", ["All nationalities"], ["Citizens and residents of all countries are eligible"]);
+register("citizenship", ["DACA / undocumented"], [
+  "DACA Recipient", "Undocumented students and applicants with DACA status",
+  "Applicants with DACA status, no formal citizenship or undocumented status are also eligible.",
+]);
+register("citizenship", ["All nationalities"], [
+  "Citizens and residents of all countries are eligible",
+  "No citizenship restriction. Stanford admission requirements and location/residency restrictions still apply.",
+]);
 register("citizenship", ["U.S. citizens", "Country-specific criteria"], ["U.S. Dual Citizen"]);
 // Country names alone and qualified nationality conditions are not treated
 // as unrestricted citizenship statuses, including negated U.S. requirements.
 register("citizenship", ["Country-specific criteria"], [
+  "Eligibility is based on enrollment at a university/college in the United States, Canada, United Kingdom or Ireland; applicants of other nationalities can qualify under the conditions below.",
+  "Applicants without U.S., Canadian, British or Irish citizenship may apply if they have studied at a university/college in one of those countries for more than twelve months by the application deadline.",
+  "German citizens are eligible only with proof of having lived outside Germany for at least six years.",
   "Australia", "Canada", "New Zealand", "United Kingdom", "United States",
   "Citizens of any country outside the United Kingdom", "Dual citizens of the United Kingdom and another country",
   "U.S. citizen or U.S. national from American Samoa or the Commonwealth of the Northern Mariana Islands",
