@@ -36,6 +36,54 @@ function continuityFixture({anchorLabel='URL',previousLabel='Company',currentLab
  return{inspection,source,anchor,previous,current,candidate,paid,loadCapture};
 }
 
+function continuityDaadReorder({outsideReorder=false,duplicateOutside=false,programChange=false,linkChange=false}={}){
+ const source={id:'8d654c9d-e572-4488-94a3-e4238e7b1155',shared_award_id:'440d6985-ece9-48c4-ac30-65a739f60d65',url:'https://www.daad.org/en/find-funding/country-specific-information-for-us-applicants/',title:'Country guide',page_type:'application',admin_review_status:'open',text_collection_quality:null},heading='Advertisements by German Universities';
+ const make=(order,date,isCurrent)=>{
+  const application=isCurrent&&linkChange?'https://www.daad.org/changed-application/':'https://www.daad.org/apply/';
+  const program=isCurrent&&programChange?sentence+' Applicants must be citizens.':sentence,second='Applications require supporting materials.';
+  const outside=[{id:'body',kind:'p',text:program,heading:'Program'},{id:'materials',kind:'p',text:second,heading:'Program'}];
+  if(isCurrent&&outsideReorder)outside.reverse();
+  const html='<html><body>'+outside.map(b=>'<p>'+b.text+'</p>').join('')+'<a href="'+application+'">Apply</a><div class="bg-lightgrey u-p-medium js-ad-slider is-relative" role="region" aria-roledescription="Karussell" aria-labelledby="headline-11111111"><div class="u-flex-space-between"><h2 id="headline-11111111">'+heading+'</h2><span class="u-size-copy u-weight-semibold"><span class="js-slide-count">1</span>/3</span></div><div class="u-mb-medium"><div class="js-ad-slider-track">'+order.map(n=>'<div class="u-position-relative"><div class="u-mb-medium"><img alt=""></div><div><p class="u-dateline">'+heading+'</p><h3 class="u-size-large">University '+n+'</h3><p class="u-size-teaser">University '+n+' sponsored advertisement.</p><a class="o-more-link o-more-link--stretched" href="https://www.daad.org/en/university-ad/card-'+n+'/">Read more</a></div></div>').join('')+'</div></div></div>'+(duplicateOutside?'<p>University a sponsored advertisement.</p>':'')+'</body></html>';
+  const rows=[...outside,{id:'apply',kind:'source_link',text:application,heading:'Program',context:{source_attribute:'href',link_text:'Apply'}},...order.flatMap(n=>[{id:'card-'+n,kind:'p',text:'University '+n+' sponsored advertisement.',heading},{id:'link-'+n,kind:'source_link',text:'https://www.daad.org/en/university-ad/card-'+n+'/',heading,context:{source_attribute:'href',link_text:'Read more'}}]),...(duplicateOutside?[{id:'duplicate-outside',kind:'p',text:'University a sponsored advertisement.',heading:'Program'}]:[])];
+  let text='';const blocks=rows.map(b=>{if(text)text+='\n';const start=text.length;text+=b.text;return{...b,start_utf16:start,end_utf16:text.length};});
+  return buildProgramTextCapture({source,captured_at:date,acquisition:'http_html',extractor:{name:'fixture',version:'1'},content_type:'text/html',raw_bytes:Buffer.from(html),text,blocks});
+ };
+ const previous=make(['a','b','c'],'2026-10-31T20:00:00.000Z',false),current=make(['c','a','b'],'2026-10-31T20:01:00.000Z',true),ref=programTextReference(current),anchorRef=programTextReference(previous);
+ source.text_monitoring_state={schema:'awardping.program-text-state.v1',epoch,status:'baseline_ready',baseline_ref:ref,latest_ref:ref,successful_checks:8,first_captured_at:previous.captured_at,last_checked_at:current.captured_at};
+ const role={source_role:'application',revision:epoch,source_ids:[source.id],manifest_status:'reviewed_text',evidence:{schema:'awardping.program-text-source-role.v1',source_bindings:{[source.id]:{source_url:source.url,shared_award_id:source.shared_award_id}}}};
+ const context={registry:{cohort_key:'daad_study',canonical_shared_award_id:source.shared_award_id},roles:[role],sources:[source],memberIds:[source.shared_award_id],epoch,pending_alert_reviews:[]},approved=emptyProgramFactReview({...context,cycle:'2027'});
+ approved.capture_refs=[anchorRef];Object.assign(approved.fields.find(f=>f.field==='overview'),{status:'verified',items:[{value:'Example Award supports graduate study.',track:null,support:[{source_id:source.id,capture_id:previous.capture_id,block_id:'body',start_utf16:0,end_utf16:37,text:previous.text.slice(0,37)}]}]});
+ const comparison=buildProgramTextComparison(previous,current,{epoch,cycle_id:null}),packet_plan=buildProgramTextReviewPackets(comparison);
+ const candidate={...Object.fromEntries(REVIEWED_BASIC_CANDIDATE_KEYS.map(k=>[k,null])),id:candidateId,shared_award_id:source.shared_award_id,shared_award_source_id:source.id,source_url:source.url,candidate_scope:'program_text_change',status:'rejected',rejection_reason:'no_program_change',candidate_signature:comparison.comparison_id,previous_snapshot_ref:anchorRef,new_snapshot_ref:ref,
+  worker_metadata:{epoch,monitoring_contract:'program-text-v1',evidence_signature:comparison.comparison_id},prompt_payload:{comparison,packet_plan},ai_result:{responses:[],program_text_validation:{status:'no_program_change',comparison_id:comparison.comparison_id,reasons:[],changes:[]}},completed_at:'2026-10-31T20:02:00.000Z',actual_usage:{}};
+ const inspection={schema:'awardping.program-basic-continuity-inspection.v1',status:'ready',cohort_key:'daad_study',source_id:source.id,epoch,expected_head:head,snapshot_hash:'a'.repeat(64),input_review_hash:'b'.repeat(64),source_version:{source_id:source.id,owner_id:source.shared_award_id,url:source.url,epoch},selected_fields:['overview'],anchor_ref:anchorRef,current_ref:ref,repeat_ref:anchorRef,unchanged_basis:null,approved_review:approved,context,candidate,candidate_hash:reviewedBasicHash(candidate),paid_reservation:null};
+ return{inspection,source,previous,current,candidate,loadCapture:async r=>r.capture_id===previous.capture_id?previous:current};
+}
+
+describe('machine-only DAAD zero-packet reorder continuity',()=>{
+ it('cold-verifies the real zero-packet terminal record without calling or imitating a provider',async()=>{
+  const f=continuityDaadReorder(),v=(await prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).p_validation;
+  expect(v.kind).toBe('ordinary_zero_packet_no_change');expect(v.anchor_pair.mode).toBe('profiled_ancillary_reorder');expect(v.normal_validation.packet_plan.status).toBe('unchanged');
+  expect(v.normal_validation.responses).toEqual([]);expect(v.normal_validation.paid_reservation).toBeNull();expect(v.normal_validation.pair).toEqual(v.anchor_pair);
+ });
+ it.each([{outsideReorder:true},{duplicateOutside:true},{programChange:true},{linkChange:true}])('holds any outside ordering, duplicate, programme or application-link change %#',async opts=>{
+  const f=continuityDaadReorder(opts);await expect(prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).rejects.toThrow();
+ });
+ it.each([
+  f=>{f.candidate.model='gemini-fixture';},f=>{f.candidate.submitted_at='2026-10-31T20:01:00.000Z';},f=>{f.candidate.worker_metadata.program_text_claim_token=head;},
+  f=>{f.candidate.worker_metadata.gemini_spend_reservation_id=reservationId;},f=>{f.candidate.worker_metadata.provider_request_keys=[];},
+  f=>{f.candidate.prompt_payload.comparison.context.cycle_id='wrong-cycle';},f=>{f.candidate.ai_result.responses=[{}];},f=>{f.candidate.actual_usage={tokens:1};},
+ ])('rejects fabricated zero-packet, wrong-cycle, claimed or spent provenance %#',async edit=>{const f=continuityDaadReorder();edit(f);f.inspection.candidate_hash=reviewedBasicHash(f.candidate);await expect(prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).rejects.toThrow();});
+ it('runs through actual ordinary worker finalization with empty packets, then reconciles after the saved terminal result',async()=>{
+  const f=continuityDaadReorder(),order=[],row={...structuredClone(f.candidate),status:'pending',ai_result:null,completed_at:null};
+  f.source.text_monitoring_state={...f.source.text_monitoring_state,status:'awaiting_review',baseline_ref:programTextReference(f.previous)};
+  const repository={listCandidates:async()=>[row],verifyCandidate:async()=>{},recordReviewResult:async()=>{order.push('saved');return true;},
+   finishNoChange:async()=>{order.push('rejected');return true;},reconcileBasicContinuity:async()=>{order.push('continuity');return prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture});}};
+  const callbacks={loadCapture:f.loadCapture,readState:async()=>f.source.text_monitoring_state,compareAndSetState:async({next_state})=>{order.push('baseline');f.source.text_monitoring_state=next_state;return next_state;},publishProgramChange:()=>{throw Error('No alert permitted');}};
+  const result=await runOrdinaryReview(repository,{},callbacks,1,{source_ids:[f.source.id],epoch});expect(result[0].status).toBe('no_program_change');expect(order).toEqual(['saved','baseline','rejected','continuity']);
+ });
+});
+
 describe('head-preserving basic technical continuity',()=>{
  it('proves the real normal pair and approved anchor directly without changing approval/facts/dates',async()=>{
   const f=continuityFixture(),before=JSON.stringify(f.inspection),v=(await prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).p_validation;

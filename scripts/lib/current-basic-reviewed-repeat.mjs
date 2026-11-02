@@ -300,6 +300,20 @@ function continuityHiddenIdentity(previous,current){
  check(a.label===b.label&&a.html===b.html&&a.wrapper_start_tag===b.wrapper_start_tag&&a.form_start_tag===b.form_start_tag,'identical_hidden_field_required');
  return{kind:'hidden_gravityforms_honeypot_label',block_id:block.id,previous_marker:a,current_marker:b};
 }
+function continuityWidgetRemainder(capture,widget){
+ const excluded=new Set(widget.marker.excluded_support_block_ids),runs=[];let run=null;
+ for(const block of capture.blocks){
+  if(!excluded.has(block.id)){run=null;continue;}
+  check(widget.belongs(block,true),'reordered_widget_member_not_unique');
+  if(run&&/^\s*$/.test(capture.text.slice(run.end,block.start_utf16)))run.end=block.end_utf16;
+  else{run={start:block.start_utf16,end:block.end_utf16};runs.push(run);}
+ }
+ check(runs.length>0,'actual_widget_text_required');
+ const parts=[];let at=0;
+ for(const r of runs){check(r.start>=at,'overlapping_widget_text');parts.push(capture.text.slice(at,r.start),['raw_marked_ancillary_widget',widget.marker.profile]);at=r.end;}
+ parts.push(capture.text.slice(at));
+ return{parts,blocks:capture.blocks.filter(b=>!excluded.has(b.id)).map(semantic)};
+}
 
 /** Bind directly to the approved original, never an accumulating proof chain. */
 export function basicContinuityPair(previous,current,{epoch,cohort_key}){
@@ -313,6 +327,12 @@ export function basicContinuityPair(previous,current,{epoch,cohort_key}){
   const identity_markers=cohort_key==='schwarzman'&&!proof.rules.some(r=>r.kind==='hidden_gravityforms_honeypot_label')?[continuityHiddenIdentity(previous,current)]:[];
   return{mode:'profiled_ancillary_change',...proof,identity_markers,changed_blocks:comparison.changed_blocks};
  }
+ if(cohort_key==='daad_study'&&comparison.status==='unchanged'&&comparison.changed_blocks.length===0&&previous.text!==current.text){
+  const a=widgetMarker(previous),b=widgetMarker(current);
+  check(a.marker.profile===b.marker.profile&&reviewedBasicEqual(a.marker.container_attributes,b.marker.container_attributes)&&
+   reviewedBasicEqual(continuityWidgetRemainder(previous,a),continuityWidgetRemainder(current,b)),'reordered_text_outside_actual_sponsored_widget');
+  return{mode:'profiled_ancillary_reorder',rules:[],widget_proofs:[{profile:b.marker.profile,previous_marker:a.marker,current_marker:b.marker}],identity_markers:[],changed_blocks:[]};
+ }
  check(comparison.status==='unchanged'&&previous.text===current.text&&reviewedBasicEqual(previous.blocks,current.blocks),'identical_complete_program_text_required');
  const identity_markers=[],widget_proofs=[];
  if(cohort_key==='schwarzman'){
@@ -323,6 +343,24 @@ export function basicContinuityPair(previous,current,{epoch,cohort_key}){
   widget_proofs.push({profile:b.marker.profile,previous_marker:a.marker,current_marker:b.marker});
  }
  return{mode:'identical_program_text',rules:[],widget_proofs,identity_markers,changed_blocks:[]};
+}
+
+function continuityZeroPacket(candidate,previous,current,epoch,pair){
+ check(exact(candidate,REVIEWED_BASIC_CANDIDATE_KEYS)&&candidate.candidate_scope==='program_text_change'&&candidate.status==='rejected'&&candidate.rejection_reason==='no_program_change'&&
+  candidate.published_at===null&&candidate.model===null&&candidate.gemini_batch_name===null&&candidate.submitted_at===null&&reviewedBasicEqual(candidate.actual_usage,{})&&
+  candidate.shared_award_source_id===current.source.id&&candidate.shared_award_id===current.source.shared_award_id&&candidate.source_url===current.source.url&&
+  candidate.worker_metadata?.monitoring_contract==='program-text-v1'&&candidate.worker_metadata.epoch===epoch&&candidate.worker_metadata.evidence_signature===candidate.candidate_signature&&
+  !['gemini_spend_reservation_id','gemini_spend_attempt_token','program_text_claim_token','provider_request_keys'].some(k=>Object.hasOwn(candidate.worker_metadata,k))&&
+  reviewedBasicEqual(candidate.previous_snapshot_ref,programTextReference(previous))&&reviewedBasicEqual(candidate.new_snapshot_ref,programTextReference(current))&&
+  Number.isFinite(Date.parse(candidate.completed_at))&&Date.parse(candidate.completed_at)>=Date.parse(current.captured_at),'genuine_unpaid_zero_packet_terminal_required');
+ const comparison=buildProgramTextComparison(previous,current,{epoch,cycle_id:candidate.prompt_payload?.comparison?.context?.cycle_id}),packet_plan=buildProgramTextReviewPackets(comparison,candidate.prompt_payload?.packet_plan?.limits);
+ check(comparison.status==='unchanged'&&comparison.changed_blocks.length===0&&comparison.comparison_id===candidate.candidate_signature&&
+  reviewedBasicEqual(comparison,candidate.prompt_payload?.comparison)&&packet_plan.status==='unchanged'&&packet_plan.packets.length===0&&
+  reviewedBasicEqual(packet_plan,candidate.prompt_payload?.packet_plan)&&exact(candidate.ai_result,['responses','program_text_validation'])&&
+  reviewedBasicEqual(candidate.ai_result.responses,[]),'exact_zero_packet_comparison_required');
+ const validation=validateProgramTextReviewResult(comparison,packet_plan,[]);
+ check(reviewedBasicEqual(validation,candidate.ai_result.program_text_validation)&&reviewedBasicEqual(validation,{status:'no_program_change',comparison_id:comparison.comparison_id,reasons:[],changes:[]}),'saved_zero_packet_validation_changed');
+ return{schema:'awardping.basic-continuity-zero-packet-validation.v1',candidate,candidate_hash:reviewedBasicHash(candidate),paid_reservation:null,comparison,packet_plan,responses:[],validation,pair};
 }
 
 function continuityReview(approved,selected,sourceId,anchor,current,widgets){
@@ -371,10 +409,15 @@ export async function prepareBasicContinuity(inspection,{loadCapture,now=()=>Dat
  if(i.candidate!==null){
   previous=await cold(i.candidate.previous_snapshot_ref);
   check(i.unchanged_basis===null&&reviewedBasicEqual(i.repeat_ref,i.candidate.previous_snapshot_ref)&&reviewedBasicEqual(i.candidate.new_snapshot_ref,ref)&&reviewedBasicHash(i.candidate)===i.candidate_hash,'current_normal_candidate_changed');
-  const inspection={schema:REVIEWED_BASIC_REPEAT_INSPECTION_SCHEMA,packet:{schema:'awardping.current-basic-award-context.v1',head_id:i.expected_head,context},candidate:i.candidate,candidate_hash:i.candidate_hash,paid_reservation:i.paid_reservation};
-  normal_validation=(await prepareCurrentBasicReviewedRepeat({inspection,review:rebound.review,verified_at},{...context,loadCapture:cold})).p_validation;
-  basicContinuityPair(previous,current,{epoch:i.epoch,cohort_key:i.cohort_key});
-  kind='ordinary_no_program_change';
+  const normalPair=basicContinuityPair(previous,current,{epoch:i.epoch,cohort_key:i.cohort_key});
+  if(i.cohort_key==='daad_study'&&normalPair.mode==='profiled_ancillary_reorder'){
+   check(i.paid_reservation===null,'zero_packet_cannot_have_paid_attempt');
+   normal_validation=continuityZeroPacket(i.candidate,previous,current,i.epoch,normalPair);kind='ordinary_zero_packet_no_change';
+  }else{
+   const inspection={schema:REVIEWED_BASIC_REPEAT_INSPECTION_SCHEMA,packet:{schema:'awardping.current-basic-award-context.v1',head_id:i.expected_head,context},candidate:i.candidate,candidate_hash:i.candidate_hash,paid_reservation:i.paid_reservation};
+   normal_validation=(await prepareCurrentBasicReviewedRepeat({inspection,review:rebound.review,verified_at},{...context,loadCapture:cold})).p_validation;
+   kind='ordinary_no_program_change';
+  }
  }else{
   previous=await cold(i.repeat_ref);
   check(i.candidate_hash===null&&i.paid_reservation===null&&
