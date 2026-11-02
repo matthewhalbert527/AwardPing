@@ -69,19 +69,40 @@ const VALIDATION_SENTENCE='This field is for validation purposes and should be l
 const WIDGET_PROFILES=Object.freeze([
  {source_id:'0f217532-3638-4cc4-8548-7ae9f4eec489',owner:'592d1ab0-7eff-402a-82ba-90d19559aa7f',url:'https://www.jamesmadison.gov/fellowship-information/fellowship-eligibility',profile:'james_madison_sidebar_testimonials.v1',selector:'div#block-views-block-testimonial-block-block-1.views-element-container',card_selector:'.jmf1-sidebar-testimonial',card_count:3,heading:null},
  ...[['bd79bc43-dd42-4f0b-8323-7c981587b261','https://pdsoros.org/pd-soros-recommendations-a-guide-for-applicants/'],['c2affec3-e89a-4ada-b1eb-955ad72e7646','https://pdsoros.org/guidance-for-recommenders/'],['47c05c1b-05bd-4a39-821f-2d6c1420c197','https://pdsoros.org/fellowship-financial-support/'],['4e4cfa3e-fb2a-4ea7-a792-6da5df9ee6b4','https://pdsoros.org/musicians-applying-for-the-pd-soros-fellowship/']].map(([source_id,url])=>({source_id,owner:'3cf7c610-0246-4dfb-b26c-289254e40ce6',url,profile:'soros_featured_fellows.v1',selector:'div.wp-block-acf-featured-fellows',card_selector:'ul.fellow-list.fellow-list--stacked > li > article.p-person-card.is-fellow',card_count:2,heading:'Featured Fellows'})),
- {source_id:'56aa30ee-164e-489a-ae5c-f2902dbb0db5',owner:'440d6985-ece9-48c4-ac30-65a739f60d65',url:'https://www.daad.org/en/find-funding/scholarship-database/?type=a&q=&status=0&subject=0&onlydaad=1&detail_to_show=0&target=44&origin=44&pg=1&detail_to_show=50026200',profile:'daad_sponsored_university_carousel.v1',selector:'div.bg-lightgrey.u-p-medium.js-ad-slider.is-relative[role="region"][aria-roledescription="Karussell"]',card_selector:'.js-ad-slider-track > div.u-position-relative',card_count:11,heading:'Advertisements by German Universities'},
- {source_id:'8d654c9d-e572-4488-94a3-e4238e7b1155',owner:'440d6985-ece9-48c4-ac30-65a739f60d65',url:'https://www.daad.org/en/find-funding/country-specific-information-for-us-applicants/',profile:'daad_sponsored_university_carousel.v1',selector:'div.bg-lightgrey.u-p-medium.js-ad-slider.is-relative[role="region"][aria-roledescription="Karussell"]',card_selector:'.js-ad-slider-track > div.u-position-relative',card_count:11,heading:'Advertisements by German Universities'},
+ ...[['56aa30ee-164e-489a-ae5c-f2902dbb0db5','https://www.daad.org/en/find-funding/scholarship-database/?type=a&q=&status=0&subject=0&onlydaad=1&detail_to_show=0&target=44&origin=44&pg=1&detail_to_show=50026200'],['8d654c9d-e572-4488-94a3-e4238e7b1155','https://www.daad.org/en/find-funding/country-specific-information-for-us-applicants/'],['88906939-65e7-492d-a671-da56678dfecd','https://www.daad.org/en/find-funding/scholarship-database/?origin=44&status=3&type=a&q=&onlydaad=1&language=en&detail_to_show=50026200&tab=']].map(([source_id,url])=>({source_id,owner:'440d6985-ece9-48c4-ac30-65a739f60d65',url,profile:'daad_sponsored_university_carousel.v1',selector:'div.bg-lightgrey.u-p-medium.js-ad-slider.is-relative[role="region"][aria-roledescription="Karussell"]',card_selector:'.js-ad-slider-track > div.u-position-relative',card_count:null,heading:'Advertisements by German Universities'})),
 ].map(Object.freeze));
 const flow=s=>s.replace(/\s+/g,' ').trim();
 function rawTextVariants(node){const values=[];const walk=n=>{if(n.type==='text')values.push(n.data);else if(!['script','style','template','noscript'].includes(n.name))for(const child of n.children||[])walk(child);};walk(node);return[flow(values.join(' ')),flow(values.join(''))];}
+
+// A rotating advertisement inventory is not a programme rule. Admit only the
+// actual publisher's sponsored-card envelope, with a bounded number of cards;
+// callers still bind the exact source/owner/URL and conserve all other text.
+export function reviewedDaadSponsoredCards(dom,widget,heading){
+ const track=widget.find('div.js-ad-slider-track'),cards=track.children('div.u-position-relative');
+ check(track.length===1&&cards.length>=1&&cards.length<=32&&track.children().length===cards.length&&track.parents('script,style,template,noscript,iframe,svg,math').length===0,'bounded_sponsored_card_inventory_required');
+ check(cards.toArray().every(node=>{
+  const card=dom(node),parts=card.children(),info=parts.last(),children=info.children(),label=info.children('p.u-dateline'),title=info.children('h3.u-size-large'),teaser=info.children('p.u-size-teaser'),link=info.children('a.o-more-link.o-more-link--stretched');
+  return parts.length===2&&parts.first().is('div.u-mb-medium')&&info.is('div')&&children.length===4&&children.map((i,n)=>n.name).get().join(',')==='p,h3,p,a'
+   &&label.length===1&&flow(label.text())===heading&&title.length===1&&flow(title.text()).length>0&&teaser.length===1&&flow(teaser.text()).length>0
+   &&link.length===1&&card.find('a[href]').length===1&&/^https:\/\/www\.daad\.org\/en\/university-ad\/[a-z0-9-]+\/$/.test(link.attr('href')||'')
+   &&parts.first().find('p,h1,h2,h3,h4,h5,h6,li,a').length===0
+   &&card.find('form,input,select,textarea,iframe').length===0;
+ }),'sponsored_university_card_structure_changed');
+ const counter=widget.find('span.js-slide-count').parent('span.u-size-copy.u-weight-semibold'),current=counter.children('span.js-slide-count');
+ check(counter.length===1&&current.length===1&&counter.children().length===1&&current.text()==='1'&&flow(counter.text())==='1/'+cards.length&&counter.parents('script,style,template,noscript,iframe,svg,math').length===0,'sponsored_inventory_counter_changed');
+ const groups=widget.children(),header=groups.first(),content=groups.last(),cardText=rawTextVariants({name:'div',children:cards.toArray()}),contentText=rawTextVariants(content[0]),headerRest=header.clone();
+ headerRest.find('h2,span.u-size-copy.u-weight-semibold').remove();
+ check(groups.length===2&&header.is('div.u-flex-space-between')&&content.is('div.u-mb-medium')&&header.find('h2').length===1&&flow(header.find('h2').text())===heading&&flow(headerRest.text())===''&&header.find('form,input,select,textarea,iframe').length===0&&cardText.every((text,i)=>text===contentText[i]),'unmarked_content_in_sponsored_widget');
+ return{cards,scope_nodes:[counter[0],...cards.toArray()]};
+}
 function widgetMarker(capture){
  const profile=WIDGET_PROFILES.find(p=>p.source_id===capture.source.id);check(profile&&capture.source.shared_award_id===profile.owner&&capture.source.url===profile.url&&capture.final_url===profile.url,'ancillary_widget_profile_not_reviewed');
  const bytes=capture.raw_source.bytes,html=bytes.toString('utf8');check(Buffer.from(html,'utf8').equals(bytes)&&!html.includes('\0')&&!html.startsWith('\ufeff'),'raw_widget_encoding');
  const dom=load(html,{sourceCodeLocationInfo:true}),nodes=dom(profile.selector);check(nodes.length===1&&!dom('base').length,'unique_actual_widget_required');
  const node=nodes[0],widget=dom(node),loc=node.sourceCodeLocation;
  check(node.namespace==='http://www.w3.org/1999/xhtml'&&loc?.startTag&&loc?.endTag&&widget.parents('body').length===1&&!widget.parents('script,style,template,noscript,iframe,svg,math').length,'actual_body_widget_required');
- const cards=widget.find(profile.card_selector);
- check(cards.length===profile.card_count,'reviewed_widget_card_count_changed');
+ const daad=profile.profile==='daad_sponsored_university_carousel.v1',sponsored=daad?reviewedDaadSponsoredCards(dom,widget,profile.heading):null,cards=daad?sponsored.cards:widget.find(profile.card_selector);
+ check(daad||cards.length===profile.card_count,'reviewed_widget_card_count_changed');
  if(profile.profile==='james_madison_sidebar_testimonials.v1')check(widget.find('footer,#jmf1-social-links-container').length===0&&cards.toArray().every(c=>dom(c).find('.jmf-identity').length===1&&dom(c).find('.testimonial-headshot').length===1&&dom(c).find('h4').length===1&&dom(c).find('h5').length===1),'testimonial_widget_structure_changed');
  if(profile.profile==='soros_featured_fellows.v1'){
   const headings=dom('h2').filter((i,h)=>flow(dom(h).text())===profile.heading);check(headings.length===1,'featured_fellows_heading_missing');
@@ -89,10 +110,9 @@ function widgetMarker(capture){
   check(cards.toArray().every(c=>{const a=dom(c).children('a.p-person-card__inner');return a.length===1&&/^https:\/\/pdsoros\.org\/fellows\/[a-z0-9-]+\/$/.test(a.attr('href')||'');}),'featured_fellow_card_destination_changed');
  }
  if(profile.profile==='daad_sponsored_university_carousel.v1'){
-  check(cards.toArray().every(c=>{const card=dom(c),label=card.find('p.u-dateline'),link=card.find('a.o-more-link.o-more-link--stretched');return label.length===1&&flow(label.text())===profile.heading&&link.length===1&&/^https:\/\/www\.daad\.org\/en\/university-ad\/[a-z0-9-]+\/$/.test(link.attr('href')||'');}),'sponsored_university_card_structure_changed');
   const headingId=widget.attr('aria-labelledby');check(/^headline-[a-f0-9]{8,32}$/.test(headingId||'')&&widget.find('h2[id]').filter((i,h)=>dom(h).attr('id')===headingId&&flow(dom(h).text())===profile.heading).length===1,'carousel_heading_reference_changed');
  }
- const widgetText=rawTextVariants(node),hrefs=widget.find('a[href]').map((i,a)=>dom(a).attr('href')).get(),outer=dom('body').clone();outer.find(profile.selector).remove();
+ const widgetText=daad?rawTextVariants({name:'div',children:sponsored.scope_nodes}):rawTextVariants(node),hrefs=(daad?cards.find('a[href]'):widget.find('a[href]')).map((i,a)=>dom(a).attr('href')).get(),outer=dom('body').clone();outer.find(profile.selector).remove();
  const outsideText=rawTextVariants(outer[0]),outsideHrefs=outer.find('a[href]').map((i,a)=>dom(a).attr('href')).get();
  const belongs=(block,unique)=>{
   if(profile.source_id==='4e4cfa3e-fb2a-4ea7-a792-6da5df9ee6b4'&&block.kind==='source_link'&&block.context?.source_attribute==='href'){
@@ -100,7 +120,7 @@ function widgetMarker(capture){
    return label.length>0&&widget.find('a[href]').filter(matches).length===1&&(!unique||outer.find('a[href]').filter(matches).length===0);
   }
   if(block.kind==='source_link'&&block.context?.source_attribute==='href')return hrefs.includes(block.text)&&(!unique||!outsideHrefs.includes(block.text));
-  const value=flow(block.text),staticAdvertLabel=profile.profile==='daad_sponsored_university_carousel.v1'&&value===profile.heading&&block.context?.heading_path?.some(h=>h.text===profile.heading)&&widget.find('p.u-dateline').filter((i,p)=>flow(dom(p).text())===value).length===profile.card_count;
+  const value=flow(block.text),staticAdvertLabel=profile.profile==='daad_sponsored_university_carousel.v1'&&value===profile.heading&&block.context?.heading_path?.some(h=>h.text===profile.heading)&&widget.find('p.u-dateline').filter((i,p)=>flow(dom(p).text())===value).length===cards.length;
   return value.length>0&&widgetText.some(t=>t.includes(value))&&(!unique||staticAdvertLabel||!outsideText.some(t=>t.includes(value)));
  };
  const containerAttributes={...node.attribs};if(profile.profile==='daad_sponsored_university_carousel.v1')delete containerAttributes['aria-labelledby'];

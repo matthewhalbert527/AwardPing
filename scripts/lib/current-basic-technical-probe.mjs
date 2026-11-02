@@ -7,7 +7,7 @@ import{programTextReference}from'./program-text-artifacts.mjs';
 import{validateProgramTextCapture}from'./program-text-capture-contract.mjs';
 import{buildProgramTextComparison,buildProgramTextReviewPackets,validateProgramTextReviewResult}from'./program-text-review.mjs';
 import{assertCurrentBasicSource}from'./current-basic-source-proof.mjs';
-import{reviewedBasicHash as hash,reviewedBasicEqual as equal,reviewedBasicCandidateSnapshot,reviewedBasicSupportProjection}from'./current-basic-reviewed-repeat.mjs';
+import{reviewedBasicHash as hash,reviewedBasicEqual as equal,reviewedBasicCandidateSnapshot,reviewedBasicSupportProjection,reviewedDaadSponsoredCards}from'./current-basic-reviewed-repeat.mjs';
 
 export const TECHNICAL_BASIC_REPEAT_KIND='retained_technical_repeat';
 export const TECHNICAL_BASIC_REPEAT_PROVENANCE='post_change_technical_probe';
@@ -40,18 +40,17 @@ function carousel(capture){
  const dom=load(html,{sourceCodeLocationInfo:true}),nodes=dom(SELECTOR);check(nodes.length===1&&!dom('base').length,'unique_actual_carousel_required');
  const node=nodes[0],widget=dom(node),location=node.sourceCodeLocation;
  check(node.namespace==='http://www.w3.org/1999/xhtml'&&location?.startTag&&location?.endTag&&widget.parents('body').length===1&&!widget.parents('script,style,template,noscript,iframe,svg,math').length,'actual_body_carousel_required');
- const track=widget.find('div.js-ad-slider-track'),cards=track.children('div.u-position-relative');
- check(track.length===1&&cards.length===11&&cards.toArray().every(c=>{const card=dom(c),label=card.find('p.u-dateline'),link=card.find('a.o-more-link.o-more-link--stretched');return label.length===1&&flow(label.text())===HEADING&&link.length===1&&/^https:\/\/www\.daad\.org\/en\/university-ad\/[a-z0-9-]+\/$/.test(link.attr('href')||'');}),'exact_eleven_sponsored_cards_required');
+ const{cards,scope_nodes}=reviewedDaadSponsoredCards(dom,widget,HEADING);
  const headingId=widget.attr('aria-labelledby');check(/^headline-[a-f0-9]{8,32}$/.test(headingId||'')&&widget.find('h2[id]').filter((i,h)=>dom(h).attr('id')===headingId&&flow(dom(h).text())===HEADING).length===1,'actual_carousel_heading_reference_required');
- const insideText=textVariants(node),insideHrefs=widget.find('a[href]').map((i,a)=>dom(a).attr('href')).get(),outside=dom('body').clone();outside.find(SELECTOR).remove();
+ const insideText=textVariants({name:'div',children:scope_nodes}),insideHrefs=cards.find('a[href]').map((i,a)=>dom(a).attr('href')).get(),outside=dom('body').clone();outside.find(SELECTOR).remove();
  const outsideText=textVariants(outside[0]),outsideHrefs=outside.find('a[href]').map((i,a)=>dom(a).attr('href')).get();
  const belongs=(block,strict)=>{
   if(block.kind==='source_link'&&block.context?.source_attribute==='href')return insideHrefs.includes(block.text)&&(!strict||!outsideHrefs.includes(block.text));
-  const value=flow(block.text),staticLabel=value===HEADING&&block.context?.heading_path?.some(h=>h.text===HEADING)&&widget.find('p.u-dateline').filter((i,p)=>flow(dom(p).text())===value).length===11;
+  const value=flow(block.text),staticLabel=value===HEADING&&block.context?.heading_path?.some(h=>h.text===HEADING)&&widget.find('p.u-dateline').filter((i,p)=>flow(dom(p).text())===value).length===cards.length;
   return value.length>0&&insideText.some(t=>t.includes(value))&&(!strict||staticLabel||!outsideText.some(t=>t.includes(value)));
  };
  const attributes={...node.attribs};delete attributes['aria-labelledby'];const snippet=html.slice(location.startOffset,location.endOffset);
- return{belongs,marker:{profile:PROFILE,selector:SELECTOR,start_utf16:location.startOffset,end_utf16:location.endOffset,html:snippet,html_sha256:sha(Buffer.from(snippet)),container_attributes:attributes,raw_container_attributes:node.attribs,card_count:11,heading:HEADING,excluded_support_block_ids:capture.blocks.filter(b=>belongs(b,false)).map(b=>b.id)}};
+ return{belongs,marker:{profile:PROFILE,selector:SELECTOR,start_utf16:location.startOffset,end_utf16:location.endOffset,html:snippet,html_sha256:sha(Buffer.from(snippet)),container_attributes:attributes,raw_container_attributes:node.attribs,card_count:cards.length,heading:HEADING,excluded_support_block_ids:capture.blocks.filter(b=>belongs(b,false)).map(b=>b.id)}};
 }
 
 function cfDestination(text,block){
