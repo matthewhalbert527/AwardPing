@@ -83,13 +83,19 @@ function reviewedModel(document, profile) {
   walk(document.result, "/result");
   const rule = GUIDE_MODEL.profiles[profile.key] ?? MODEL.profiles[profile.key];
   check(equal(rows.map(r => ({ pointer: r.pointer, id: r.widget.sys_id })), rule.graph), "widget_graph");
+  const staticHashes = [];
   for (const row of rows) {
     const w = row.widget, expected = MODEL.widgets[w.sys_id];
     check(expected && equal(Object.keys(w).sort(), expected.keys), "widget_fields");
     const { data, _script_execution_time, _server_time, ...staticWidget } = w;
-    check(Number.isFinite(_script_execution_time) && _script_execution_time >= 0 && typeof _server_time === "string" && /^\d+(?:\.\d+)?$/.test(_server_time) && _server_time.length <= 30 && digest(staticWidget) === expected.static_sha256, "widget_controller_or_markup");
+    check(Number.isFinite(_script_execution_time) && _script_execution_time >= 0 && typeof _server_time === "string" && /^\d+(?:\.\d+)?$/.test(_server_time) && _server_time.length <= 30, "widget_controller_or_markup");
+    staticHashes.push({ id: w.sys_id, sha256: digest(staticWidget) });
     check(plain(data) && digest(shape(data, row.pointer + "/data")) === rule.data_sha256[row.pointer], "widget_data_changed");
   }
+  // Select one complete reviewed model, never a per-widget mix of versions.
+  // Every unlisted widget still has to match the original exact static hash.
+  check([{}, ...Object.values(MODEL.static_variants)].some(variant => staticHashes.every(({ id, sha256 }) =>
+    sha256 === (variant[id] ?? MODEL.widgets[id].static_sha256))), "widget_controller_or_markup");
   check(digest(shape(document, "")) === rule.outer_sha256, "page_layout_or_metadata_changed");
   return rows;
 }

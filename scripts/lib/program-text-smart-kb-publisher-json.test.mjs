@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { load } from "cheerio";
 import { createSyntheticSmartKbPublisherJsonFixture as fixture } from "../fixtures/smart-kb-publisher-json.mjs";
+import { createSyntheticSmartKbPlatformBuildFixture as platformFixture } from "../fixtures/smart-kb-platform-build.mjs";
+import { syntheticPublisherJsonObservation } from "../fixtures/program-text-publisher-json.mjs";
+import { buildProgramTextCapture, validateProgramTextCapture } from "./program-text-capture-contract.mjs";
+import { publisherJsonObservationMetadata } from "./program-text-publisher-json.mjs";
 import { createSyntheticSmartPublisherJsonFixture as oldFixture } from "../fixtures/smart-publisher-json.mjs";
 import { projectSmartKbPublisherJson, SMART_KB_PUBLISHER_SOURCE_PROFILES as profiles, SMART_KB_PROJECTOR_VERSION } from "./program-text-smart-kb-publisher-json.mjs";
 import { projectSmartPublisherJson, SMART_PUBLISHER_JSON_SOURCE_PROFILES as oldProfiles } from "./program-text-smart-publisher-json.mjs";
@@ -11,6 +15,51 @@ const article = doc => doc.result.containers[3].rows[0].columns[0].widgets[0].wi
 const encode = JSON.stringify;
 const project = (key, doc = fixture(key)) => projectSmartKbPublisherJson(encode(doc), { source: source(key) });
 const held = (edit, code, key = "faq") => { const doc = fixture(key); edit(doc); assert.throws(() => project(key, doc), e => e.code?.startsWith("program_text_smart_kb_json_") && (!code || e.code.endsWith(code))); };
+
+for (const key of ["faq", "submit", "instructions"]) test(`${key}: complete reviewed platform build preserves all projected programme content`, () => {
+  const legacy = project(key), current = project(key, platformFixture(key));
+  // Produced independently by the original accepted edc355e projector.
+  const frozen = { faq: "c6d9890b268ed50d8a9744c0d93469b30865f5f849269774191af86c5afc1f99", submit: "cb23a6b7025e2bd60e5fd0b6cfdda7a5b979359411eafa465d027e1483c314d3", instructions: "63248a775970017837fb68263048195abb59393337ea303572c4d87fb2b9ac5e" };
+  assert.equal(createHash("sha256").update(JSON.stringify(legacy)).digest("hex"), frozen[key]);
+  for (const field of ["text", "blocks", "fields", "source_links"]) assert.deepEqual(current[field], legacy[field]);
+  assert.equal(current.provenance.version, SMART_KB_PROJECTOR_VERSION);
+});
+
+const menu = doc => doc.result.theme.header.data.menu;
+const technicalHelp = doc => doc.result.containers[1].rows[0].columns[0].widgets[0].widget.data.technical_help_widget;
+const dependency = widget => widget.dependencies[0].files[0];
+for (const key of ["faq", "submit", "instructions"]) test(`${key}: current build cold replay retains exact raw and transport bindings`, () => {
+  const { source: identity, observation } = syntheticPublisherJsonObservation(key, { edit(document) {
+    const current = platformFixture(key);
+    menu(document).dependencies = menu(current).dependencies;
+    technicalHelp(document).dependencies = technicalHelp(current).dependencies;
+  } });
+  const raw = Buffer.from(observation.raw_json), projection = projectSmartKbPublisherJson(raw, { source: identity });
+  const capture = buildProgramTextCapture({ source: identity, final_url: observation.navigation.final_url,
+    captured_at: observation.captured_at, acquisition: "publisher_json", extractor: { name: "smart-publisher-json", version: SMART_KB_PROJECTOR_VERSION },
+    raw_bytes: raw, content_type: "application/json", text: projection.text, blocks: projection.blocks,
+    publisher_json: { observation: publisherJsonObservationMetadata(observation, { source: identity }), projection: projection.provenance } });
+  assert.equal(validateProgramTextCapture(capture, { source: identity }), capture);
+  assert.equal(capture.raw_source.sha256, observation.response.raw_sha256);
+});
+for (const [name, edit] of [
+  ["unobserved menu build", doc => { dependency(menu(doc)).url = "/scripts/angular-truncate.js?v=10-27-2026_0000"; }],
+  ["unobserved reCAPTCHA build", doc => { dependency(technicalHelp(doc)).url = "https://www.google.com/recaptcha/api.js?v=10-27-2026_0000"; }],
+  ["current menu with legacy reCAPTCHA", doc => { dependency(technicalHelp(doc)).url = "https://www.google.com/recaptcha/api.js?v=10-13-2026_1237"; }],
+  ["legacy menu with current reCAPTCHA", doc => { dependency(menu(doc)).url = "/scripts/angular-truncate.js?v=10-13-2026_1237"; }],
+  ["dependency host change", doc => { dependency(technicalHelp(doc)).url = "https://example.invalid/recaptcha/api.js?v=10-26-2026_2343"; }],
+  ["dependency path change", doc => { dependency(menu(doc)).url = "/scripts/another.js?v=10-26-2026_2343"; }],
+  ["dependency module change", doc => { menu(doc).dependencies[0].module = "another"; }],
+  ["dependency type change", doc => { dependency(menu(doc)).type = "stylesheet"; }],
+  ["controller change", doc => { menu(doc).client_script += "\nfetch('/unreviewed');"; }],
+  ["template change", doc => { technicalHelp(doc).template += "<p>Unreviewed</p>"; }],
+  ["CSS change", doc => { article(doc).css += " .unreviewed{display:none}"; }],
+  ["attachment change", doc => { article(doc).data.attachments.push({ file_name: "Unreviewed.pdf" }); }],
+  ["article identity change", doc => { article(doc).data.sys_id = source("submit").article_sys_id; }],
+]) test(`reviewed platform build still rejects ${name}`, () => {
+  const doc = platformFixture("faq"); edit(doc);
+  assert.throws(() => project("faq", doc), error => error.code?.startsWith("program_text_smart_kb_json_"));
+});
 
 for (const key of ["faq", "submit", "instructions"]) test(`finite ${key}: deterministic complete text, UTF16 provenance, all links and typed status`, () => {
   const doc = fixture(key), output = project(key, doc);

@@ -1,5 +1,14 @@
 // Private finite model: public IDs and reviewed static hashes only; no nonce/session data.
 export const SMART_KB_REVIEWED_MODEL = {
+  // Complete observed static-model variants. These two overrides must occur
+  // together; arbitrary build values and mixed legacy/current pairs are held.
+  // The legacy base remains valid for cold verification of retained originals.
+  "static_variants": {
+    "platform_build_20261026_2343": {
+      "5ef595c1cb12020000f8d856634c9c6e": "738578e27eeae433f79657aa69545de5620a576f0b8987a410da930baa09ddb4",
+      "06cb6e981b9fc1507695a82fe54bcb40": "8375f4f96c1c76facedcf37b9df57a516f1f09e0faf1db99e809f54890deb4d0"
+    }
+  },
   "profiles": {
     "faq": {
       "raw_sha256": "25492635165e9c04a20eb50d2d54ed0749086375876d35b2f8aac195b75a877e",
