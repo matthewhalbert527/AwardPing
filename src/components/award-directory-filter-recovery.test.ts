@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { load } from "cheerio";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AwardDiscoveryWorkspace, type SharedAwardCard } from "./award-discovery-workspace";
+import { AwardFilterDropdown } from "./award-filter-dropdown";
 
 // Exercise the real event handler and rerender with its state changes. This
 // hook harness is not a DOM/browser test; focus is a synchronous test double.
@@ -39,7 +40,7 @@ const award: SharedAwardCard = {
   sources: [], changes: [],
 };
 const NOW_MS = Date.parse("2026-09-08T18:00:00.000Z");
-const defaults = ["", false, "A", 30, 0, "all", "all", "all", "all", 0];
+const defaults = ["", false, "A", 30, 0, [], [], [], "all", 0];
 
 type ElementProps = {
   children?: ReactNode; onClick?: () => void; onFocus?: () => void; id?: string;
@@ -64,6 +65,31 @@ function resetButton(tree: ReactNode) {
   expect(button, "one-click filter recovery must be available").toBeDefined();
   return button!;
 }
+function chooseFilter(tree: ReactNode, label: string, value: string | string[]) {
+  const dropdown = elements(tree).find(element => element.type === AwardFilterDropdown &&
+    (element.props as { label?: string }).label === label);
+  if (dropdown) {
+    // Exercise the actual controlled value callback. Native checkbox, popover
+    // and focus behavior belongs to the separate browser verification.
+    const props = dropdown.props as unknown as { onChange: (values: string[]) => void };
+    expect(props.onChange).toBeTypeOf("function");
+    props.onChange(Array.isArray(value) ? value : [value]);
+    return;
+  }
+  const labels = elements(tree).filter(element => element.type === "label" &&
+    elements(element.props.children).some(child => child.type === "span" && child.props.children === label));
+  expect(labels).toHaveLength(1);
+  const select = elements(labels[0]).find(element => element.type === "select");
+  expect(select?.props.onChange).toBeTypeOf("function");
+  if (typeof value !== "string") throw new Error("Updates keeps a single time window");
+  select!.props.onChange!({ target: { value } });
+}
+function recoveryActionNames(html: string) {
+  const $ = load(html);
+  return $("button").filter((_index, button) =>
+    $(button).hasClass("award-search-clear") || $(button).text().trim() === "Reset filters",
+  ).map((_index, button) => $(button).text().trim()).get();
+}
 function expectAutomaticBrowse(html: string) {
   const $ = load(html);
   expect($('section[aria-label="Browse all awards"]')).toHaveLength(1);
@@ -78,12 +104,15 @@ function expectAutomaticBrowse(html: string) {
 }
 function expectAllFilterDefaults(html: string) {
   const $ = load(html);
-  const labels = $(".award-directory-filter-grid > label");
-  expect(labels.children("span").map((_index, label) => $(label).text()).get()).toEqual([
+  expect($(".award-directory-filter-grid .award-filter-label").map((_index, label) => $(label).text()).get()).toEqual([
     "Academic level", "Discipline", "Citizenship", "Updates",
   ]);
-  const selects = labels.children("select");
-  expect(selects).toHaveLength(4);
+  const triggers = $(".award-directory-filter-grid .award-filter-control > button[popovertarget]");
+  expect(triggers).toHaveLength(3);
+  triggers.each((_index, trigger) => expect($(trigger).text().trim()).toBe("All"));
+  expect($(".award-directory-filter-grid input[type='checkbox'][checked]")).toHaveLength(0);
+  const selects = $(".award-directory-filter-grid select");
+  expect(selects).toHaveLength(1);
   selects.each((_index, node) => {
     const select = $(node);
     expect(select.attr("class")).toBe("input");
@@ -113,14 +142,14 @@ describe("award directory filter recovery", () => {
     const unfiltered = load(render(rows).html);
     expect(unfiltered(".award-search-option").attr("href")).toBe("/fictional-award");
 
-    state.values[5] = "Graduate";
+    state.values[5] = ["Graduate"];
     const $ = load(render(rows).html);
     expect($(".award-search-empty").text()).toBe("No awards match this search with these filters.");
     expect($("#award-directory-search").attr("value")).toBe("Fictional");
-    expect($(".award-directory-filter-grid select").first().find("option[selected]").text()).toBe("Graduate");
+    expect($("#award-filter-level").text().trim()).toBe("Graduate");
     expect($(".award-search-option")).toHaveLength(0);
     expect($(".award-search-panel [role='status']").text()).toBe("No matches");
-    expect($("button").map((_, button) => $(button).text().trim()).get()).toEqual(["Clear", "Reset filters"]);
+    expect(recoveryActionNames($.html())).toEqual(["Clear", "Reset filters"]);
   });
 
   it.each([
@@ -134,11 +163,11 @@ describe("award directory filter recovery", () => {
     expect($("#award-directory-search").attr("value")).toBe("Unmatched search");
     expect($(".award-search-option")).toHaveLength(0);
     expect($(".award-search-panel [role='status']").text()).toBe("No matches");
-    expect($("button").map((_, button) => $(button).text().trim()).get()).toEqual(["Clear"]);
+    expect(recoveryActionNames($.html())).toEqual(["Clear"]);
   });
 
   it("explains a filtered empty result without a phantom letter or useless pagination", () => {
-    state.values[5] = "Graduate";
+    state.values[5] = ["Graduate"];
     const { tree, html } = render();
     expect(html).toContain("No awards match these filters.");
     expect(html).toContain("Reset the filters to browse the full directory.");
@@ -151,7 +180,7 @@ describe("award directory filter recovery", () => {
   it("offers reset for each of the four dropdown filters independently", () => {
     for (const [index, value] of [[5, "Undergraduate"], [6, "STEM"], [7, "U.S. citizens"], [8, "week"]] as const) {
       state.values = [...defaults];
-      state.values[index] = value;
+      state.values[index] = index < 8 ? [value] : value;
       if (index === 8) state.values[9] = NOW_MS;
       resetButton(render().tree);
     }
@@ -162,7 +191,7 @@ describe("award directory filter recovery", () => {
     { label: "Discipline", slot: 6, value: "STEM", excluded: { disciplines: ["Arts"] } },
     { label: "Citizenship", slot: 7, value: "U.S. citizens", excluded: { citizenship: ["Other"] } },
     { label: "Updates", slot: 8, value: "week", excluded: { latestUpdateAt: "2026-08-25T18:00:00.000Z", recentlyUpdated: true } },
-  ])("keeps $label filtering functional and resets all four selects to All", ({ label, slot, value, excluded }) => {
+  ])("keeps $label filtering functional and resets all four controls to All", ({ label, slot, value, excluded }) => {
     const matching = { ...award, deadline: "October 1, 2026", recentlyUpdated: false, changeCount: 1, latestUpdateAt: "2026-09-07T18:00:00.000Z" };
     const other = { ...matching, id: "fictional-other", name: "Fictional Other", publicPath: "/fictional-other", ...excluded };
     const rows = [matching, other];
@@ -172,30 +201,24 @@ describe("award directory filter recovery", () => {
     const first = render(rows);
     expectAllFilterDefaults(first.html);
     expect(first.html).toContain("2 awards");
-    const labelElements = elements(first.tree).filter(element => element.type === "label" &&
-      elements(element.props.children).some(child => child.type === "span" && child.props.children === label));
-    expect(labelElements).toHaveLength(1);
-    const selectElements = elements(labelElements[0]).filter(element => element.type === "select");
-    expect(selectElements).toHaveLength(1);
-    expect(selectElements[0].props.onChange).toBeDefined();
+    chooseFilter(first.tree, label, value);
 
-    selectElements[0].props.onChange!({ target: { value } });
-
-    expect(state.values[slot]).toBe(value);
+    expect(state.values[slot]).toEqual(slot < 8 ? [value] : value);
     expect(state.values[9]).toBe(slot === 8 ? NOW_MS : 0);
     expect(state.values[4]).toBe(0);
     const filtered = render(rows);
     const $ = load(filtered.html);
     expect(filtered.html).toContain("1 of 2 awards");
     expect($(".award-row-summary").map((_index, link) => $(link).attr("href")).get()).toEqual([matching.publicPath]);
-    expect($(".award-directory-filter-grid select").eq(slot - 5).children("option[selected]").attr("value")).toBe(value);
+    if (slot < 8) expect($(".award-directory-filter-grid input[type='checkbox'][checked]").attr("value")).toBe(value);
+    else expect($(".award-directory-filter-grid select").children("option[selected]").attr("value")).toBe(value);
     const input = elements(filtered.tree).find(element => element.props.id === "award-directory-search")!;
     state.focus.mockImplementation(() => input.props.onFocus!());
 
     resetButton(filtered.tree).props.onClick!();
 
     expect(state.focus).toHaveBeenCalledOnce();
-    expect(state.values).toEqual(["", false, "A", 50, 0, "all", "all", "all", "all", slot === 8 ? NOW_MS : 0]);
+    expect(state.values.slice(0, 10)).toEqual(["", false, "A", 50, 0, [], [], [], "all", slot === 8 ? NOW_MS : 0]);
     const reset = render(rows);
     expectAllFilterDefaults(reset.html);
     expect(reset.html).toContain("2 awards");
@@ -206,18 +229,18 @@ describe("award directory filter recovery", () => {
   });
 
   it("resets all dropdowns and pagination, preserves the query, and restores its matching award", () => {
-    state.values = ["Fictional", true, "F", 100, 3, "Graduate", "Arts", "Other", "week", NOW_MS];
+    state.values = ["Fictional", true, "F", 100, 3, ["Graduate"], ["Arts"], ["Other"], "week", NOW_MS];
     const { tree, html } = render();
     expect(html).toContain("No matches");
     const input = elements(tree).find((element) => element.props.id === "award-directory-search")!;
     state.focus.mockImplementation(() => {
       // Focus happens before reset, and invokes the real input handler.
-      expect(state.values[5]).toBe("Graduate");
+      expect(state.values[5]).toEqual(["Graduate"]);
       input.props.onFocus!();
     });
     resetButton(tree).props.onClick!();
     expect(state.focus).toHaveBeenCalledOnce();
-    expect(state.values).toEqual(["Fictional", true, "F", 100, 0, "all", "all", "all", "all", NOW_MS]);
+    expect(state.values.slice(0, 10)).toEqual(["Fictional", true, "F", 100, 0, [], [], [], "all", NOW_MS]);
     const recovered = render().html;
     expect(recovered).toContain("1 matching award");
     expect(recovered).toContain('href="/fictional-award"');
@@ -232,15 +255,10 @@ describe("award directory filter recovery", () => {
       { ...award, id: "conditional", name: "Fictional Country Criteria", publicPath: "/fictional-country-criteria", citizenship: ["United States"] },
     ];
     const before = structuredClone(rows);
-    state.values = ["Fictional", false, "F", 50, 2, "all", "all", "all", "all", 0];
+    state.values = ["Fictional", false, "F", 50, 2, [], [], [], "all", 0];
     for (const [label, value, count] of [["Academic level", "Undergraduate", 3], ["Discipline", "STEM", 2], ["Citizenship", "U.S. citizens", 1]] as const) {
       const current = render(rows);
-      const labelElements = elements(current.tree).filter(element => element.type === "label" &&
-        elements(element.props.children).some(child => child.type === "span" && child.props.children === label));
-      expect(labelElements).toHaveLength(1);
-      const select = elements(labelElements[0]).find(element => element.type === "select")!;
-      expect(select.props.onChange).toBeDefined();
-      select.props.onChange!({ target: { value } });
+      chooseFilter(current.tree, label, value);
       const filtered = render(rows);
       expect(filtered.html).toContain(`${count} of 4 awards`);
       expect(state.values[4]).toBe(0);
@@ -248,17 +266,35 @@ describe("award directory filter recovery", () => {
     const filtered = render(rows);
     const $ = load(filtered.html);
     expect($(".award-row-summary").map((_index, link) => $(link).attr("href")).get()).toEqual([award.publicPath]);
-    expect(state.values).toEqual(["Fictional", false, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "all", 0]);
+    expect(state.values.slice(0, 10)).toEqual(["Fictional", false, "F", 50, 0, ["Undergraduate"], ["STEM"], ["U.S. citizens"], "all", 0]);
     const input = elements(filtered.tree).find(element => element.props.id === "award-directory-search")!;
     state.focus.mockImplementation(() => input.props.onFocus!());
     resetButton(filtered.tree).props.onClick!();
     expect(state.focus).toHaveBeenCalledOnce();
-    expect(state.values).toEqual(["Fictional", true, "F", 50, 0, "all", "all", "all", "all", 0]);
+    expect(state.values.slice(0, 10)).toEqual(["Fictional", true, "F", 50, 0, [], [], [], "all", 0]);
     const reset = render(rows);
     expectAllFilterDefaults(reset.html);
     expect(reset.html).toContain("4 matching awards");
     expect(load(reset.html)(".award-search-option")).toHaveLength(4);
     expect(rows).toEqual(before);
+  });
+
+  it("retains several values from the real dropdown callback until reset, preserving the search", () => {
+    const rows = [award, { ...award, id: "graduate", name: "Fictional Graduate", publicPath: "/fictional-graduate", academicLevels: ["Graduate"] }];
+    state.values[0] = "Fictional";
+    const first = render(rows);
+    chooseFilter(first.tree, "Academic level", ["Undergraduate", "Graduate"]);
+    const selected = render(rows);
+    expect(state.values[5]).toEqual(["Undergraduate", "Graduate"]);
+    expect(selected.html).toContain("2 of 2 awards");
+    expect(load(selected.html)(".award-directory-filter-grid input[type='checkbox'][checked]")).toHaveLength(2);
+    const input = elements(selected.tree).find(element => element.props.id === "award-directory-search")!;
+    state.focus.mockImplementation(() => input.props.onFocus!());
+    resetButton(selected.tree).props.onClick!();
+    expect(state.values.slice(0, 10)).toEqual(["Fictional", true, "A", 30, 0, [], [], [], "all", 0]);
+    const recovered = render(rows);
+    expect(recovered.html).toContain("2 matching awards");
+    expectAllFilterDefaults(recovered.html);
   });
 
   it("captures the selection-time clock for age ranges, retains it across renders, and resets without losing search or navigation state", () => {
@@ -267,7 +303,7 @@ describe("award directory filter recovery", () => {
       changeCount: 1, recentlyUpdated: false, latestUpdateAt: new Date(NOW_MS - age * 86_400_000).toISOString(),
     }));
     const before = structuredClone(rows);
-    state.values = ["Fictional", false, "F", 50, 2, "all", "all", "all", "all", 0];
+    state.values = ["Fictional", false, "F", 50, 2, [], [], [], "all", 0];
     const choose = (value: string) => {
       const current = render(rows);
       const labels = elements(current.tree).filter(element => element.type === "label" &&
@@ -276,7 +312,7 @@ describe("award directory filter recovery", () => {
       elements(labels[0]).find(element => element.type === "select")!.props.onChange!({ target: { value } });
     };
     choose("day");
-    expect(state.values).toEqual(["Fictional", false, "F", 50, 0, "all", "all", "all", "day", NOW_MS]);
+    expect(state.values.slice(0, 10)).toEqual(["Fictional", false, "F", 50, 0, [], [], [], "day", NOW_MS]);
     expect(render(rows).html).toContain("1 of 3 awards");
     vi.setSystemTime(NOW_MS + 86_400_000);
     // A rerender alone does not move the chosen window's captured clock.
@@ -291,16 +327,16 @@ describe("award directory filter recovery", () => {
     const input = elements(filtered.tree).find(element => element.props.id === "award-directory-search")!;
     state.focus.mockImplementation(() => input.props.onFocus!());
     resetButton(filtered.tree).props.onClick!();
-    expect(state.values).toEqual(["Fictional", true, "F", 50, 0, "all", "all", "all", "all", NOW_MS + 86_400_000]);
+    expect(state.values.slice(0, 10)).toEqual(["Fictional", true, "F", 50, 0, [], [], [], "all", NOW_MS + 86_400_000]);
     expectAllFilterDefaults(render(rows).html);
     expect(render(rows).html).toContain("3 matching awards");
     expect(rows).toEqual(before);
   });
 
   it("restores browse results for a blank query without changing the page-size preference", () => {
-    state.values = ["", false, "F", 50, 2, "Graduate", "all", "all", "all", 0];
+    state.values = ["", false, "F", 50, 2, ["Graduate"], [], [], "all", 0];
     resetButton(render().tree).props.onClick!();
-    expect(state.values).toEqual(["", false, "F", 50, 0, "all", "all", "all", "all", 0]);
+    expect(state.values.slice(0, 10)).toEqual(["", false, "F", 50, 0, [], [], [], "all", 0]);
     const { html } = render();
     expect(html).toContain("F · 1 award");
     expect(html).toContain('href="/fictional-award"');
@@ -323,7 +359,7 @@ describe("award directory filter recovery", () => {
   });
 
   it.each(["Fictional", "Unmatched search"])("Clear restores automatic browsing from open search %s, retaining filters and page size", (query) => {
-    state.values = [query, true, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "all", 0];
+    state.values = [query, true, "F", 50, 0, ["Undergraduate"], ["STEM"], ["U.S. citizens"], "all", 0];
     const first = render();
     const $ = load(first.html);
     expect($(".award-search-panel")).toHaveLength(1);
@@ -340,12 +376,12 @@ describe("award directory filter recovery", () => {
     clear!.props.onClick!();
 
     expect(state.focus).toHaveBeenCalledOnce();
-    expect(state.values).toEqual(["", false, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "all", 0]);
+    expect(state.values.slice(0, 10)).toEqual(["", false, "F", 50, 0, ["Undergraduate"], ["STEM"], ["U.S. citizens"], "all", 0]);
     expectAutomaticBrowse(render().html);
   });
 
   it.each(["outside focus", "no related target"])("keeps contained search focus open, then restores automatic browsing on %s without clearing the query", (kind) => {
-    state.values = ["", false, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "all", 0];
+    state.values = ["", false, "F", 50, 0, ["Undergraduate"], ["STEM"], ["U.S. citizens"], "all", 0];
     const first = render();
     expectAutomaticBrowse(first.html);
     const input = elements(first.tree).find(element => element.props.id === "award-directory-search")!;
@@ -365,20 +401,20 @@ describe("award directory filter recovery", () => {
     expect(load(render().html)(".award-search-option")).toHaveLength(1);
     onBlur({ relatedTarget: kind === "outside focus" ? {} : null, currentTarget: { contains } });
 
-    expect(state.values).toEqual(["Fictional", false, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "all", 0]);
+    expect(state.values.slice(0, 10)).toEqual(["Fictional", false, "F", 50, 0, ["Undergraduate"], ["STEM"], ["U.S. citizens"], "all", 0]);
     expectAutomaticBrowse(render().html);
     expect(state.focus).not.toHaveBeenCalled();
   });
 
   it("restores automatic browsing when the input change handler receives an empty search", () => {
-    state.values = ["Fictional", true, "F", 30, 0, "all", "all", "all", "all", 0];
+    state.values = ["Fictional", true, "F", 30, 0, [], [], [], "all", 0];
     const first = render();
     expect(load(first.html)(".award-search-option")).toHaveLength(1);
     const input = elements(first.tree).find(element => element.props.id === "award-directory-search")!;
 
     input.props.onChange!({ target: { value: "" } });
 
-    expect(state.values).toEqual(["", false, "F", 30, 0, "all", "all", "all", "all", 0]);
+    expect(state.values.slice(0, 10)).toEqual(["", false, "F", 30, 0, [], [], [], "all", 0]);
     expectAutomaticBrowse(render().html);
     expect(state.focus).not.toHaveBeenCalled();
   });

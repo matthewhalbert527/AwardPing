@@ -2729,6 +2729,7 @@ a {
 }
 
 .public-directory-main {
+  width: 100%;
   max-width: 72rem;
   margin: 0 auto;
   padding: 2rem 1.25rem 3rem;
@@ -4179,13 +4180,13 @@ a {
   }
 }
 
-.award-directory-filter-grid label {
+.award-directory-filter-grid > label {
   display: grid;
   gap: 0.35rem;
   min-width: 0;
 }
 
-.award-directory-filter-grid label span {
+.award-directory-filter-grid > label > span {
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 700;

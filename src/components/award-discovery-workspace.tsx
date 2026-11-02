@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { presentAwardApplicationContext, presentAwardDeadlines } from "@/lib/award-page-presentation";
 import { directoryFilterOptions, getAwardDirectoryCategories } from "@/lib/award-directory-filters";
+import { matchesDirectorySelections } from "@/lib/award-directory-selection";
+import { AwardFilterDropdown } from "@/components/award-filter-dropdown";
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { awardMatchesUpdateWindow, UPDATE_WINDOW_OPTIONS } from "@/lib/award-update-window";
@@ -89,7 +91,6 @@ const otherBucketName = "Numbers and other characters";
 const browseBuckets = [...alphabet, otherBucket];
 const pageSizeOptions = [30, 50, 100] as const;
 const searchResultLimit = 100;
-const allFilterLabel = "All";
 
 // `canManage` and `isAuthenticated` stay in the prop contract for the
 // directory page, but neither affects what the directory renders or where
@@ -108,24 +109,23 @@ export function AwardDiscoveryWorkspace({
   const [selectedLetter, setSelectedLetter] = useState("A");
   const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(30);
   const [letterPageIndex, setLetterPageIndex] = useState(0);
-  const [levelFilter, setLevelFilter] = useState("all");
-  const [disciplineFilter, setDisciplineFilter] = useState("all");
-  const [citizenshipFilter, setCitizenshipFilter] = useState("all");
+  const [levelFilter, setLevelFilter] = useState<string[]>([]);
+  const [disciplineFilter, setDisciplineFilter] = useState<string[]>([]);
+  const [citizenshipFilter, setCitizenshipFilter] = useState<string[]>([]);
   const [recentFilter, setRecentFilter] = useState("all");
   // Capture the clock in the interaction, not during server/client rendering.
   const [updateFilterNow, setUpdateFilterNow] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const alphabetNavRef = useRef<HTMLDivElement>(null);
-  const hasActiveFilters = [levelFilter, disciplineFilter, citizenshipFilter, recentFilter]
-    .some((filter) => filter !== "all");
+  const hasActiveFilters = levelFilter.length > 0 || disciplineFilter.length > 0 || citizenshipFilter.length > 0 || recentFilter !== "all";
 
   function resetFilters() {
     // The reset button disappears when filters clear. Keep keyboard focus on
     // a stable control, preserving the query and reopening its results.
     searchInputRef.current?.focus();
-    setLevelFilter("all");
-    setDisciplineFilter("all");
-    setCitizenshipFilter("all");
+    setLevelFilter([]);
+    setDisciplineFilter([]);
+    setCitizenshipFilter([]);
     setRecentFilter("all");
     setLetterPageIndex(0);
   }
@@ -146,9 +146,9 @@ export function AwardDiscoveryWorkspace({
   const awards = useMemo(
     () =>
       categorizedAwards.filter(({ award, categories }) => {
-        if (levelFilter !== "all" && !categories.academicLevels.includes(levelFilter)) return false;
-        if (disciplineFilter !== "all" && !categories.disciplines.includes(disciplineFilter)) return false;
-        if (citizenshipFilter !== "all" && !categories.citizenship.includes(citizenshipFilter)) return false;
+        if (!matchesDirectorySelections(categories, {
+          academicLevels: levelFilter, disciplines: disciplineFilter, citizenship: citizenshipFilter,
+        })) return false;
         if (!awardMatchesUpdateWindow(award, recentFilter, updateFilterNow)) return false;
         return true;
       }).map(({ award }) => award),
@@ -398,7 +398,8 @@ export function AwardDiscoveryWorkspace({
   return (
     <div className="grid gap-5">
       <section
-        className="award-directory-controls"
+        className={`award-directory-controls ${styles.controls}`}
+        aria-label="Search and filter awards"
         onBlur={(event) => {
           // Keep results open within the controls so focus changes cannot
           // move a filter or Reset out from under an unfinished click.
@@ -482,60 +483,42 @@ export function AwardDiscoveryWorkspace({
           )}
         </div>
 
-        <div className="award-directory-filter-grid">
-          <label>
-            <span>Academic level</span>
-            <select
-              className="input"
+        <div className={`award-directory-filter-grid ${styles.filterGrid}`}>
+          <AwardFilterDropdown
+              id="award-filter-level"
+              label="Academic level"
+              options={filterOptions.levels}
               value={levelFilter}
-              aria-describedby="award-filter-guidance"
-              onChange={(event) => {
-                setLevelFilter(event.target.value);
+              describedBy="award-filter-guidance"
+              onChange={(value) => {
+                setLevelFilter(value);
                 setLetterPageIndex(0);
               }}
-            >
-              <option value="all">{allFilterLabel}</option>
-              {filterOptions.levels.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Discipline</span>
-            <select
-              className="input"
+          />
+          <AwardFilterDropdown
+              id="award-filter-discipline"
+              label="Discipline"
+              options={filterOptions.disciplines}
               value={disciplineFilter}
-              aria-describedby="award-filter-guidance"
-              onChange={(event) => {
-                setDisciplineFilter(event.target.value);
+              describedBy="award-filter-guidance"
+              onChange={(value) => {
+                setDisciplineFilter(value);
                 setLetterPageIndex(0);
               }}
-            >
-              <option value="all">{allFilterLabel}</option>
-              {filterOptions.disciplines.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Citizenship</span>
-            <select
-              className="input"
+          />
+          <AwardFilterDropdown
+              id="award-filter-citizenship"
+              label="Citizenship"
+              options={filterOptions.citizenship}
               value={citizenshipFilter}
-              aria-describedby="award-filter-guidance"
-              onChange={(event) => {
-                setCitizenshipFilter(event.target.value);
+              describedBy="award-filter-guidance"
+              onChange={(value) => {
+                setCitizenshipFilter(value);
                 setLetterPageIndex(0);
               }}
-            >
-              <option value="all">{allFilterLabel}</option>
-              {filterOptions.citizenship.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Updates</span>
+          />
+          <label className="award-filter-control">
+            <span className="award-filter-label">Updates</span>
             <select
               className="input"
               value={recentFilter}
@@ -552,13 +535,42 @@ export function AwardDiscoveryWorkspace({
           </label>
         </div>
 
+        {hasActiveFilters && (
+          <div className={styles.selections} aria-label="Selected filters">
+            {[
+              { id: "award-filter-level", label: "Academic level", options: filterOptions.levels, values: levelFilter, setValue: setLevelFilter },
+              { id: "award-filter-discipline", label: "Discipline", options: filterOptions.disciplines, values: disciplineFilter, setValue: setDisciplineFilter },
+              { id: "award-filter-citizenship", label: "Citizenship", options: filterOptions.citizenship, values: citizenshipFilter, setValue: setCitizenshipFilter },
+            ].flatMap(group => group.options.filter(option => group.values.includes(option.value)).map(option => (
+              <button
+                className={styles.selection}
+                type="button"
+                key={`${group.label}-${option.value}`}
+                aria-label={`Remove ${group.label.toLowerCase()}: ${option.label}`}
+                onClick={() => {
+                  document.getElementById(group.id)?.focus();
+                  group.setValue(group.values.filter(value => value !== option.value));
+                  setLetterPageIndex(0);
+                }}
+              >
+                {option.label}<X size={13} aria-hidden="true" />
+              </button>
+            )))}
+            {recentFilter !== "all" && (
+              <button className={styles.selection} type="button" aria-label="Remove updates filter" onClick={() => { searchInputRef.current?.focus(); setRecentFilter("all"); setLetterPageIndex(0); }}>
+                {UPDATE_WINDOW_OPTIONS.find(option => option.value === recentFilter)?.label}<X size={13} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="award-directory-filter-summary">
           <div>
             <p id="award-filter-guidance" className="text-sm text-[var(--muted)]">
               Broad categories only. Check each award for full eligibility.
             </p>
             {!browseHiddenBySearch && awards.length > 0 && (
-              <p className="mt-2 text-sm font-medium text-[var(--text-secondary)]">
+              <p className="mt-2 text-sm font-medium text-[var(--text-secondary)]" role="status">
                 {hasActiveFilters
                   ? `${awards.length.toLocaleString()} of ${sharedAwards.length.toLocaleString()} awards`
                   : `${awards.length.toLocaleString()} ${awards.length === 1 ? "award" : "awards"}`}
@@ -566,7 +578,7 @@ export function AwardDiscoveryWorkspace({
             )}
           </div>
           {hasActiveFilters && (
-            <button className="button-secondary" type="button" onClick={resetFilters}>
+            <button className={`button-secondary ${styles.resetFilters}`} type="button" onClick={resetFilters}>
               Reset filters
             </button>
           )}

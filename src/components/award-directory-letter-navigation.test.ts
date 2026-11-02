@@ -37,7 +37,7 @@ vi.mock("next/link", () => ({
 }));
 
 const NOW_MS = Date.parse("2026-09-08T18:00:00.000Z");
-const defaults = ["", false, "A", 30, 0, "all", "all", "all", "all", 0];
+const defaults = ["", false, "A", 30, 0, [], [], [], "all", 0];
 function award(letter: string, index = 1, overrides: Partial<SharedAwardCard> = {}): SharedAwardCard {
   const number = String(index).padStart(3, "0");
   return {
@@ -54,7 +54,8 @@ function many(letter: string, count: number) {
 }
 type ElementProps = {
   children?: ReactNode; onClick?: () => void; disabled?: boolean; title?: string;
-  onChange?: (event: { target: { value: string } }) => void;
+  onChange?: (event: { target: { value: string } } | string[]) => void;
+  id?: string;
   "aria-label"?: string; "aria-pressed"?: boolean; tabIndex?: number;
   ref?: { current: { focus: ReturnType<typeof vi.fn>; scrollIntoView: ReturnType<typeof vi.fn> } };
 };
@@ -145,9 +146,9 @@ describe("award directory footer letter navigation", () => {
   });
 
   it.each([
-    { filter: "level", slot: 5, value: "Undergraduate", excluded: { academicLevels: ["Graduate"] } },
-    { filter: "discipline", slot: 6, value: "STEM", excluded: { disciplines: ["Arts"] } },
-    { filter: "citizenship", slot: 7, value: "U.S. citizens", excluded: { citizenship: ["Other"] } },
+    { filter: "level", slot: 5, value: ["Undergraduate"], excluded: { academicLevels: ["Graduate"] } },
+    { filter: "discipline", slot: 6, value: ["STEM"], excluded: { disciplines: ["Arts"] } },
+    { filter: "citizenship", slot: 7, value: ["U.S. citizens"], excluded: { citizenship: ["Other"] } },
     { filter: "update window", slot: 8, value: "week", excluded: { latestUpdateAt: "2026-08-25T18:00:00.000Z", recentlyUpdated: true } },
   ])("skips a populated C letter excluded by the $filter filter", ({ slot, value, excluded }) => {
     const rows = [award("B"), award("C", 1, excluded), award("F")];
@@ -172,11 +173,11 @@ describe("award directory footer letter navigation", () => {
 
   it("resets page two to page one of the next letter while preserving query, page size, and all four filters", () => {
     const rows = [...many("B", 31), ...many("F", 31)];
-    state.values = ["Fictional", false, "B", 30, 1, "Undergraduate", "STEM", "U.S. citizens", "week", NOW_MS];
+    state.values = ["Fictional", false, "B", 30, 1, ["Undergraduate"], ["STEM"], ["U.S. citizens"], "week", NOW_MS];
     const first = render(rows);
     expect(hrefs(first.html)).toEqual(["/fictional-b-031"]);
     nextLetterButton(first.tree).props.onClick!();
-    expect(state.values).toEqual(["Fictional", false, "F", 30, 0, "Undergraduate", "STEM", "U.S. citizens", "week", NOW_MS]);
+    expect(state.values.slice(0, 10)).toEqual(["Fictional", false, "F", 30, 0, ["Undergraduate"], ["STEM"], ["U.S. citizens"], "week", NOW_MS]);
     const second = render(rows);
     expect(hrefs(second.html)).toEqual(many("F", 30).map(row => row.publicPath));
     expect(second.html).toContain("Showing 1-30 of 31 awards under F.");
@@ -285,7 +286,7 @@ describe("award directory footer letter navigation", () => {
   });
 
   it.each(["unfiltered", "filtered"])("renders no letter or pagination controls for an empty %s result", (kind) => {
-    if (kind === "filtered") state.values[5] = "Graduate";
+    if (kind === "filtered") state.values[5] = ["Graduate"];
     const { tree, html } = render(kind === "filtered" ? [award("B")] : []);
     expect(html).not.toContain("Alphabetical award pages");
     expect(html).not.toContain("Awards per page");
@@ -337,9 +338,9 @@ describe("award directory footer previous-letter navigation", () => {
   });
 
   it.each([
-    { filter: "level", slot: 5, value: "Undergraduate", excluded: { academicLevels: ["Graduate"] } },
-    { filter: "discipline", slot: 6, value: "STEM", excluded: { disciplines: ["Arts"] } },
-    { filter: "citizenship", slot: 7, value: "U.S. citizens", excluded: { citizenship: ["Other"] } },
+    { filter: "level", slot: 5, value: ["Undergraduate"], excluded: { academicLevels: ["Graduate"] } },
+    { filter: "discipline", slot: 6, value: ["STEM"], excluded: { disciplines: ["Arts"] } },
+    { filter: "citizenship", slot: 7, value: ["U.S. citizens"], excluded: { citizenship: ["Other"] } },
     { filter: "update window", slot: 8, value: "week", excluded: { latestUpdateAt: "2026-08-25T18:00:00.000Z", recentlyUpdated: true } },
   ])("skips a preceding populated C letter excluded by the $filter filter", ({ slot, value, excluded }) => {
     const rows = [award("B"), award("C", 1, excluded), award("F")];
@@ -368,11 +369,11 @@ describe("award directory footer previous-letter navigation", () => {
 
   it("resets page two to page one of the previous letter while preserving query, page size, and all four filters", () => {
     const rows = [...many("B", 31), ...many("F", 31)];
-    state.values = ["Fictional", false, "F", 30, 1, "Undergraduate", "STEM", "U.S. citizens", "week", NOW_MS];
+    state.values = ["Fictional", false, "F", 30, 1, ["Undergraduate"], ["STEM"], ["U.S. citizens"], "week", NOW_MS];
     const first = render(rows);
     expect(hrefs(first.html)).toEqual(["/fictional-f-031"]);
     previousLetterButton(first.tree).props.onClick!();
-    expect(state.values).toEqual(["Fictional", false, "B", 30, 0, "Undergraduate", "STEM", "U.S. citizens", "week", NOW_MS]);
+    expect(state.values.slice(0, 10)).toEqual(["Fictional", false, "B", 30, 0, ["Undergraduate"], ["STEM"], ["U.S. citizens"], "week", NOW_MS]);
     const second = render(rows);
     expect(hrefs(second.html)).toEqual(many("B", 30).map(row => row.publicPath));
     expect(second.html).toContain("Showing 1-30 of 31 awards under B.");
@@ -393,7 +394,7 @@ describe("award directory footer previous-letter navigation", () => {
 
   it.each(["unfiltered", "filtered"])("disables the first available Previous letter with a tooltip and no wrap or focus movement (%s)", (kind) => {
     const rows = [award("B", 1, { academicLevels: ["Graduate"] }), award("F"), award("Z")];
-    if (kind === "filtered") state.values[5] = "Undergraduate";
+    if (kind === "filtered") state.values[5] = ["Undergraduate"];
     const first = render(rows);
     expect(activeLetter(first.html)).toBe(kind === "filtered" ? "F" : "B");
     const button = previousLetterButton(first.tree);
@@ -408,7 +409,7 @@ describe("award directory footer previous-letter navigation", () => {
   });
 
   it.each(["unfiltered", "filtered"])("renders neither footer letter button for an empty %s result", (kind) => {
-    if (kind === "filtered") state.values[5] = "Graduate";
+    if (kind === "filtered") state.values[5] = ["Graduate"];
     const { tree, html } = render(kind === "filtered" ? [award("B")] : []);
     expect(html).not.toContain("Previous letter");
     expect(html).not.toContain("Next letter");
@@ -469,11 +470,11 @@ describe("award directory footer current-letter indicator", () => {
     state.values[2] = "F";
     const first = render(rows);
     expect(footerCurrentLetter(first.html)).toBe("F");
-    const levelLabel = elements(first.tree).find(element => element.type === "label" && text(element.props.children).startsWith("Academic level"));
-    expect(levelLabel).toBeDefined();
-    const select = elements(levelLabel).find(element => element.type === "select");
-    expect(select?.props.onChange).toBeDefined();
-    select!.props.onChange!({ target: { value: "Graduate" } });
+    const levelDropdown = elements(first.tree).find(element => element.props.id === "award-filter-level");
+    expect(levelDropdown?.props.onChange).toBeDefined();
+    // This is the real parent value-change callback; native checkbox input
+    // and focus ordering are separately checked in a browser.
+    levelDropdown!.props.onChange!(["Graduate"]);
     const filtered = render(rows);
     expect(state.values[2]).toBe("F");
     expect(activeLetter(filtered.html)).toBe("Z");
@@ -494,7 +495,7 @@ describe("award directory footer current-letter indicator", () => {
   });
 
   it.each(["unfiltered", "filtered"])("shows no misleading current-letter indicator for empty %s results", (kind) => {
-    if (kind === "filtered") state.values[5] = "Graduate";
+    if (kind === "filtered") state.values[5] = ["Graduate"];
     const { html, $ } = render(kind === "filtered" ? [award("B")] : []);
     expect($('[role="group"][aria-label="Letter navigation"]')).toHaveLength(0);
     expect($('[aria-current="true"]')).toHaveLength(0);

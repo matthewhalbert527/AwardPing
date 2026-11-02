@@ -116,12 +116,14 @@ function searchOptionHrefs(html: string) {
 }
 
 // The search is a labeled native field whose results are ordinary links: no
-// combobox, listbox, option or selection state is claimed anywhere.
+// combobox, listbox, option or selection state is claimed by the search UI.
 function expectNativeSearchSemantics(html: string) {
   expect(html).toContain('<label class="sr-only" for="award-directory-search">Search awards</label>');
   expect(html).toContain(
     '<input id="award-directory-search" class="input input-with-leading-icon award-search-input" type="search" placeholder="Goldwater, Fulbright, NSF GRFP..."',
   );
+  const $ = load(html);
+  const searchMarkup = $("#award-directory-search, .award-search-panel").toString();
   for (const claim of [
     'role="combobox"',
     'role="listbox"',
@@ -131,7 +133,7 @@ function expectNativeSearchSemantics(html: string) {
     "aria-controls",
     "aria-activedescendant",
   ]) {
-    expect(html).not.toContain(claim);
+    expect(searchMarkup).not.toContain(claim);
   }
 }
 
@@ -151,7 +153,18 @@ function directoryControlsJsx() {
   }
   function hasClass(element: ts.JsxElement, name: string) {
     const value = attribute(element, "className")?.initializer;
-    return Boolean(value && ts.isStringLiteral(value) && value.text.split(/\s+/).includes(name));
+    if (!value) return false;
+    if (ts.isStringLiteral(value)) return value.text.split(/\s+/).includes(name);
+    const expression = ts.isJsxExpression(value) ? value.expression : undefined;
+    if (!expression) return false;
+    if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+      return expression.text.split(/\s+/).includes(name);
+    }
+    // CSS-module interpolation adds styling without changing the static DOM
+    // boundary. Inspect only the actual literal tokens; never evaluate modules.
+    return ts.isTemplateExpression(expression) &&
+      [expression.head.text, ...expression.templateSpans.map((span) => span.literal.text)]
+        .some((part) => part.split(/\s+/).includes(name));
   }
   const boundaries = elements.filter((element) =>
     element.openingElement.tagName.getText(parsed) === "section" && hasClass(element, "award-directory-controls"),
@@ -302,7 +315,7 @@ describe("AwardDiscoveryWorkspace", () => {
       .toBe("/goldwater-scholarship");
     expectNativeSearchSemantics(anonymous);
     // Search results use ordinary links, with no disclosure state.
-    expect(anonymous).not.toContain("aria-expanded");
+    expect(load(anonymous)("#award-directory-search").attr("aria-expanded")).toBeUndefined();
     expect(searchOptionHrefs(anonymous)).toEqual(["/goldwater-scholarship"]);
     expect(searchOptionHrefs(signedIn)).toEqual(["/goldwater-scholarship"]);
     expect(signedIn).toBe(anonymous);
@@ -364,7 +377,7 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(searchOptionHrefs(anonymous)).toEqual([]);
     expect(anonymous).not.toContain("award-search-option");
     expectNativeSearchSemantics(anonymous);
-    expect(anonymous).not.toContain("aria-expanded");
+    expect(load(anonymous)("#award-directory-search").attr("aria-expanded")).toBeUndefined();
     expect(browseRowHrefs(anonymous)).toEqual([]);
   });
 
@@ -377,15 +390,16 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(searchWrappers).toHaveLength(1);
     expect(attribute(searchWrappers[0], "onBlur")).toBeUndefined();
 
-    const $ = load(renderRows([goldwater, truman], ["Goldwater", true, "A", 30, 0, "Undergraduate"]));
+    const $ = load(renderRows([goldwater, truman], ["Goldwater", true, "A", 30, 0, ["Undergraduate"]]));
     const controls = $("section.award-directory-controls");
     expect(controls).toHaveLength(1);
     expect(controls.find("#award-directory-search")).toHaveLength(1);
     expect(controls.find(".award-search-panel")).toHaveLength(1);
-    expect(controls.find(".award-directory-filter-grid label").map((_, label) => $(label).children("span").text()).get()).toEqual([
+    expect(controls.find(".award-directory-filter-grid .award-filter-label").map((_, label) => $(label).text()).get()).toEqual([
       "Academic level", "Discipline", "Citizenship", "Updates",
     ]);
-    expect(controls.find(".award-directory-filter-grid select")).toHaveLength(4);
+    expect(controls.find(".award-directory-filter-grid select")).toHaveLength(1);
+    expect(controls.find(".award-directory-filter-grid .award-filter-control > button[popovertarget]")).toHaveLength(3);
     const reset = $("button").filter((_, button) => $(button).text().trim() === "Reset filters");
     expect(reset).toHaveLength(1);
     expect(reset.closest("section.award-directory-controls").get(0)).toBe(controls.get(0));
@@ -451,8 +465,11 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(handler).toMatch(
       /onClick=\{\(\) => \{[\s\S]*?searchInputRef\.current\?\.focus\(\);\s*setQuery\(""\);\s*setSearchOpen\(false\);\s*\}\}/,
     );
-    // Search Clear and filter reset both restore this stable field's focus.
-    expect(source.match(/searchInputRef\.current\?\.focus\(\)/g)).toHaveLength(2);
+    // Reset must restore focus before its button disappears. Other controls,
+    // such as removable filter chips, may restore the same field as well.
+    const resetStart = source.indexOf("function resetFilters()");
+    const reset = source.slice(resetStart, source.indexOf("// Browse categories", resetStart));
+    expect(reset).toMatch(/searchInputRef\.current\?\.focus\(\);\s*setLevelFilter\(\[\]\);/);
   });
 
   it("renders no secondary row action or duplicate award destination in either state", () => {
@@ -489,7 +506,7 @@ describe("AwardDiscoveryWorkspace", () => {
       expect(html, `authenticated=${isAuthenticated}`).toContain(
         '<input id="award-directory-search" class="input input-with-leading-icon award-search-input" type="search" placeholder="Goldwater, Fulbright, NSF GRFP..." value=""/>',
       );
-      expect(html, `authenticated=${isAuthenticated}`).not.toContain("aria-expanded");
+      expect(load(html)("#award-directory-search").attr("aria-expanded"), `authenticated=${isAuthenticated}`).toBeUndefined();
       const $ = load(html);
       const buttonNames = $("button").map((_index, button) => $(button).text().trim()).get();
       expect(buttonNames, `authenticated=${isAuthenticated}`).not.toContain("Hide browse");
@@ -503,34 +520,34 @@ describe("AwardDiscoveryWorkspace", () => {
     }
   });
 
-  it("keeps All defaults and stable native controls around canonical filter options", () => {
+  it("starts checkbox dropdowns at All and keeps the update window as a native single selection", () => {
     const expected = [
-      { label: "Academic level", choices: [["all", "All"], ["Undergraduate", "Undergraduate"]] },
-      { label: "Discipline", choices: [["all", "All"], ["STEM", "STEM"]] },
-      { label: "Citizenship", choices: [["all", "All"], ["U.S. citizens", "U.S. citizens"]] },
-      { label: "Updates", choices: updateChoices },
+      { label: "Academic level", choices: [["Undergraduate", "Undergraduate"]] },
+      { label: "Discipline", choices: [["STEM", "STEM"]] },
+      { label: "Citizenship", choices: [["U.S. citizens", "U.S. citizens"]] },
     ];
     for (const isAuthenticated of [false, true]) {
       const $ = load(render(isAuthenticated));
-      const labels = $(".award-directory-filter-grid > label");
-      expect(labels, `authenticated=${isAuthenticated}`).toHaveLength(4);
-      expect($(".award-directory-filter-grid select"), `authenticated=${isAuthenticated}`).toHaveLength(4);
+      const dropdowns = $(".award-directory-filter-grid .award-filter-control > button[popovertarget]").closest(".award-filter-control");
+      expect(dropdowns, `authenticated=${isAuthenticated}`).toHaveLength(3);
+      expect($(".award-directory-filter-grid select"), `authenticated=${isAuthenticated}`).toHaveLength(1);
       expect($("#award-filter-guidance")).toHaveLength(1);
-      expect($("#award-filter-guidance").text()).toBe("Broad categories only. Check each award for full eligibility.");
-      labels.each((index, node) => {
-        const label = $(node);
-        expect(label.children("span").text()).toBe(expected[index].label);
-        const select = label.children("select");
-        expect(select).toHaveLength(1);
-        expect(select.attr("class")).toBe("input");
-        expect(select.attr("aria-describedby")).toBe(index < 3 ? "award-filter-guidance" : undefined);
-        expect(select.children("option").toArray().map(option => [$(option).attr("value"), $(option).text()])).toEqual(expected[index].choices);
-        const selected = select.children("option[selected]");
-        expect(selected).toHaveLength(1);
-        expect(selected.get(0)).toBe(select.children("option").get(0));
-        expect(selected.attr("value")).toBe("all");
-        expect(selected.text()).toBe("All");
+      dropdowns.each((index, node) => {
+        const dropdown = $(node);
+        expect(dropdown.find(".award-filter-label").first().text()).toBe(expected[index].label);
+        const trigger = dropdown.children("button[popovertarget]");
+        expect(trigger).toHaveLength(1);
+        expect(trigger.attr("aria-expanded")).toBe("false");
+        expect(trigger.attr("aria-describedby")).toBe("award-filter-guidance");
+        expect(trigger.text()).toContain("All");
+        const options = dropdown.find(".award-filter-option");
+        expect(options.toArray().map(option => [$(option).find("input[type='checkbox']").attr("value"), $(option).text().trim()])).toEqual(expected[index].choices);
+        expect(dropdown.find("input[type='checkbox'][checked]")).toHaveLength(0);
+        expect(dropdown.find("[popover='auto']")).toHaveLength(1);
       });
+      const updates = $(".award-directory-filter-grid select");
+      expect(updates.children("option").toArray().map(option => [$(option).attr("value"), $(option).text()])).toEqual(updateChoices);
+      expect(updates.children("option[selected]").attr("value")).toBe("all");
     }
   });
 
@@ -556,11 +573,41 @@ describe("AwardDiscoveryWorkspace", () => {
     ];
     const before = structuredClone(rows);
     const $ = load(renderRows(rows));
-    const selectOptions = (index: number) => $(".award-directory-filter-grid select").eq(index).children("option").toArray().map(option => [$(option).attr("value"), $(option).text()]);
-    expect(selectOptions(0)).toEqual([["all", "All"], ["Undergraduate", "Undergraduate"], ["Recent graduate", "Recent graduate"]]);
-    expect(selectOptions(1)).toEqual([["all", "All"], ["STEM", "STEM"], ["Engineering", "Engineering"], ["Mathematics", "Mathematics"], ["Natural sciences", "Natural sciences"], ["Arts", "Arts & humanities"]]);
-    expect(selectOptions(2)).toEqual([["all", "All"], ["U.S. citizens", "U.S. citizens"], ["U.S. nationals", "U.S. nationals"], ["U.S. permanent residents", "U.S. green card"]]);
+    const checkboxOptions = (index: number) => $(".award-directory-filter-grid .award-filter-control > button[popovertarget]").eq(index).closest(".award-filter-control").find(".award-filter-option").toArray().map(option => [$(option).find("input").attr("value"), $(option).text().trim()]);
+    expect(checkboxOptions(0)).toEqual([["Undergraduate", "Undergraduate"], ["Recent graduate", "Recent graduate"]]);
+    expect(checkboxOptions(1)).toEqual([["STEM", "STEM"], ["Engineering", "Engineering"], ["Mathematics", "Mathematics"], ["Natural sciences", "Natural sciences"], ["Arts", "Arts & humanities"]]);
+    expect(checkboxOptions(2)).toEqual([["U.S. citizens", "U.S. citizens"], ["U.S. nationals", "U.S. nationals"], ["U.S. permanent residents", "U.S. green card"]]);
     expect(rows).toEqual(before);
+  });
+
+  it("uses alternative checked choices within each field and combines the active fields for rendered awards", () => {
+    const rows: SharedAwardCard[] = [
+      { ...goldwater, id: "multi-1", name: "Alpha Undergraduate Science", publicPath: "/alpha-undergraduate-science" },
+      { ...goldwater, id: "multi-2", name: "Alpha Graduate Science", publicPath: "/alpha-graduate-science", academicLevels: ["Graduate"], citizenship: ["All nationalities"] },
+      { ...goldwater, id: "multi-3", name: "Alpha Graduate Arts", publicPath: "/alpha-graduate-arts", academicLevels: ["Graduate"], disciplines: ["Humanities"] },
+      { ...goldwater, id: "multi-4", name: "Alpha High School Science", publicPath: "/alpha-high-school-science", academicLevels: ["High school senior"] },
+      { ...goldwater, id: "multi-5", name: "Alpha Country Science", publicPath: "/alpha-country-science", citizenship: ["Country-specific criteria"] },
+    ];
+    const before = structuredClone(rows);
+    const html = renderRows(rows, ["", false, "A", 30, 0,
+      ["Undergraduate", "Graduate"], ["STEM"], ["U.S. citizens", "All nationalities"],
+    ]);
+    expect(browseRowHrefs(html)).toEqual(["/alpha-graduate-science", "/alpha-undergraduate-science"]);
+    const $ = load(html);
+    expect($(".award-directory-filter-grid input[type='checkbox'][checked]")).toHaveLength(5);
+    expect(html).toContain("2 of 5 awards");
+    expect(rows).toEqual(before);
+  });
+
+  it("includes both academic levels while leaving the other dropdowns unfiltered", () => {
+    const rows: SharedAwardCard[] = [
+      { ...goldwater, id: "broad-1", name: "Alpha Undergraduate", publicPath: "/alpha-undergraduate" },
+      { ...goldwater, id: "broad-2", name: "Alpha Graduate", publicPath: "/alpha-graduate", academicLevels: ["Graduate"], disciplines: ["Humanities"], citizenship: [] },
+      { ...goldwater, id: "broad-3", name: "Alpha High School", publicPath: "/alpha-high-school", academicLevels: ["High school senior"] },
+    ];
+    const html = renderRows(rows, ["", false, "A", 30, 0, ["Undergraduate", "Graduate"]]);
+    expect(browseRowHrefs(html)).toEqual(["/alpha-graduate", "/alpha-undergraduate"]);
+    expect(html).toContain("2 of 3 awards");
   });
 });
 
@@ -620,7 +667,7 @@ const goldwaterRow = directoryRow({
 // The component's state slots in declaration order: query, results open,
 // letter, page size, page index, level, discipline, citizenship,
 // update window, and its selection-time clock anchor.
-const UPDATES_FILTER_PRESETS: unknown[] = ["", false, "A", 30, 0, "all", "all", "all", "week", NOW_MS];
+const UPDATES_FILTER_PRESETS: unknown[] = ["", false, "A", 30, 0, [], [], [], "week", NOW_MS];
 
 function renderRows(rows: SharedAwardCard[], presets: unknown[] = [], isAuthenticated = false, presentationAsOf?: string) {
   searchState.presets = [...presets];
@@ -767,12 +814,12 @@ describe("AwardDiscoveryWorkspace card information", () => {
 
     const unfiltered = renderRows(rows);
     const $ = load(unfiltered);
-    expect($(".award-directory-filter-grid select").eq(3).children("option").toArray().map(option => [$(option).attr("value"), $(option).text()])).toEqual(updateChoices);
+    expect($(".award-directory-filter-grid select").children("option").toArray().map(option => [$(option).attr("value"), $(option).text()])).toEqual(updateChoices);
     expect(unfiltered).not.toContain("Recently updated");
     expect(unfiltered).toContain("3 awards");
 
     const filtered = renderRows(rows, UPDATES_FILTER_PRESETS);
-    expect(load(filtered)(".award-directory-filter-grid select").eq(3).children("option[selected]").text()).toBe("Last week");
+    expect(load(filtered)(".award-directory-filter-grid select").children("option[selected]").text()).toBe("Last week");
     expect(filtered).toContain("2 of 3 awards");
     // The filter still uses recorded events, not presence of any date. Gates
     // has a first-capture date but no recorded change and must be excluded.
@@ -795,10 +842,10 @@ describe("AwardDiscoveryWorkspace card information", () => {
       latestUpdateAt: new Date(timestamp).toISOString(), recentlyUpdated: false,
     }));
     const before = structuredClone(rows);
-    const html = renderRows(rows, ["", false, "G", 30, 0, "all", "all", "all", window, NOW_MS]);
+    const html = renderRows(rows, ["", false, "G", 30, 0, [], [], [], window, NOW_MS]);
     expect(html).toContain("3 of 5 awards");
     expect(browseRowHrefs(html)).toEqual(["/window-0", "/window-1", "/window-2"]);
-    expect(load(html)(".award-directory-filter-grid select").eq(3).children("option[selected]").attr("value")).toBe(window);
+    expect(load(html)(".award-directory-filter-grid select").children("option[selected]").attr("value")).toBe(window);
     expect(browseRowHrefs(renderRows(rows))).toEqual(rows.map(row => row.publicPath));
     expect(rows).toEqual(before);
   });
@@ -817,7 +864,7 @@ describe("AwardDiscoveryWorkspace card information", () => {
     };
     const rows = [excluded, { ...goldwaterRow, recentlyUpdated: false }];
     const before = structuredClone(rows);
-    const html = renderRows(rows, ["", false, "G", 30, 0, "all", "all", "all", "year", NOW_MS]);
+    const html = renderRows(rows, ["", false, "G", 30, 0, [], [], [], "year", NOW_MS]);
     expect(html).toContain("1 of 2 awards");
     expect(browseRowHrefs(html)).toEqual([goldwaterRow.publicPath]);
     expect(rows).toEqual(before);
@@ -1132,10 +1179,11 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     for (const authenticated of [false, true]) {
       const html = renderRows(deadlineRows, [], authenticated);
       const $ = load(html);
-      expect($(".award-directory-filter-grid > label > span").map((_index, label) => $(label).text()).get()).toEqual([
+      expect($(".award-directory-filter-grid .award-filter-label").map((_index, label) => $(label).text()).get()).toEqual([
         "Academic level", "Discipline", "Citizenship", "Updates",
       ]);
-      expect($(".award-directory-filter-grid select")).toHaveLength(4);
+      expect($(".award-directory-filter-grid select")).toHaveLength(1);
+      expect($(".award-directory-filter-grid .award-filter-control > button[popovertarget]")).toHaveLength(3);
       expect($("select option[value='listed'], select option[value='missing']")).toHaveLength(0);
       expect(html).not.toContain("Deadline listed");
       expect(html).not.toContain("Deadline not listed");
@@ -1277,7 +1325,7 @@ function fictionalHrefs(from: number, to: number) {
 // filters keep their defaults. These preset the derived render only; they do
 // not exercise the click handlers themselves.
 function browsePresets({ letter = "A", pageSize = 30, pageIndex = 0, level = "all" } = {}): unknown[] {
-  return ["", false, letter, pageSize, pageIndex, level];
+  return ["", false, letter, pageSize, pageIndex, level === "all" ? [] : [level]];
 }
 
 // One useful letter/count status renders above the list, without a repeated footer.
@@ -1611,10 +1659,10 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
       ...row,
       academicLevels: [index === 100 ? "Undergraduate" : "Graduate"],
     }));
-    const graduate = renderRows(filteredRows, ["fictional award", true, "A", 30, 0, "Graduate"]);
+    const graduate = renderRows(filteredRows, ["fictional award", true, "A", 30, 0, ["Graduate"]]);
     expect(graduate).toContain('<p role="status">100 matching awards</p>');
     expect(searchOptionHrefs(graduate)).toEqual(fictionalHrefs(1, 100));
-    const undergraduate = renderRows(filteredRows, ["fictional award", true, "A", 30, 0, "Undergraduate"]);
+    const undergraduate = renderRows(filteredRows, ["fictional award", true, "A", 30, 0, ["Undergraduate"]]);
     expect(undergraduate).toContain('<p role="status">1 matching award</p>');
     expect(searchOptionHrefs(undergraduate)).toEqual(["/fictional-award-101"]);
   });

@@ -181,3 +181,43 @@
     width: 100%;
   }
 }
+.controls {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.filterGrid:global(.award-directory-filter-grid) {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.filterGrid:global(.award-directory-filter-grid) > label > span {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.filterGrid select { min-height: 44px; font-size: 0.875rem; }
+.selections { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.85rem; }
+.selection {
+  display: inline-flex; align-items: center; gap: 0.4rem; min-height: 32px;
+  border: 1px solid var(--accent-border); border-radius: var(--radius-xs);
+  background: var(--accent-quiet); padding: 0.3rem 0.5rem;
+  color: var(--accent-text); font-size: 0.75rem; cursor: pointer;
+}
+.selection:hover { border-color: var(--accent); }
+.selection:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.resetFilters:global(.button-secondary) { border-color: transparent; background: transparent; padding: 0.4rem 0.5rem; color: var(--accent-text); font-size: 0.8125rem; box-shadow: none; }
+.resetFilters:global(.button-secondary):hover { text-decoration: underline; background: var(--accent-quiet); }
+
+@media (max-width: 720px) {
+  .controls { padding: 0.85rem; }
+  .filterGrid:global(.award-directory-filter-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (pointer: coarse) { .selection { min-height: 44px; } .filterGrid select { font-size: 1rem; } }
