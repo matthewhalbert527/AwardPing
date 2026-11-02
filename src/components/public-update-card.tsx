@@ -40,10 +40,7 @@ export function PublicUpdateCard({ update }: { update: LiveUpdateItem }) {
           </div>
         </header>
         <div className={styles.panel}>
-          {!update.group && update.sourceTitle && (
-            <p className="public-live-update-source">{update.sourceTitle}</p>
-          )}
-          {update.group ? <PublicAlertGroupSummary members={update.group.members} /> : <ChangeSummaryDisplay
+          {update.group ? <PublicAlertGroupSummary members={update.group.members} showSourceTitles={false} /> : <ChangeSummaryDisplay
             compact
             summary={update.summary}
             sourceUrl={update.sourceUrl}

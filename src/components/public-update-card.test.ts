@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { load } from "cheerio";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicUpdateCard } from "@/components/public-update-card";
+import { PublicAlertGroupSummary } from "@/components/public-alert-group-summary";
 import { FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY } from "@/lib/change-details";
 import { changeSummaryPresentation } from "@/lib/change-summary";
 import type { LiveUpdateItem } from "@/lib/live-updates";
@@ -42,7 +43,7 @@ describe("consistent public update cards shared by home and global Updates", () 
     expect($(".public-live-update-source-link").attr("href")).toBe(item.sourceUrl);
     expect(navigation.links.every(link => link.onClick === undefined)).toBe(true);
   });
-  it("shows one related update with each original page and description kept separate", () => {
+  it("shows grouped descriptions without source-page headings and keeps the exact update link", () => {
     const first = update({ id: "first", summary: "U.S. applicants now need an additional statement.", changeDetails: {}, sourceTitle: "Application instructions" });
     const second = update({ id: "second", summary: "A new citizenship exception applies only to the stated route.", changeDetails: {},
       sourceTitle: "Eligibility rules", sourceUrl: "https://example.edu/award/eligibility" });
@@ -52,12 +53,14 @@ describe("consistent public update cards shared by home and global Updates", () 
     expect($("article")).toHaveLength(1);
     expect($("[aria-label='Related changes'] section")).toHaveLength(2);
     expect($("h3 a").attr("href")).toBe("/example-award?change=first");
-    expect($("a[href='https://example.edu/award/eligibility']")).toHaveLength(1);
+    expect($("[aria-label='Related changes'] header, [aria-label='Related changes'] a")).toHaveLength(0);
+    expect($.text()).not.toContain(first.sourceTitle);
+    expect($.text()).not.toContain(second.sourceTitle);
     expect($.text()).toContain(first.summary);
     expect($.text()).toContain(second.summary);
     expect(first).toEqual(before);
   });
-  it("uses the award-page presentation title and preserves non-PDF source attribution", () => {
+  it("uses the change title without a source-page heading and preserves the official-source action", () => {
     const item = update();
     const before = structuredClone(item);
     const $ = load(renderToStaticMarkup(createElement(PublicUpdateCard, { update: item })));
@@ -66,7 +69,8 @@ describe("consistent public update cards shared by home and global Updates", () 
     expect($(".public-live-update-time > strong").text()).toBe(parts.title);
     expect(parts.title).toBe("Application dates changed");
     expect($(".public-live-update-time").text()).not.toContain("Deadline");
-    expect($(".public-live-update-source").text()).toBe("Application instructions");
+    expect($(".public-live-update-source")).toHaveLength(0);
+    expect($.text()).not.toContain(item.sourceTitle);
     expect($(".change-summary").text()).toBe(parts.text);
     expect($(".change-summary")).toHaveLength(1);
     expect($(".change-summary-label, .badge")).toHaveLength(0);
@@ -100,7 +104,7 @@ describe("consistent public update cards shared by home and global Updates", () 
     });
     const $ = load(renderToStaticMarkup(createElement(PublicUpdateCard, { update: item })));
     expect($(".public-live-update-time > strong").text()).toBe("Official document first recorded");
-    expect($(".public-live-update-source").text()).toBe("2027 Candidate Guide");
+    expect($(".public-live-update-source")).toHaveLength(0);
     expect($(".change-summary").text()).toBe(FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY);
     expect($.text()).not.toContain("New official document");
     expect($.text()).not.toContain("posted this new document today");
@@ -115,8 +119,17 @@ describe("consistent public update cards shared by home and global Updates", () 
       const $ = load(renderToStaticMarkup(createElement(PublicUpdateCard, { update: item })));
       expect($(".public-live-update-time > strong")).toHaveLength(0);
       expect($(".change-summary").text()).toBe(item.summary);
-      expect($(".public-live-update-source").text()).toBe(item.sourceTitle);
+      expect($(".public-live-update-source")).toHaveLength(0);
     }
+  });
+
+  it("keeps source-page names and links in the grouped update detail", () => {
+    const members = [update({ id: "first", sourceTitle: "eligible to apply" }),
+      update({ id: "second", sourceTitle: "Start your application", sourceUrl: "https://example.edu/start" })];
+    const $ = load(renderToStaticMarkup(createElement(PublicAlertGroupSummary, { members, showEvidence: true })));
+    expect($("section header a").map((_index, link) => $(link).text()).get()).toEqual(members.map(member => member.sourceTitle));
+    expect($("section header a").map((_index, link) => $(link).attr("href")).get()).toEqual(members.map(member => member.sourceUrl));
+    expect($("section header time")).toHaveLength(2);
   });
 
   it("preserves qualified fallback prose and an unreadable date without inventing a timestamp", () => {

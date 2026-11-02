@@ -312,11 +312,12 @@ describe("public updates page", () => {
     expect(sourceLink.text().trim()).toBe("Official source");
     expect(row.find(".public-live-update-time > strong")).toHaveLength(0);
     expect(row.find(".badge, .change-summary-label")).toHaveLength(0);
-    expect(row.find(".public-live-update-source").text()).toBe("Application Instructions");
+    expect(row.find(".public-live-update-source")).toHaveLength(0);
+    expect(row.text()).not.toContain("Application Instructions");
     expect(row.find(".change-summary").text()).toBe("The application deadline moved to January 30.");
   });
 
-  it("retains the document identity and observation limit without repeating arbitrary PDF quotations", async () => {
+  it("retains the document source link and observation limit without a source-page heading or arbitrary PDF quotations", async () => {
     useFeed([makeSeed({
       awardName: "Marshall Scholarship",
       sourceTitle: "2027 Rules for Marshall Scholarship Candidates",
@@ -334,7 +335,8 @@ describe("public updates page", () => {
     const $ = load(await renderUpdatesPage());
     const row = $(".public-live-update-row");
 
-    expect(row.find(".public-live-update-source").text()).toBe("2027 Rules for Marshall Scholarship Candidates");
+    expect(row.find(".public-live-update-source")).toHaveLength(0);
+    expect(row.text()).not.toContain("2027 Rules for Marshall Scholarship Candidates");
     expect(row.find(".public-live-update-time > strong").map((_index, item) => $(item).text()).get()).toEqual(["Official document first recorded"]);
     expect(row.find(".badge, .change-summary-label")).toHaveLength(0);
     expect(row.find(".change-summary").text()).toBe(
