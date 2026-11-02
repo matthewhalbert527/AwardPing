@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {readFileSync} from 'node:fs';
 import {parse} from 'libpg-query';
-const migration=readFileSync(new URL('../supabase/migrations/20261102020208_program_award_expansion_batch_five.sql',import.meta.url),'utf8');
+const migration=readFileSync(new URL('../supabase/migrations/20261102023101_program_award_expansion_batch_five.sql',import.meta.url),'utf8');
 const config=JSON.parse(readFileSync(new URL('../config/program-award-expansion.json',import.meta.url),'utf8'));
 const oldMigration=readFileSync(new URL('../supabase/migrations/20261101155527_program_award_expansion_batch_four.sql',import.meta.url),'utf8');
 const candidates=JSON.parse(migration.match(/\$candidates\$([\s\S]+?)\$candidates\$/)[1]);
