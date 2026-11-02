@@ -51,13 +51,19 @@ function decodedProtectedDestination(text,block,source){
 const HONEYPOT_SOURCE='f322a07c-f78c-47fd-aafb-ab6422a4248f';
 const HONEYPOT_OWNER='dd23afbb-299e-489f-8a0b-e4d7506848de';
 const HONEYPOT_URL='https://www.schwarzmanscholars.org/admissions/application-instructions/';
-// Finite observed mailing-list form profiles. Each source retains its exact URL,
-// form action and observed label pair; no other GravityForms field is admitted.
+// The same publisher's form5 rotates its anti-spam prompt independently of the
+// page. Bind its observed vocabulary to the exact hidden field rather than to
+// whichever two labels happened to appear in one pair of captures. Unknown
+// labels remain held; visible fields and every other form/body byte still have
+// to pass the existing raw-marker and complete residual comparison.
+const HONEYPOT_LABELS=Object.freeze(['Company','Facebook','Instagram','LinkedIn','URL','X/Twitter']);
+// Each source retains its exact owner, URL and form action. No other
+// GravityForms source, form or field is admitted.
 const HONEYPOT_PROFILES=Object.freeze([
- {source_id:HONEYPOT_SOURCE,owner:HONEYPOT_OWNER,url:HONEYPOT_URL,action:'/admissions/application-instructions/#gf_5',labels:['URL','LinkedIn']},
- {source_id:'434c57c2-4f87-4c5e-bc88-24cb59f4b1e7',owner:'19135163-d9dd-4fc2-b2ae-7d0bb8449735',url:'https://www.schwarzmanscholars.org/admissions/',action:'/admissions/#gf_5',labels:['LinkedIn','Company']},
- {source_id:'db04bc7a-d0fd-40a5-8922-30921b02a7e2',owner:HONEYPOT_OWNER,url:'https://www.schwarzmanscholars.org/admissions/',action:'/admissions/#gf_5',labels:['LinkedIn','Company']},
- {source_id:'5bf1f780-ffc1-49e1-88d7-7da3ebd943cf',owner:'19135163-d9dd-4fc2-b2ae-7d0bb8449735',url:'https://www.schwarzmanscholars.org/',action:'/#gf_5',labels:['Facebook','Instagram']},
+ {source_id:HONEYPOT_SOURCE,owner:HONEYPOT_OWNER,url:HONEYPOT_URL,action:'/admissions/application-instructions/#gf_5'},
+ {source_id:'434c57c2-4f87-4c5e-bc88-24cb59f4b1e7',owner:'19135163-d9dd-4fc2-b2ae-7d0bb8449735',url:'https://www.schwarzmanscholars.org/admissions/',action:'/admissions/#gf_5'},
+ {source_id:'db04bc7a-d0fd-40a5-8922-30921b02a7e2',owner:HONEYPOT_OWNER,url:'https://www.schwarzmanscholars.org/admissions/',action:'/admissions/#gf_5'},
+ {source_id:'5bf1f780-ffc1-49e1-88d7-7da3ebd943cf',owner:'19135163-d9dd-4fc2-b2ae-7d0bb8449735',url:'https://www.schwarzmanscholars.org/',action:'/#gf_5'},
 ]);
 const VALIDATION_SENTENCE='This field is for validation purposes and should be left unchanged.';
 const WIDGET_PROFILES=Object.freeze([
@@ -113,7 +119,10 @@ function honeypotMarker(capture,block){
  const wrapper=li.parents('#gform_wrapper_5'),form=li.parents('form#gform_5');
  check(wrapper.length===1&&form.length===1&&/^\s*display\s*:\s*none\s*;?\s*$/i.test(wrapper.attr('style')||'')&&li.parent('ul#gform_fields_5').length===1&&form.attr('method')==='post'&&form.attr('data-formid')==='5'&&form.attr('action')===profile.action&&form.attr('target')==='gform_ajax_frame_5','exact_hidden_newsletter_form_required');
  const label=li.children('label#gfield_label_5_10[for="input_5_10"]'),labelSpan=label.children('span.gform-field-label__text'),input=li.find('input'),description=li.children('div#gfield_description_5_10.gfield_description');
- check(label.length===1&&labelSpan.length===1&&label.children().length===1&&profile.labels.includes(labelSpan.text())&&input.length===1&&input.attr('name')==='input_10'&&input.attr('id')==='input_5_10'&&input.attr('type')==='text'&&input.attr('value')===''&&input.attr('autocomplete')==='new-password'&&description.length===1&&description.text()===VALIDATION_SENTENCE&&[labelSpan.text(),description.text()].join(' ')===block.text&&li.text().replace(/\s+/g,'')===block.text.replace(/\s+/g,''),'exact_honeypot_label_only');
+ check(label.length===1&&labelSpan.length===1&&label.children().length===1&&HONEYPOT_LABELS.includes(labelSpan.text())&&input.length===1&&input.attr('name')==='input_10'&&input.attr('id')==='input_5_10'&&input.attr('type')==='text'&&input.attr('value')===''&&input.attr('autocomplete')==='new-password'&&description.length===1&&description.text()===VALIDATION_SENTENCE&&[labelSpan.text(),description.text()].join(' ')===block.text&&li.text().replace(/\s+/g,'')===block.text.replace(/\s+/g,''),'exact_honeypot_label_only');
+ // A matching visible list item must never borrow the hidden field's witness.
+ const outside=dom('body').clone();outside.find('li#field_5_10.gfield--type-honeypot.gform_validation_container').remove();
+ check(capture.blocks.filter(b=>b.kind==='li'&&b.text===block.text).length===1&&!rawTextVariants(outside[0]).some(t=>t.includes(flow(block.text))),'honeypot_block_not_unique_to_hidden_field');
  const wrapperLocation=wrapper[0].sourceCodeLocation?.startTag,formLocation=form[0].sourceCodeLocation?.startTag;
  check(wrapperLocation&&formLocation,'actual_form_and_wrapper_locators_required');
  const snippet=html.slice(location.startOffset,location.endOffset);
