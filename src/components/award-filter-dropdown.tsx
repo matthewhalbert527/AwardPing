@@ -46,9 +46,15 @@ export function AwardFilterDropdown({ id, label, options, value, onChange, descr
 
   useEffect(() => {
     if (!open) return;
+    // Search results and selected chips can resize the surrounding controls
+    // without scrolling the page. Follow those layout changes as well.
+    const observer = new ResizeObserver(positionPanel);
+    const controls = trigger.current?.closest(".award-directory-controls");
+    if (controls) observer.observe(controls);
     window.addEventListener("resize", positionPanel);
     window.addEventListener("scroll", positionPanel, { capture: true, passive: true });
     return () => {
+      observer.disconnect();
       window.removeEventListener("resize", positionPanel);
       window.removeEventListener("scroll", positionPanel, true);
     };
