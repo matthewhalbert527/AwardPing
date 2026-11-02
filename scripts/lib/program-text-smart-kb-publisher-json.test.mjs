@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { load } from "cheerio";
 import { createSyntheticSmartKbPublisherJsonFixture as fixture } from "../fixtures/smart-kb-publisher-json.mjs";
-import { createSyntheticSmartKbPlatformBuildFixture as platformFixture } from "../fixtures/smart-kb-platform-build.mjs";
 import { syntheticPublisherJsonObservation } from "../fixtures/program-text-publisher-json.mjs";
 import { buildProgramTextCapture, validateProgramTextCapture } from "./program-text-capture-contract.mjs";
 import { publisherJsonObservationMetadata } from "./program-text-publisher-json.mjs";
@@ -15,6 +14,20 @@ const article = doc => doc.result.containers[3].rows[0].columns[0].widgets[0].wi
 const encode = JSON.stringify;
 const project = (key, doc = fixture(key)) => projectSmartKbPublisherJson(encode(doc), { source: source(key) });
 const held = (edit, code, key = "faq") => { const doc = fixture(key); edit(doc); assert.throws(() => project(key, doc), e => e.code?.startsWith("program_text_smart_kb_json_") && (!code || e.code.endsWith(code))); };
+
+// Synthetic article prose with the exact dependency strings observed together
+// in the anonymous public FAQ response on 2026-11-02. Controllers, templates,
+// CSS, graph, source identities and other static data remain the reviewed bytes.
+// Private original response SHA:
+// 15032caaf901187863af9bd9f61cb4e382b08381bb566e4532b4b61a27b788e4.
+function platformFixture(key) {
+  const document = fixture(key);
+  document.result.theme.header.data.menu.dependencies[0].files[0].url =
+    "/scripts/angular-truncate.js?v=10-26-2026_2343";
+  document.result.containers[1].rows[0].columns[0].widgets[0].widget.data.technical_help_widget.dependencies[0].files[0].url =
+    "https://www.google.com/recaptcha/api.js?v=10-26-2026_2343";
+  return document;
+}
 
 for (const key of ["faq", "submit", "instructions"]) test(`${key}: complete reviewed platform build preserves all projected programme content`, () => {
   const legacy = project(key), current = project(key, platformFixture(key));
