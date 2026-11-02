@@ -293,11 +293,15 @@ export const BASIC_CONTINUITY_SOURCE_IDS=Object.freeze([
 ]);
 const continuityProfile=(source,cohort)=>cohort==='schwarzman'?HONEYPOT_PROFILES.find(p=>p.source_id===source?.id&&p.owner===source.shared_award_id&&p.url===source.url):
  cohort==='daad_study'?WIDGET_PROFILES.find(p=>p.profile==='daad_sponsored_university_carousel.v1'&&p.source_id===source?.id&&p.owner===source.shared_award_id&&p.url===source.url):null;
+function continuityWrapperTag(tag){
+ return /^<div class='gf_browser_(?:unknown|chrome) /.test(tag)&&(tag.match(/gf_browser_[A-Za-z0-9_-]+/g)||[]).length===1?
+  tag.replace(/^<div class='gf_browser_(?:unknown|chrome) /,"<div class='gf_browser_OBSERVED "):null;
+}
 function continuityHiddenIdentity(previous,current){
  const blocks=current.blocks.filter(b=>b.kind==='li'&&b.text.endsWith(' '+VALIDATION_SENTENCE));check(blocks.length===1,'unique_continuity_honeypot_block_required');
  const block=blocks[0],old=previous.blocks.find(b=>b.id===block.id);check(old&&reviewedBasicEqual(semantic(old),semantic(block)),'identical_hidden_block_required');
  const a=honeypotMarker(previous,old),b=honeypotMarker(current,block);
- check(a.label===b.label&&a.html===b.html&&a.wrapper_start_tag===b.wrapper_start_tag&&a.form_start_tag===b.form_start_tag,'identical_hidden_field_required');
+ check(a.label===b.label&&a.html===b.html&&continuityWrapperTag(a.wrapper_start_tag)!==null&&continuityWrapperTag(a.wrapper_start_tag)===continuityWrapperTag(b.wrapper_start_tag)&&a.form_start_tag===b.form_start_tag,'identical_hidden_field_required');
  return{kind:'hidden_gravityforms_honeypot_label',block_id:block.id,previous_marker:a,current_marker:b};
 }
 function continuityWidgetRemainder(capture,widget){
@@ -321,6 +325,10 @@ export function basicContinuityPair(previous,current,{epoch,cohort_key}){
  check(continuityProfile(current.source,cohort_key)&&reviewedBasicEqual(previous.source,current.source)&&previous.final_url===current.final_url&&
   current.final_url===current.source.url&&previous.acquisition==='http_html'&&current.acquisition==='http_html'&&reviewedBasicEqual(previous.extractor,current.extractor),'finite_continuity_source_required');
  for(const capture of[previous,current]){validateProgramTextCapture(capture);check(capture.completeness.status==='complete'&&capture.completeness.reasons.length===0,'complete_continuity_originals_required');}
+ if(cohort_key==='schwarzman'){
+  const markers=[previous,current].map(c=>{const blocks=c.blocks.filter(b=>b.kind==='li'&&b.text.endsWith(' '+VALIDATION_SENTENCE));check(blocks.length===1,'unique_continuity_honeypot_block_required');return honeypotMarker(c,blocks[0]);});
+  check(continuityWrapperTag(markers[0].wrapper_start_tag)!==null&&continuityWrapperTag(markers[0].wrapper_start_tag)===continuityWrapperTag(markers[1].wrapper_start_tag)&&markers[0].form_start_tag===markers[1].form_start_tag,'hidden_wrapper_or_form_changed');
+ }
  const comparison=buildProgramTextComparison(previous,current,{epoch,cycle_id:null});
  if(comparison.status==='review_required'){
   const proof=reviewedBasicDeterministicRules(previous,current,comparison);

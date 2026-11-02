@@ -10,12 +10,14 @@ import {REVIEWED_BASIC_REPEAT_KIND as kind,REVIEWED_BASIC_REPEAT_INSPECTION_SCHE
 import {createProgramTextRepository,listBasicContinuityWork} from './program-text-repository.mjs';
 import {review as runOrdinaryReview} from '../program-text-worker.mjs';
 
-function continuityFixture({anchorLabel='URL',previousLabel='Company',currentLabel='LinkedIn',anchorBody=sentence,currentBody=sentence,visible=false,identical=false,emailChange=false}={}){
+function continuityFixture({anchorLabel='URL',previousLabel='Company',currentLabel='LinkedIn',anchorBody=sentence,currentBody=sentence,visible=false,identical=false,emailChange=false,wrapperClasses=null,changedForm=false}={}){
  const source={id:'f322a07c-f78c-47fd-aafb-ab6422a4248f',shared_award_id:'dd23afbb-299e-489f-8a0b-e4d7506848de',url:'https://www.schwarzmanscholars.org/admissions/application-instructions/',title:'Application Instructions',page_type:'application',admin_review_status:'open',text_collection_quality:null};
  const make=(label,date,body=sentence)=>{
   const prompt=label+' This field is for validation purposes and should be left unchanged.';
   const href=encoded('admissions@schwarzmanscholars.org',date.includes('20:00:')?3:41);
-  const raw='<html><body><p>'+body+'</p><div id="gform_wrapper_5" style="display:'+(visible?'block':'none')+'"><form id="gform_5" method="post" data-formid="5" action="/admissions/application-instructions/#gf_5" target="gform_ajax_frame_5"><ul id="gform_fields_5"><li id="field_5_10" class="gfield gfield--type-honeypot gform_validation_container"><label id="gfield_label_5_10" for="input_5_10"><span class="gform-field-label__text">'+label+'</span></label><div><input name="input_10" id="input_5_10" type="text" value="" autocomplete="new-password"/></div><div class="gfield_description" id="gfield_description_5_10">This field is for validation purposes and should be left unchanged.</div></li></ul><input type="hidden" name="state_5" value="runtime-'+date+'"/></form></div>'+(emailChange?'<a href="'+href+'">Contact</a>':'')+'</body></html>';
+  const wrapper=wrapperClasses?wrapperClasses[date.includes('20:02:')?1:0]:'gf_browser_unknown gform_wrapper original',action=changedForm&&date.includes('20:02:')?'/other/#gf_5':'/admissions/application-instructions/#gf_5';
+  const wrapperTag="<div class='"+wrapper+"' id='gform_wrapper_5' style='display:"+(visible?'block':'none')+"'>";
+  const raw='<html><body><p>'+body+'</p>'+wrapperTag+'<form id="gform_5" method="post" data-formid="5" action="'+action+'" target="gform_ajax_frame_5"><ul id="gform_fields_5"><li id="field_5_10" class="gfield gfield--type-honeypot gform_validation_container"><label id="gfield_label_5_10" for="input_5_10"><span class="gform-field-label__text">'+label+'</span></label><div><input name="input_10" id="input_5_10" type="text" value="" autocomplete="new-password"/></div><div class="gfield_description" id="gfield_description_5_10">This field is for validation purposes and should be left unchanged.</div></li></ul><input type="hidden" name="state_5" value="runtime-'+date+'"/></form></div>'+(emailChange?'<a href="'+href+'">Contact</a>':'')+'</body></html>';
   let text=body+'\n'+prompt;
   const blocks=[{id:'body',kind:'p',heading:'Program',context:{heading_path:[{level:1,text:'Program'}]},text:body,start_utf16:0,end_utf16:body.length},{id:'hidden',kind:'li',heading:'Stay Connected',context:{heading_path:[{level:3,text:'Stay Connected'}]},text:prompt,start_utf16:body.length+1,end_utf16:text.length}];
   if(emailChange){text+='\n'+href;blocks.push({id:'email',kind:'source_link',heading:'Contact',context:{source_attribute:'href',link_text:'Contact'},text:href,start_utf16:text.length-href.length,end_utf16:text.length});}
@@ -86,6 +88,20 @@ describe('machine-only DAAD zero-packet reorder continuity',()=>{
 });
 
 describe('head-preserving basic technical continuity',()=>{
+ it.each([false,true])('projects only the observed browser-class token with identical labels=%s',async identical=>{
+  const f=continuityFixture({identical,wrapperClasses:['gf_browser_unknown gform_wrapper original','gf_browser_chrome gform_wrapper original']});
+  expect((await prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).p_validation.kind).toBe(identical?'ordinary_unchanged':'ordinary_no_program_change');
+ });
+ it.each([
+  {wrapperClasses:['gf_browser_unknown gform_wrapper original','gf_browser_chrome gform_wrapper altered']},
+  {wrapperClasses:['gf_browser_unknown gform_wrapper original','gf_browser_safari gform_wrapper original']},
+  {wrapperClasses:['gf_browser_unknown gform_wrapper original','gform_wrapper gf_browser_chrome original']},
+  {wrapperClasses:['gf_browser_unknown gform_wrapper original','gf_browser_chrome gf_browser_unknown gform_wrapper original']},
+  {wrapperClasses:['gf_browser_unknown gform_wrapper original','gf_browser_chrome gform_wrapper original'],visible:true},
+  {wrapperClasses:['gf_browser_unknown gform_wrapper original','gf_browser_chrome gform_wrapper original'],changedForm:true},
+ ])('preserves every other wrapper, visibility and form guard %#',async options=>{
+  for(const identical of[false,true]){const f=continuityFixture({...options,identical});await expect(prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).rejects.toThrow();}
+ });
  it('proves the real normal pair and approved anchor directly without changing approval/facts/dates',async()=>{
   const f=continuityFixture(),before=JSON.stringify(f.inspection),v=(await prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).p_validation;
   expect(v.actor).toBe(BASIC_CONTINUITY_ACTOR);expect(v.kind).toBe('ordinary_no_program_change');expect(v.expected_head).toBe(head);
