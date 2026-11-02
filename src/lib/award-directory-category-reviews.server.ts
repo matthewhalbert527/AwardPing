@@ -53,6 +53,7 @@ const reviews: Readonly<Record<string, Record<DirectoryFilterField, readonly str
     ],
     "citizenship": [
       "U.S. citizens",
+      "U.S. nationals",
       "Country-specific criteria"
     ]
   },
@@ -156,6 +157,7 @@ const reviews: Readonly<Record<string, Record<DirectoryFilterField, readonly str
       "Environment & earth sciences"
     ],
     "citizenship": [
+      "U.S. citizens",
       "Country-specific criteria"
     ]
   },
@@ -321,6 +323,7 @@ const reviews: Readonly<Record<string, Record<DirectoryFilterField, readonly str
       "Multiple fields (check courses)"
     ],
     "citizenship": [
+      "U.S. citizens",
       "Country-specific criteria"
     ]
   },
@@ -913,6 +916,7 @@ const reviews: Readonly<Record<string, Record<DirectoryFilterField, readonly str
       "No field restriction"
     ],
     "citizenship": [
+      "U.S. citizens",
       "Country-specific criteria"
     ]
   }

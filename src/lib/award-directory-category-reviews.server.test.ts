@@ -104,6 +104,7 @@ const cases = [
       ],
       "citizenship": [
         "U.S. citizens",
+        "U.S. nationals",
         "Country-specific criteria"
       ]
     }
@@ -329,6 +330,7 @@ const cases = [
         "Environment & earth sciences"
       ],
       "citizenship": [
+        "U.S. citizens",
         "Country-specific criteria"
       ]
     }
@@ -671,6 +673,7 @@ const cases = [
         "Multiple fields (check courses)"
       ],
       "citizenship": [
+        "U.S. citizens",
         "Country-specific criteria"
       ]
     }
@@ -1922,6 +1925,7 @@ const cases = [
         "No field restriction"
       ],
       "citizenship": [
+        "U.S. citizens",
         "Country-specific criteria"
       ]
     }
