@@ -27,6 +27,7 @@ vi.mock("./lib/program-text-browser.mjs", async original => ({ ...await original
 import { runProgramTextWorker } from "./program-text-worker.mjs";
 import { rosterPageFixture, emptyVariationBatchFixture } from "./fixtures/program-text-roster-pages.mjs";
 import { SMART_GUIDE_KB_SOURCE_PROFILES } from "./lib/program-text-smart-guide-profiles.mjs";
+import { programTextCaptureInternals } from "./lib/program-text-capture-contract.mjs";
 
 const nativeFs = await vi.importActual("node:fs");
 const actualConfig = JSON.parse(nativeFs.readFileSync(new URL("../config/program-text-monitoring.json", import.meta.url), "utf8"));
@@ -58,6 +59,9 @@ const rotary = [
   { id: "235ed53e-5cd3-4315-b653-7450e0e10c84", shared_award_id: "4f66e3fa-3924-4d0d-a04d-a32989f74c2e", url: "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships/peace-fellowships-masters-degree-programs", page_type: "other", acquisition: "rendered_html" },
   { id: "37255bb3-547a-4181-a953-86c38093e87c", shared_award_id: "4f66e3fa-3924-4d0d-a04d-a32989f74c2e", url: "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships/peace-fellowships-certificate-program", page_type: "other", acquisition: "rendered_html" },
 ];
+const cheveningEligibility = { id: "ed3e72e6-a529-42e0-8ba0-fb78a323620a", shared_award_id: "60d68065-a9ee-4ef5-9096-1467c299538e",
+  url: "https://chevening.org/resource-hub/guidance/eligibility/", page_type: "eligibility" };
+const cheveningEligibilityFinal = "https://www.chevening.org/resource-hub/guidance/eligibility/";
 const smartCanonical = "d7d4d117-f312-456f-a75c-3dbd5d372c99", smartAlias = "1efa2a75-e6b8-4bf6-80be-85ef2f6b3108";
 // Independent reviewed identities, including the existing alias-owned routes.
 // Expected owners, literal URLs and page types do not come from the configuration.
@@ -87,6 +91,27 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("reviewed source-bound browser acquisition configuration", () => {
+  it("allows only the exact Chevening eligibility origin transition for its reviewed source", async () => {
+    expect(actualConfig.sources[cheveningEligibility.id]).toEqual({ source_url: cheveningEligibility.url, shared_award_id: cheveningEligibility.shared_award_id,
+      allowed_final_urls: [cheveningEligibilityFinal] });
+    shared.cohort = "chevening"; shared.sources = [{ ...cheveningEligibility, admin_review_status: "open" }];
+    await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);
+    expect(shared.calls).toHaveLength(1); expect(shared.calls[0].captureOptions.allowedFinalUrls).toEqual([cheveningEligibilityFinal]);
+    expect(() => programTextCaptureInternals.checkFinalUrl(cheveningEligibility, cheveningEligibilityFinal, [cheveningEligibilityFinal])).not.toThrow();
+    for (const final of ["https://www.chevening.org/apply/", `${cheveningEligibilityFinal}?different=1`, "https://www.krellinst.org/resource-hub/guidance/eligibility/"])
+      expect(() => programTextCaptureInternals.checkFinalUrl(cheveningEligibility, final, [cheveningEligibilityFinal])).toThrow("unapproved_redirect_origin");
+    expect(() => programTextCaptureInternals.checkFinalUrl(cheveningEligibility, cheveningEligibilityFinal, [])).toThrow("unapproved_redirect_origin");
+  });
+  it.each(["url", "shared_award_id"])("holds changed Chevening eligibility %s before applying its redirect exception", async field => {
+    shared.cohort = "chevening"; shared.sources = [{ ...cheveningEligibility, [field]: field === "url" ? cheveningEligibilityFinal : canonical, admin_review_status: "open" }];
+    const report = await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);
+    expect(report.results).toEqual([{ source_id: cheveningEligibility.id, status: "held", reason: "source_configuration_changed" }]); expect(shared.calls).toHaveLength(0);
+  });
+  it("does not give a different source ID the Chevening redirect exception", async () => {
+    shared.cohort = "chevening"; shared.sources = [{ ...cheveningEligibility, id: "11111111-1111-4111-8111-111111111111", admin_review_status: "open" }];
+    await runProgramTextWorker(["--mode=collect", "--apply=true", "--domain-delay-ms=0"]);
+    expect(shared.calls).toHaveLength(1); expect(shared.calls[0].captureOptions.allowedFinalUrls).toEqual([]);
+  });
   it("preserves the six SMART identities and uses explicit reviewed modes for the twelve guides", async () => {
     expect(Object.entries(actualConfig.sources).filter(([, value]) => value.acquisition === "publisher_json").map(([id]) => id).sort())
       .toEqual([...smartReviewed, ...smartGuides].map(profile => profile.id).sort());

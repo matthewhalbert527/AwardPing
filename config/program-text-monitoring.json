@@ -3,6 +3,13 @@
   "epoch": "ec349339-ff62-4d2e-a610-8c361b4044ec",
   "enabled": true,
   "sources": {
+    "ed3e72e6-a529-42e0-8ba0-fb78a323620a": {
+      "source_url": "https://chevening.org/resource-hub/guidance/eligibility/",
+      "shared_award_id": "60d68065-a9ee-4ef5-9096-1467c299538e",
+      "allowed_final_urls": [
+        "https://www.chevening.org/resource-hub/guidance/eligibility/"
+      ]
+    },
     "c906cb21-aeb3-40b9-a5fe-b72fb54db2e9": {
       "source_url": "https://www.rotary.org/en/get-involved/our-programs/peace-fellowships",
       "shared_award_id": "4f66e3fa-3924-4d0d-a04d-a32989f74c2e",

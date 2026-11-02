@@ -39,7 +39,7 @@ function identities(count = 20) {
     awards: full.awards.map(row => ({ registry: row.registry, members: row.members, source_ids: row.source_ids, reviewed_homepage: row.reviewed_homepage })) };
 }
 describe("bounded text-only award expansion", () => {
-  it.each([5, 10, 15, 20])("adds%i identities without inventing basic snapshots or exposing retired facts", count => {
+  it.each([5, 10, 15, 20, 25])("adds%i identities without inventing basic snapshots or exposing retired facts", count => {
     const result = applyProgramAwardExpansionIdentities(original(), identities(count), epoch);
     expect(result.entries).toHaveLength(25 + count);
     expect(result.entries.every(entry => entry.publishedFacts && JSON.stringify(entry.publishedFacts) === JSON.stringify(emptyBasicAwardFacts()))).toBe(true);
@@ -64,7 +64,7 @@ describe("bounded text-only award expansion", () => {
     expect(result.entries).toHaveLength(25); expect(result.entries.every(entry => entry.basicFactsUnavailable && !entry.basicFactSnapshot)).toBe(true);
     expect(result.entries.every(entry => JSON.stringify(entry.publishedFacts) === JSON.stringify(emptyBasicAwardFacts()))).toBe(true);
   });
-  it.each([5, 10, 15, 20])("adds the complete reviewed batch of %i without changing the accepted25", count => {
+  it.each([5, 10, 15, 20, 25])("adds the complete reviewed batch of %i without changing the accepted25", count => {
     const before = original(), result = applyProgramAwardExpansion(before, publication(count), epoch);
     expect(result.entries).toHaveLength(25 + count); expect(result.verifiedCanonicalAwardIds).toHaveLength(25 + count);
     expect(result.entries.slice(0, 25)).toEqual(before.entries); expect(before.entries).toHaveLength(25);
@@ -86,6 +86,22 @@ describe("bounded text-only award expansion", () => {
     expect(expanded.entries).toHaveLength(45);
     expect(expanded.entries.slice(0, 40)).toEqual(existing.entries);
     expect(expanded.entries.slice(40).map(entry => entry.registry.launch_rank)).toEqual([41, 42, 43, 44, 45]);
+  });
+  it("keeps every existing45 identity and basic fact when the fifth batch becomes public", () => {
+    const existing = applyProgramAwardExpansion(original(), publication(20), epoch);
+    const expanded = applyProgramAwardExpansion(original(), publication(25), epoch);
+    expect(expanded.entries).toHaveLength(50);
+    expect(expanded.entries.slice(0, 45)).toEqual(existing.entries);
+    expect(expanded.entries.slice(45).map(entry => entry.registry.launch_rank)).toEqual([46, 47, 48, 49, 50]);
+  });
+  it.each([1, 2, 3, 4])("rejects a fifth batch when prior batch %i is absent", batch => {
+    const input = publication(25);
+    const missing = new Set(cohort.awards.filter(award => award.batch === batch).map(award => award.cohort_key));
+    input.awards = input.awards.filter(award => !missing.has(award.registry.cohort_key));
+    expect(() => applyProgramAwardExpansion(original(), input, epoch)).toThrow("Expansion batch order changed.");
+    const identityInput = identities(25);
+    identityInput.awards = identityInput.awards.filter(award => !missing.has(award.registry.cohort_key));
+    expect(() => applyProgramAwardExpansionIdentities(original(), identityInput, epoch)).toThrow("Expansion batch order changed.");
   });
   it.each([1, 2, 3])("rejects a fourth batch when prior batch %i is absent", batch => {
     const input = publication(20);
@@ -115,13 +131,28 @@ describe("bounded text-only award expansion", () => {
     expect(expanded.entries[44].publishedFacts).toEqual(emptyBasicAwardFacts());
     expect(expanded.entries[44].basicFactSnapshot?.current).toBe(false);
   });
-  it("rejects a rank or publication count beyond the reviewed45", () => {
-    const overRank = publication(20);
-    overRank.awards[19].registry.launch_rank = 46;
+  it("keeps all50 identities and original45 facts when a fifth-batch basic detail becomes stale", () => {
+    const input = publication(25);
+    Object.assign(input.awards[24].basic_fact, { current: false, public_facts: null });
+    const expanded = applyProgramAwardExpansion(original(), input, epoch);
+    expect(expanded.entries).toHaveLength(50);
+    expect(expanded.entries.slice(0, 45)).toEqual(applyProgramAwardExpansion(original(), publication(20), epoch).entries);
+    expect(expanded.entries[49].publishedFacts).toEqual(emptyBasicAwardFacts());
+    expect(expanded.entries[49].basicFactSnapshot?.current).toBe(false);
+  });
+  it("rejects a rank or publication count beyond the reviewed50", () => {
+    const overRank = publication(25);
+    overRank.awards[24].registry.launch_rank = 51;
     expect(() => applyProgramAwardExpansion(original(), overRank, epoch)).toThrow();
-    const overCount = publication(20);
-    overCount.awards.push(overCount.awards[19]);
+    const overCount = publication(25);
+    overCount.awards.push(overCount.awards[24]);
     expect(() => applyProgramAwardExpansion(original(), overCount, epoch)).toThrow();
+    const overIdentityRank = identities(25);
+    overIdentityRank.awards[24].registry.launch_rank = 51;
+    expect(() => applyProgramAwardExpansionIdentities(original(), overIdentityRank, epoch)).toThrow();
+    const overIdentityCount = identities(25);
+    overIdentityCount.awards.push(overIdentityCount.awards[24]);
+    expect(() => applyProgramAwardExpansionIdentities(original(), overIdentityCount, epoch)).toThrow();
   });
   it("retains identity but clears stale details after a subsequent real change", () => {
     const input = publication(); Object.assign(input.awards[0].basic_fact, { current: false, public_facts: null });

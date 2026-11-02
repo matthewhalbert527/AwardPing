@@ -180,6 +180,51 @@
       "canonical_name": "Carnegie Mellon Rales Fellows",
       "canonical_slug": "carnegie-mellon-rales-fellows",
       "official_homepage": "https://www.cmu.edu/graduate/rales-fellows/"
+    },
+    {
+      "cohort_key": "doe_csgf",
+      "batch": 5,
+      "launch_rank": 46,
+      "canonical_shared_award_id": "cd2f7cf3-6751-4b42-8a23-891788da30e9",
+      "canonical_name": "DOE Computational Science Graduate Fellowship",
+      "canonical_slug": "doe-computational-science-graduate-fellowship",
+      "official_homepage": "https://www.krellinst.org/csgf/"
+    },
+    {
+      "cohort_key": "amgen_us",
+      "batch": 5,
+      "launch_rank": 47,
+      "canonical_shared_award_id": "9592a089-dd1d-4e5b-b7d1-74e766906830",
+      "canonical_name": "Amgen Scholars — U.S. Program",
+      "canonical_slug": "amgen-scholars-program",
+      "official_homepage": "https://amgenscholars.com/us-program/"
+    },
+    {
+      "cohort_key": "fulbright_uk_summer",
+      "batch": 5,
+      "launch_rank": 48,
+      "canonical_shared_award_id": "797be24a-f4d7-45cc-8767-9f0bc2453599",
+      "canonical_name": "Fulbright UK Summer Institutes",
+      "canonical_slug": "fuksi",
+      "official_homepage": "https://fulbright.org.uk/our-programmes/undergraduate-and-pre-university-programmes/uk-summer-institutes/"
+    },
+    {
+      "cohort_key": "suli",
+      "batch": 5,
+      "launch_rank": 49,
+      "canonical_shared_award_id": "5a47fc09-4d3a-47b5-8a9a-6fd4a4031a56",
+      "canonical_name": "DOE Science Undergraduate Laboratory Internships (SULI)",
+      "canonical_slug": "suli",
+      "official_homepage": "https://science.osti.gov/wdts/suli"
+    },
+    {
+      "cohort_key": "chevening",
+      "batch": 5,
+      "launch_rank": 50,
+      "canonical_shared_award_id": "60d68065-a9ee-4ef5-9096-1467c299538e",
+      "canonical_name": "Chevening Scholarships",
+      "canonical_slug": "chevening-scholarships",
+      "official_homepage": "https://www.chevening.org/scholarships/"
     }
   ]
 }
