@@ -708,7 +708,7 @@ function OverviewPanel({
           <dd>
             <FactConflictNotice conflict={deadlineConflict} onReviewChange={onViewUpdates} />
             {deadlines.entries.length > 0 && <DeadlineList entries={deadlines.entries} />}
-            {deadlines.notice && <p className="public-award-date-notice">{deadlines.notice}</p>}
+            {deadlines.notice && <p className="public-award-date-notice">{data.factsNeedReview && deadlines.entries.length === 0 ? "Application deadline is being verified. Check the official award site." : deadlines.notice}</p>}
           </dd>
         </div>}
       </dl>
@@ -727,7 +727,7 @@ function OverviewPanel({
         </dl>
       )}
 
-      {factRows.length === 0 && !overview && (
+      {factRows.length === 0 && !overview && !data.factsNeedReview && (
         <EmptyState text="Award details are not available yet. Check the official sources before applying." />
       )}
 

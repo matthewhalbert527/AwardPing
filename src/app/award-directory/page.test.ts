@@ -277,7 +277,8 @@ describe("award directory page", () => {
     mocks.loadStage1PublicationIndex.mockResolvedValue(authority);
     mocks.loadDirectoryPublicationIndex.mockResolvedValue(hydrated);
     const html = await renderDirectory();
-    expect(html).toContain("Example Fellowship"); expect(html).toContain("Not listed");
+    expect(html).toContain("Example Fellowship"); expect(html).toContain("Being verified");
+    expect(html).not.toContain("Not listed");
     expect(html).not.toContain("A fellowship for testing."); expect(html).not.toContain(UNAVAILABLE_NOTICE);
     expect(mocks.loadEligiblePublicChangeEvents.mock.calls[0][0].publicationIndex).toBe(authority);
     expect(mocks.assertCurrentRelease).toHaveBeenCalledOnce();
@@ -312,6 +313,7 @@ describe("award directory page", () => {
     mocks.loadStage1PublicationIndex.mockResolvedValue(index);
     const html = await renderDirectory();
     expect(html).toContain("Example Fellowship"); expect(html).not.toContain("January 31, 2026"); expect(html).not.toContain("January 31, 2027");
+    expect(html).toContain("Being verified"); expect(html).not.toContain("Not listed");
     expectNoCardDateMetadata(html);
   });
 

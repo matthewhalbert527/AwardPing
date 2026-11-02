@@ -89,6 +89,21 @@ describe("PublicAwardWorkspace", () => {
     expect($(".public-award-latest time").attr("datetime")).toBe(data.changes[0].detectedAt);
   });
 
+  it("labels a withheld application deadline as being verified instead of missing", () => {
+    const data = makeDeepLinkPageData();
+    data.facts = publicAwardFactsFromAward({ publicFacts: {}, completeSnapshot: true });
+    data.factsNeedReview = true;
+    const before = structuredClone(data);
+    const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect($(".public-award-deadlines").text()).toContain("Application deadline is being verified");
+    expect($("#public-award-panel").text()).not.toContain("No application deadline is recorded");
+    expect($("#public-award-panel").text()).not.toContain("Award details are not available yet");
+    expect(data).toEqual(before);
+    data.factsNeedReview = false;
+    const missing = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, { data })));
+    expect(missing(".public-award-deadlines").text()).toContain("No application deadline is recorded");
+  });
+
   it("labels only conflicting fields for review in overview and full requirements", () => {
     const data = makeDeepLinkPageData();
     data.facts = publicAwardFactsFromAward({ publicFacts: {

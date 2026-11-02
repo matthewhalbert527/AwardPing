@@ -1053,6 +1053,19 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     expect(browseRowHrefs(html)).toEqual([gaither.publicPath, gates.publicPath]);
   });
 
+  it("distinguishes temporarily withheld facts from a genuinely missing deadline", () => {
+    const held = { ...goldwater, deadline: null, factsNeedReview: true };
+    const missing = { ...truman, name: "Graduate Scholarship", deadline: null, factsNeedReview: false };
+    const before = structuredClone([held, missing]);
+    const html = renderRows([held, missing]);
+    expect(deadlineCells(html)).toEqual(["Being verified", "Not listed"]);
+    const $ = load(html);
+    expect($(".award-row-card").first().text()).not.toContain("Unconfirmed");
+    expect($(".award-row-card").first().text()).not.toContain("Not listed");
+    expect([held, missing]).toEqual(before);
+    expect(deadlineCells(renderRows([held, missing], ["Scholarship", true]))).toEqual(["Being verified", "Not listed"]);
+  });
+
   it("says Not listed for a missing or blank deadline and renders listed deadlines verbatim", () => {
     const html = renderRows(deadlineRows);
 

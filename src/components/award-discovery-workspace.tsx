@@ -40,6 +40,7 @@ export type SharedAwardCard = {
   changeCount: number | null;
   latestUpdateAt?: string | null;
   detailsCheckedAt?: string | null;
+  factsNeedReview?: boolean;
   firstPublishedCaptureAt?: string | null;
   tracked: boolean;
   detailsLoaded?: boolean;
@@ -638,8 +639,8 @@ function AwardDirectoryCardContent({
               {item.closedCycle || entry.status === "past" ? <dd className={styles.deadlineStatus}>{item.closedCycle ? "Closed cycle" : "Deadline passed"}</dd> : null}
             </div>;
           }) : award.hasApplicationRoutes || applicationContext.length === 0 ? <div className={styles.deadlineItem}>
-            <dt className={styles.deadlineLabel}>{award.hasApplicationRoutes ? "Route deadlines" : "Deadline · Unconfirmed"}</dt>
-            <dd className={styles.deadlineDate}>{award.hasApplicationRoutes ? "View route deadlines" : "Not listed"}</dd>
+            <dt className={styles.deadlineLabel}>{award.hasApplicationRoutes ? "Route deadlines" : award.factsNeedReview ? "Deadline" : "Deadline · Unconfirmed"}</dt>
+            <dd className={styles.deadlineDate}>{award.hasApplicationRoutes ? "View route deadlines" : award.factsNeedReview ? "Being verified" : "Not listed"}</dd>
           </div> : null}
         </dl>
         <span className={`button-primary ${styles.viewAward}`}>View award</span>

@@ -19,7 +19,7 @@ type SharedChangeRow = Database["public"]["Tables"]["shared_award_change_events"
 type SharedAwardDirectoryRow = Pick<
   SharedAwardRow,
   "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts" | "public_facts_generated_at"
-> & { completeSnapshot?: boolean; hasApplicationRoutes?: boolean; detailsCheckedAt: string | null };
+> & { completeSnapshot?: boolean; hasApplicationRoutes?: boolean; detailsCheckedAt: string | null; factsNeedReview?: boolean };
 type SharedChangeDirectoryRow = Pick<
   SharedChangeRow,
   | "id"
@@ -152,6 +152,7 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
       public_facts: publication.publishedFacts,
       public_facts_generated_at: publication.basicFactSnapshot?.verifiedAt || (publication.basicFactsUnavailable ? null : publication.textFactReview?.reviewedAt || publication.registry.last_verified_at),
       detailsCheckedAt: publication.basicFactSnapshot?.current === true ? publication.basicFactSnapshot.verifiedAt : null,
+      factsNeedReview: Boolean(publication.basicFactsUnavailable || (publication.basicFactSnapshot && !publication.basicFactSnapshot.current)),
       completeSnapshot: Boolean(publication.basicFactSnapshot || publication.basicFactsUnavailable || publication.textFactReview),
       hasApplicationRoutes: !publication.basicFactSnapshot && !publication.basicFactsUnavailable && (publication.textFactReview?.variationCount || 0) > 0,
     }),
@@ -195,6 +196,7 @@ function mapSharedAwards(
       cycleStatus: facts.cycleStatus,
       openingDate: facts.openingDate,
       hasApplicationRoutes: award.hasApplicationRoutes,
+      factsNeedReview: award.factsNeedReview,
       importantDates: facts.importantDates,
       academicLevels: facts.academicLevels,
       disciplines: facts.disciplines,
