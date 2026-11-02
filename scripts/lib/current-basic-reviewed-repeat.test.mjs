@@ -72,6 +72,7 @@ describe('machine-only DAAD zero-packet reorder continuity',()=>{
  it.each([
   f=>{f.candidate.model='gemini-fixture';},f=>{f.candidate.submitted_at='2026-10-31T20:01:00.000Z';},f=>{f.candidate.worker_metadata.program_text_claim_token=head;},
   f=>{f.candidate.worker_metadata.gemini_spend_reservation_id=reservationId;},f=>{f.candidate.worker_metadata.provider_request_keys=[];},
+  f=>{f.candidate.worker_metadata.admin_alert_review_id=head;},
   f=>{f.candidate.prompt_payload.comparison.context.cycle_id='wrong-cycle';},f=>{f.candidate.ai_result.responses=[{}];},f=>{f.candidate.actual_usage={tokens:1};},
  ])('rejects fabricated zero-packet, wrong-cycle, claimed or spent provenance %#',async edit=>{const f=continuityDaadReorder();edit(f);f.inspection.candidate_hash=reviewedBasicHash(f.candidate);await expect(prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).rejects.toThrow();});
  it('runs through actual ordinary worker finalization with empty packets, then reconciles after the saved terminal result',async()=>{

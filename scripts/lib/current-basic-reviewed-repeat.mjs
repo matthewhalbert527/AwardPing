@@ -301,10 +301,11 @@ function continuityHiddenIdentity(previous,current){
  return{kind:'hidden_gravityforms_honeypot_label',block_id:block.id,previous_marker:a,current_marker:b};
 }
 function continuityWidgetRemainder(capture,widget){
- const excluded=new Set(widget.marker.excluded_support_block_ids),runs=[];let run=null;
+ // Ambiguous tiny strings (for example a navigation language label) remain
+ // outside the mask. They must be conserved in both the text and block order.
+ const excluded=new Set(capture.blocks.filter(b=>widget.marker.excluded_support_block_ids.includes(b.id)&&widget.belongs(b,true)).map(b=>b.id)),runs=[];let run=null;
  for(const block of capture.blocks){
   if(!excluded.has(block.id)){run=null;continue;}
-  check(widget.belongs(block,true),'reordered_widget_member_not_unique');
   if(run&&/^\s*$/.test(capture.text.slice(run.end,block.start_utf16)))run.end=block.end_utf16;
   else{run={start:block.start_utf16,end:block.end_utf16};runs.push(run);}
  }
@@ -312,7 +313,7 @@ function continuityWidgetRemainder(capture,widget){
  const parts=[];let at=0;
  for(const r of runs){check(r.start>=at,'overlapping_widget_text');parts.push(capture.text.slice(at,r.start),['raw_marked_ancillary_widget',widget.marker.profile]);at=r.end;}
  parts.push(capture.text.slice(at));
- return{parts,blocks:capture.blocks.filter(b=>!excluded.has(b.id)).map(semantic)};
+ return{remainder:{parts,blocks:capture.blocks.filter(b=>!excluded.has(b.id)).map(semantic)},excluded:[...excluded]};
 }
 
 /** Bind directly to the approved original, never an accumulating proof chain. */
@@ -329,9 +330,10 @@ export function basicContinuityPair(previous,current,{epoch,cohort_key}){
  }
  if(cohort_key==='daad_study'&&comparison.status==='unchanged'&&comparison.changed_blocks.length===0&&previous.text!==current.text){
   const a=widgetMarker(previous),b=widgetMarker(current);
+  const before=continuityWidgetRemainder(previous,a),after=continuityWidgetRemainder(current,b);
   check(a.marker.profile===b.marker.profile&&reviewedBasicEqual(a.marker.container_attributes,b.marker.container_attributes)&&
-   reviewedBasicEqual(continuityWidgetRemainder(previous,a),continuityWidgetRemainder(current,b)),'reordered_text_outside_actual_sponsored_widget');
-  return{mode:'profiled_ancillary_reorder',rules:[],widget_proofs:[{profile:b.marker.profile,previous_marker:a.marker,current_marker:b.marker}],identity_markers:[],changed_blocks:[]};
+   reviewedBasicEqual(before.remainder,after.remainder),'reordered_text_outside_actual_sponsored_widget');
+  return{mode:'profiled_ancillary_reorder',rules:[],widget_proofs:[{profile:b.marker.profile,previous_marker:a.marker,current_marker:b.marker}],identity_markers:[],changed_blocks:[],reorder_exclusions:{previous:before.excluded,current:after.excluded}};
  }
  check(comparison.status==='unchanged'&&previous.text===current.text&&reviewedBasicEqual(previous.blocks,current.blocks),'identical_complete_program_text_required');
  const identity_markers=[],widget_proofs=[];
@@ -350,11 +352,11 @@ function continuityZeroPacket(candidate,previous,current,epoch,pair){
   candidate.published_at===null&&candidate.model===null&&candidate.gemini_batch_name===null&&candidate.submitted_at===null&&reviewedBasicEqual(candidate.actual_usage,{})&&
   candidate.shared_award_source_id===current.source.id&&candidate.shared_award_id===current.source.shared_award_id&&candidate.source_url===current.source.url&&
   candidate.worker_metadata?.monitoring_contract==='program-text-v1'&&candidate.worker_metadata.epoch===epoch&&candidate.worker_metadata.evidence_signature===candidate.candidate_signature&&
-  !['gemini_spend_reservation_id','gemini_spend_attempt_token','program_text_claim_token','provider_request_keys'].some(k=>Object.hasOwn(candidate.worker_metadata,k))&&
+  !['gemini_spend_reservation_id','gemini_spend_attempt_token','program_text_claim_token','provider_request_keys','admin_alert_review_id'].some(k=>Object.hasOwn(candidate.worker_metadata,k))&&
   reviewedBasicEqual(candidate.previous_snapshot_ref,programTextReference(previous))&&reviewedBasicEqual(candidate.new_snapshot_ref,programTextReference(current))&&
   Number.isFinite(Date.parse(candidate.completed_at))&&Date.parse(candidate.completed_at)>=Date.parse(current.captured_at),'genuine_unpaid_zero_packet_terminal_required');
  const comparison=buildProgramTextComparison(previous,current,{epoch,cycle_id:candidate.prompt_payload?.comparison?.context?.cycle_id}),packet_plan=buildProgramTextReviewPackets(comparison,candidate.prompt_payload?.packet_plan?.limits);
- check(comparison.status==='unchanged'&&comparison.changed_blocks.length===0&&comparison.comparison_id===candidate.candidate_signature&&
+ check(comparison.status==='unchanged'&&comparison.changed_blocks.length===0&&comparison.ignored_noise_blocks===0&&comparison.comparison_id===candidate.candidate_signature&&
   reviewedBasicEqual(comparison,candidate.prompt_payload?.comparison)&&packet_plan.status==='unchanged'&&packet_plan.packets.length===0&&
   reviewedBasicEqual(packet_plan,candidate.prompt_payload?.packet_plan)&&exact(candidate.ai_result,['responses','program_text_validation'])&&
   reviewedBasicEqual(candidate.ai_result.responses,[]),'exact_zero_packet_comparison_required');
