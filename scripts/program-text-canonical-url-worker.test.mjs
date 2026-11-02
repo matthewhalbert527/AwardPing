@@ -49,6 +49,7 @@ export function validateProgramTextReference() { throw Error("unexpected_referen
   store(join(runtime, "scripts/lib/program-text-repository.mjs"), `
 export function createProgramTextRepository() { return {}; }
 export function programTextCandidateWork() { throw Error("forbidden_candidate_work"); }
+export async function listBasicContinuityWork() { return []; }
 `);
   store(join(runtime, "scripts/lib/program-text-provider.mjs"), `
 export async function submitProgramTextBatch() { globalThis.forbidden.provider++; throw Error("forbidden_provider"); }

@@ -5,6 +5,7 @@ import { attachProgramTextSourceApprovals, hasProgramTextSourceAccess } from "./
 import { validateProgramTextCapture } from "./program-text-capture-contract.mjs";
 import { validateProgramTextCollectionFailureRequest } from "./program-text-collection-quality.mjs";
 import { reviewedPdfInitialCoverageDocument, REVIEWED_PDF_INITIAL_POLICY, REVIEWED_PDF_INITIAL_REASON } from "./program-text-reviewed-pdf-transition.mjs";
+import { BASIC_CONTINUITY_SOURCE_IDS, prepareBasicContinuity } from "./current-basic-reviewed-repeat.mjs";
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value !== null && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -17,6 +18,16 @@ async function result(query, context) {
 }
 const iso = () => new Date().toISOString();
 const uuid = value => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+
+/** Seven approved technical profiles only; never enumerates the paid queue. */
+export async function listBasicContinuityWork(supabase, { epoch, source_ids } = {}) {
+  if (source_ids && !source_ids.some(id => BASIC_CONTINUITY_SOURCE_IDS.includes(id))) return [];
+  const data = await result(supabase.rpc("list_program_basic_continuity_sources"), "list basic continuity");
+  if (!data || data.schema !== "awardping.program-basic-continuity-work.v1" || !Array.isArray(data.sources) || data.sources.length > 7 ||
+      new Set(data.sources.map(row => row.source_id)).size !== data.sources.length || data.sources.some(row =>
+        !BASIC_CONTINUITY_SOURCE_IDS.includes(row.source_id) || !uuid(row.epoch))) throw Error("Invalid bounded basic continuity work");
+  return data.sources.filter(row => (!epoch || row.epoch === epoch) && (!source_ids || source_ids.includes(row.source_id)));
+}
 // Same RFC3339 calendar/offset rules as the existing promotion verifier, kept
 // local so text-only review does not import the legacy visual dependency tree.
 function candidateMicros(value) {
@@ -54,6 +65,32 @@ export function createProgramTextRepository(supabase, { loadCapture, bucket, sou
     return { award_id: award.id, award_name: award.name, source_url: source.url, source_title: source.title || null };
   }
   const repository = {
+    async reconcileBasicContinuity(sourceId) {
+      if (!BASIC_CONTINUITY_SOURCE_IDS.includes(sourceId)) return { source_id: sourceId, status: "skipped" };
+      try {
+        const inspection = await result(supabase.rpc("inspect_program_basic_continuity", { p_source_id: sourceId }), "inspect basic continuity");
+        if (inspection?.schema !== "awardping.program-basic-continuity-inspection.v1" || inspection.source_id !== sourceId) throw Error("Continuity scope changed");
+        if (inspection.status !== "ready") {
+          if (!["skipped", "held"].includes(inspection.status)) throw Error("Invalid continuity inspection status");
+          return { source_id: sourceId, status: inspection.status, reason: inspection.reason || null };
+        }
+        const request = await prepareBasicContinuity(inspection, { loadCapture });
+        // One mutation only. An uncertain response is resolved by readback;
+        // never repeat a paid request, attestation or publication blindly.
+        let response;
+        try { response = await result(supabase.rpc("attest_program_basic_continuity", request), "attest basic continuity"); }
+        catch {
+          const after = await result(supabase.rpc("inspect_program_basic_continuity", { p_source_id: sourceId }), "read back basic continuity");
+          if (after?.schema === inspection.schema && after.source_id === sourceId && after.status === "skipped" && after.reason === "already_current" &&
+              after.expected_head === inspection.expected_head && programTextEqual(after.current_ref, inspection.current_ref)) {
+            return { source_id: sourceId, status: "current", already_applied: true };
+          }
+          throw Error("Continuity attestation unconfirmed");
+        }
+        if (!response || response.ok !== true || !uuid(response.id) || typeof response.already_applied !== "boolean") throw Error("Continuity response unconfirmed");
+        return { source_id: sourceId, status: "current", already_applied: response.already_applied };
+      } catch { return { source_id: sourceId, status: "held", reason: "basic_continuity_not_confirmed" }; }
+    },
     async readState(sourceId) {
       const row = await result(supabase.from("shared_award_sources").select("text_monitoring_state").eq("id", sourceId).single(), "read state");
       return row.text_monitoring_state;

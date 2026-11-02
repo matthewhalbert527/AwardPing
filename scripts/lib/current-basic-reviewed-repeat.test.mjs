@@ -6,7 +6,133 @@ import {emptyProgramFactReview,validateCurrentBasicFactReview} from './program-t
 import {prepareCurrentBasicRepeat} from './current-basic-source-proof.mjs';
 import {programTextDeterministicNoChange} from './program-text-deterministic-no-change.mjs';
 import {prepareBasicFactPublication} from './basic-award-publication.mjs';
-import {REVIEWED_BASIC_REPEAT_KIND as kind,REVIEWED_BASIC_REPEAT_INSPECTION_SCHEMA,REVIEWED_BASIC_CANDIDATE_KEYS,prepareCurrentBasicReviewedRepeat,reviewedBasicCandidateSnapshot,reviewedBasicHash,reviewedBasicSupportProjection,validateCurrentBasicReviewedRepeatEvidence,reviewedBasicDeterministicRules} from './current-basic-reviewed-repeat.mjs';
+import {REVIEWED_BASIC_REPEAT_KIND as kind,REVIEWED_BASIC_REPEAT_INSPECTION_SCHEMA,REVIEWED_BASIC_CANDIDATE_KEYS,prepareCurrentBasicReviewedRepeat,reviewedBasicCandidateSnapshot,reviewedBasicHash,reviewedBasicSupportProjection,validateCurrentBasicReviewedRepeatEvidence,reviewedBasicDeterministicRules,prepareBasicContinuity,basicContinuityPair,BASIC_CONTINUITY_ACTOR} from './current-basic-reviewed-repeat.mjs';
+import {createProgramTextRepository,listBasicContinuityWork} from './program-text-repository.mjs';
+import {review as runOrdinaryReview} from '../program-text-worker.mjs';
+
+function continuityFixture({anchorLabel='URL',previousLabel='Company',currentLabel='LinkedIn',anchorBody=sentence,currentBody=sentence,visible=false,identical=false,emailChange=false}={}){
+ const source={id:'f322a07c-f78c-47fd-aafb-ab6422a4248f',shared_award_id:'dd23afbb-299e-489f-8a0b-e4d7506848de',url:'https://www.schwarzmanscholars.org/admissions/application-instructions/',title:'Application Instructions',page_type:'application',admin_review_status:'open',text_collection_quality:null};
+ const make=(label,date,body=sentence)=>{
+  const prompt=label+' This field is for validation purposes and should be left unchanged.';
+  const href=encoded('admissions@schwarzmanscholars.org',date.includes('20:00:')?3:41);
+  const raw='<html><body><p>'+body+'</p><div id="gform_wrapper_5" style="display:'+(visible?'block':'none')+'"><form id="gform_5" method="post" data-formid="5" action="/admissions/application-instructions/#gf_5" target="gform_ajax_frame_5"><ul id="gform_fields_5"><li id="field_5_10" class="gfield gfield--type-honeypot gform_validation_container"><label id="gfield_label_5_10" for="input_5_10"><span class="gform-field-label__text">'+label+'</span></label><div><input name="input_10" id="input_5_10" type="text" value="" autocomplete="new-password"/></div><div class="gfield_description" id="gfield_description_5_10">This field is for validation purposes and should be left unchanged.</div></li></ul><input type="hidden" name="state_5" value="runtime-'+date+'"/></form></div>'+(emailChange?'<a href="'+href+'">Contact</a>':'')+'</body></html>';
+  let text=body+'\n'+prompt;
+  const blocks=[{id:'body',kind:'p',heading:'Program',context:{heading_path:[{level:1,text:'Program'}]},text:body,start_utf16:0,end_utf16:body.length},{id:'hidden',kind:'li',heading:'Stay Connected',context:{heading_path:[{level:3,text:'Stay Connected'}]},text:prompt,start_utf16:body.length+1,end_utf16:text.length}];
+  if(emailChange){text+='\n'+href;blocks.push({id:'email',kind:'source_link',heading:'Contact',context:{source_attribute:'href',link_text:'Contact'},text:href,start_utf16:text.length-href.length,end_utf16:text.length});}
+  return buildProgramTextCapture({source,captured_at:date,acquisition:'http_html',extractor:{name:'fixture',version:'1'},content_type:'text/html',raw_bytes:Buffer.from(raw),text,blocks});
+ };
+ const anchor=make(anchorLabel,'2026-10-31T20:00:00.000Z',anchorBody),previous=make(previousLabel,'2026-10-31T20:01:00.000Z',currentBody),current=make(identical?anchorLabel:currentLabel,'2026-10-31T20:02:00.000Z',currentBody),ref=programTextReference(current),anchorRef=programTextReference(anchor);
+ source.text_monitoring_state={schema:'awardping.program-text-state.v1',epoch,status:'baseline_ready',baseline_ref:ref,latest_ref:ref,successful_checks:8,first_captured_at:anchor.captured_at,last_checked_at:current.captured_at};
+ const role={source_role:'application',revision:epoch,source_ids:[source.id],manifest_status:'reviewed_text',evidence:{schema:'awardping.program-text-source-role.v1',source_bindings:{[source.id]:{source_url:source.url,shared_award_id:source.shared_award_id}}}};
+ const context={registry:{cohort_key:'schwarzman',canonical_shared_award_id:source.shared_award_id},roles:[role],sources:[source],memberIds:[source.shared_award_id],epoch,pending_alert_reviews:[]};
+ const approved=emptyProgramFactReview({...context,cycle:'2027'});approved.capture_refs=[anchorRef];
+ Object.assign(approved.fields.find(f=>f.field==='overview'),{status:'verified',items:[{value:'Example Award supports graduate study.',track:null,support:[{source_id:source.id,capture_id:anchor.capture_id,block_id:'body',start_utf16:0,end_utf16:37,text:anchor.text.slice(0,37)}]}]});
+ const comparison=buildProgramTextComparison(previous,current,{epoch,cycle_id:null}),plan=buildProgramTextReviewPackets(comparison);
+ const responses=plan.packets.map(p=>({schema:'awardping.program-text-review.v1',comparison_id:comparison.comparison_id,packet_id:p.packet_id,...comparison.context,blocks:p.blocks.map(b=>({id:b.id,disposition:'no_program_change',reason:'Hidden anti-spam prompt rotated.',changes:[]}))}));
+ const candidate={...Object.fromEntries(REVIEWED_BASIC_CANDIDATE_KEYS.map(k=>[k,null])),id:candidateId,shared_award_id:source.shared_award_id,shared_award_source_id:source.id,source_url:source.url,candidate_scope:'program_text_change',status:'rejected',rejection_reason:'no_program_change',candidate_signature:comparison.comparison_id,previous_snapshot_ref:programTextReference(previous),new_snapshot_ref:ref,worker_metadata:{epoch,monitoring_contract:'program-text-v1',evidence_signature:comparison.comparison_id,gemini_spend_reservation_id:reservationId,gemini_spend_attempt_token:attempt,provider_request_keys:plan.packets.map(p=>p.packet_id)},prompt_payload:{comparison,packet_plan:plan},ai_result:{responses,program_text_validation:{status:'no_program_change',comparison_id:comparison.comparison_id,reasons:[],changes:[]}},model:'gemini-fixture',gemini_batch_name:'batches/fixture',submitted_at:'2026-10-31T20:02:01.000Z',completed_at:'2026-10-31T20:03:00.000Z',actual_usage:{}};
+ const paid={id:reservationId,status:'settled',attempt_token:attempt,model:candidate.model,provider_batch_name:candidate.gemini_batch_name,lane_key:'changed_page_review',worker_source:'program-text-review',metadata:{candidate_id:candidateId,monitoring_contract:'program-text-v1'},work_fingerprint:`program-text:${candidate.candidate_signature}:${candidate.model}`,request_count:plan.packets.length,settled_at:'2026-10-31T20:02:59.000Z',spent_source:'bounded-provider-settlement'};
+ const inspection={schema:'awardping.program-basic-continuity-inspection.v1',status:'ready',cohort_key:'schwarzman',source_id:source.id,epoch,expected_head:head,snapshot_hash:'a'.repeat(64),input_review_hash:'b'.repeat(64),source_version:{source_id:source.id,owner_id:source.shared_award_id,url:source.url,epoch},anchor_ref:anchorRef,current_ref:ref,repeat_ref:identical?anchorRef:programTextReference(previous),unchanged_basis:null,approved_review:approved,selected_fields:['overview'],context,candidate:identical?null:candidate,candidate_hash:identical?null:reviewedBasicHash(candidate),paid_reservation:identical?null:paid};
+ const captures=new Map([anchor,previous,current].map(c=>[c.capture_id,c])),loadCapture=vi.fn(async r=>captures.get(r.capture_id));
+ return{inspection,source,anchor,previous,current,candidate,paid,loadCapture};
+}
+
+describe('head-preserving basic technical continuity',()=>{
+ it('proves the real normal pair and approved anchor directly without changing approval/facts/dates',async()=>{
+  const f=continuityFixture(),before=JSON.stringify(f.inspection),v=(await prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).p_validation;
+  expect(v.actor).toBe(BASIC_CONTINUITY_ACTOR);expect(v.kind).toBe('ordinary_no_program_change');expect(v.expected_head).toBe(head);
+  expect(v.anchor_document.reference.capture_id).toBe(f.anchor.capture_id);expect(v.previous_document.reference.capture_id).toBe(f.previous.capture_id);
+  expect(v.support_projection[0].repeat_quote.capture_id).toBe(f.anchor.capture_id);expect(v.normal_validation.candidate_id).toBe(candidateId);
+  expect(f.loadCapture).toHaveBeenCalledTimes(3);expect(JSON.stringify(f.inspection)).toBe(before);
+  expect(Object.hasOwn(v,'public_facts')).toBe(false);expect(Object.hasOwn(v,'reviewed_at')).toBe(false);
+ });
+ it('also binds a second independent rotation to the SAME approved anchor, without chained proof authority',async()=>{
+  const first=continuityFixture(),second=continuityFixture({previousLabel:'LinkedIn',currentLabel:'Instagram'});
+  const a=(await prepareBasicContinuity(first.inspection,{loadCapture:first.loadCapture})).p_validation,b=(await prepareBasicContinuity(second.inspection,{loadCapture:second.loadCapture})).p_validation;
+  expect(a.expected_head).toBe(b.expected_head);expect(a.anchor_document.reference).toEqual(b.anchor_document.reference);
+  expect(a.current_document.reference.text_sha256).not.toBe(b.current_document.reference.text_sha256);
+  expect(a.support_projection.map(x=>x.value)).toEqual(b.support_projection.map(x=>x.value));
+ });
+ it('uses truthful independent unchanged-capture provenance without a fake candidate',async()=>{
+  const f=continuityFixture({identical:true}),v=(await prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).p_validation;
+  expect(v.kind).toBe('ordinary_unchanged');expect(v.normal_validation).toBeNull();expect(v.previous_document.reference).toEqual(v.anchor_ref);expect(v.anchor_pair.identity_markers).toHaveLength(1);
+  expect(v.anchor_ref.artifacts.raw.sha256).not.toBe(v.current_ref.artifacts.raw.sha256);
+ });
+ it('preserves continuity for an identical recapture after a prior approved noise observation without chaining authority',async()=>{
+  const f=continuityFixture({previousLabel:'LinkedIn',currentLabel:'LinkedIn'}),i=f.inspection;
+  i.candidate=null;i.candidate_hash=null;i.paid_reservation=null;i.repeat_ref=programTextReference(f.previous);
+  i.unchanged_basis={observation_id:observationId,content_hash:'c'.repeat(64),repeat_ref:i.repeat_ref};
+  const v=(await prepareBasicContinuity(i,{loadCapture:f.loadCapture})).p_validation;
+  expect(v.kind).toBe('ordinary_unchanged');expect(v.anchor_pair.mode).toBe('profiled_ancillary_change');
+  expect(v.anchor_document.reference.capture_id).toBe(f.anchor.capture_id);expect(v.previous_document.reference.capture_id).toBe(f.previous.capture_id);
+  expect(v.current_document.reference.capture_id).toBe(f.current.capture_id);expect(v.normal_validation).toBeNull();
+ });
+ it('still validates the exact hidden witness when only protected-email encoding rotates from the approved anchor',async()=>{
+  const f=continuityFixture({currentLabel:'URL',emailChange:true}),v=(await prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).p_validation;
+  expect(v.anchor_pair.rules.map(r=>r.kind)).toEqual(['identical_protected_email_destination']);expect(v.anchor_pair.identity_markers).toHaveLength(1);
+ });
+ it.each([
+  ['earlier real eligibility change',()=>continuityFixture({anchorBody:sentence+' Only citizens qualify.'})],
+  ['new real deadline',()=>continuityFixture({currentBody:sentence.replace('January 31','February 1')})],
+  ['visible hidden field',()=>continuityFixture({visible:true})],
+  ['unknown prompt',()=>continuityFixture({currentLabel:'Application Deadline'})],
+ ])('holds %s even when the latest ordinary candidate claims no change',async(name,make)=>{const f=make();await expect(prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).rejects.toThrow();});
+ it.each([
+  ['source owner',f=>{f.inspection.source_version.owner_id=head;}],['epoch',f=>{f.inspection.epoch=head;}],
+  ['roster revision',f=>{f.inspection.context.roles[0].revision=head;}],['pending owner alert',f=>{f.source.text_monitoring_state.status='awaiting_review';}],
+  ['failed provider',f=>{f.paid.status='failed';}],['changed candidate',f=>{f.candidate.status='failed';}],
+  ['unknown cohort',f=>{f.inspection.cohort_key='other';}],['unselected facts',f=>{f.inspection.selected_fields.push('nomination');}],
+  ['incomplete original',f=>{f.current.completeness={status:'incomplete',reasons:['missing_text']};}],
+ ])('refuses stale/unsupported %s',async(name,edit)=>{const f=continuityFixture();edit(f);await expect(prepareBasicContinuity(f.inspection,{loadCapture:f.loadCapture})).rejects.toThrow();});
+ it('does not let a text-identical newly visible field borrow approval',()=>{
+  const f=continuityFixture({visible:true,identical:true});expect(()=>basicContinuityPair(f.anchor,f.current,{epoch,cohort_key:'schwarzman'})).toThrow();
+ });
+ it('recovers a committed but lost response by readback without a second write',async()=>{
+  const f=continuityFixture();let writes=0,reads=0;
+  const db={rpc:vi.fn(async name=>{
+   if(name==='inspect_program_basic_continuity')return{data:++reads===1?f.inspection:{schema:f.inspection.schema,source_id:f.source.id,status:'skipped',reason:'already_current',expected_head:head,current_ref:f.inspection.current_ref}};
+   if(name==='attest_program_basic_continuity'){writes++;return{error:{code:'transport'}};}
+   throw Error('Unexpected operation');
+  })};
+  const repo=createProgramTextRepository(db,{loadCapture:f.loadCapture});
+  expect(await repo.reconcileBasicContinuity(f.source.id)).toEqual({source_id:f.source.id,status:'current',already_applied:true});expect(writes).toBe(1);expect(reads).toBe(2);
+ });
+ it('skips an already-proved source before cold reading and never touches an unreviewed source',async()=>{
+  const cold=vi.fn(),db={rpc:vi.fn(async()=>({data:{schema:'awardping.program-basic-continuity-inspection.v1',source_id:'f322a07c-f78c-47fd-aafb-ab6422a4248f',status:'skipped',reason:'already_current'}}))},repo=createProgramTextRepository(db,{loadCapture:cold});
+  expect((await repo.reconcileBasicContinuity('f322a07c-f78c-47fd-aafb-ab6422a4248f')).status).toBe('skipped');expect((await repo.reconcileBasicContinuity(head)).status).toBe('skipped');expect(db.rpc).toHaveBeenCalledTimes(1);expect(cold).not.toHaveBeenCalled();
+ });
+ it('does not confirm an uncertain mutation from a different concurrent head',async()=>{
+  const f=continuityFixture();let reads=0,writes=0;
+  const db={rpc:async name=>name==='attest_program_basic_continuity'?(writes++,{error:{code:'transport'}}):{data:++reads===1?f.inspection:{schema:f.inspection.schema,source_id:f.source.id,status:'skipped',reason:'already_current',expected_head:candidateId,current_ref:f.inspection.current_ref}}};
+  const repo=createProgramTextRepository(db,{loadCapture:f.loadCapture});expect((await repo.reconcileBasicContinuity(f.source.id)).status).toBe('held');expect(writes).toBe(1);
+ });
+ it('limits durable recovery to seven actual profile identities and the requested epoch/scope',async()=>{
+  const id='f322a07c-f78c-47fd-aafb-ab6422a4248f',db={rpc:async()=>({data:{schema:'awardping.program-basic-continuity-work.v1',sources:[{source_id:id,epoch}]}})};
+  expect(await listBasicContinuityWork(db,{epoch})).toHaveLength(1);expect(await listBasicContinuityWork(db,{epoch:head})).toEqual([]);
+  await expect(listBasicContinuityWork({rpc:async()=>({data:{schema:'awardping.program-basic-continuity-work.v1',sources:[{source_id:head,epoch}]}})})).rejects.toThrow();
+ });
+ it('hooks the actual ordinary review only AFTER baseline CAS and terminal rejection, preserving the approved head across two cycles',async()=>{
+  const facts={head,verified_at:'2026-10-31T19:00:00.000Z',values:{overview:'Example Award supports graduate study.'}},before=structuredClone(facts),events=[];
+  for(const labels of [['Company','LinkedIn'],['LinkedIn','Instagram']]){
+   const f=continuityFixture({previousLabel:labels[0],currentLabel:labels[1]}),order=[];
+   f.source.text_monitoring_state={...f.source.text_monitoring_state,status:'awaiting_review',baseline_ref:programTextReference(f.previous)};
+   const row={...structuredClone(f.candidate),status:'succeeded'};
+   const rpc={rpc:async(name,args)=>{
+    if(name==='inspect_program_basic_continuity'){expect(f.candidate.status).toBe('rejected');expect(f.source.text_monitoring_state.status).toBe('baseline_ready');order.push('inspect');return{data:f.inspection};}
+    if(name==='attest_program_basic_continuity'){expect(args.p_validation.expected_head).toBe(facts.head);order.push('attest');events.push({kind:'technical_continuity',head:args.p_validation.expected_head});return{data:{ok:true,id:observationId,already_applied:false}};}
+    throw Error('No other database operation allowed');
+   }};
+   const technical=createProgramTextRepository(rpc,{loadCapture:f.loadCapture}),repository={listCandidates:async()=>[row],verifyCandidate:async()=>{},
+    recordReviewResult:async()=>{order.push('saved_validation');return true;},finishNoChange:async()=>{order.push('rejected');f.candidate.status='rejected';return true;},
+    reconcileBasicContinuity:technical.reconcileBasicContinuity};
+   const callbacks={loadCapture:f.loadCapture,readState:async()=>f.source.text_monitoring_state,
+    compareAndSetState:async({expected_state,next_state})=>{expect(f.source.text_monitoring_state).toEqual(expected_state);order.push('baseline');f.source.text_monitoring_state=next_state;return next_state;},
+    publishProgramChange:()=>{throw Error('No alert publication permitted');}};
+   const result=await runOrdinaryReview(repository,{},callbacks,1,{source_ids:[f.source.id],epoch});
+   expect(result[0].status).toBe('no_program_change');expect(order).toEqual(['saved_validation','baseline','rejected','inspect','attest']);
+  }
+  expect(events).toHaveLength(2);expect(events.every(e=>e.kind==='technical_continuity')).toBe(true);expect(facts).toEqual(before);
+ });
+});
 
 const epoch='33333333-3333-4333-8333-333333333333',head='44444444-4444-4444-8444-444444444444',candidateId='55555555-5555-4555-8555-555555555555',observationId='66666666-6666-4666-8666-666666666666',reservationId='77777777-7777-4777-8777-777777777777',attempt='88888888-8888-4888-8888-888888888888';
 const encoded=(address,key)=>'/cdn-cgi/l/email-protection#'+Buffer.from([key,...[...Buffer.from(address)].map(b=>b^key)]).toString('hex');

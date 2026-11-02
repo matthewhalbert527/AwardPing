@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const shared = vi.hoisted(() => ({ sources: [], roles: [], config: null, db: null, repository: null,
-  captures: [], submissions: [], polls: [], destroyed: 0, closed: 0, probeRows: [] }));
+  captures: [], submissions: [], polls: [], destroyed: 0, closed: 0, probeRows: [], continuity: [] }));
 vi.mock("node:fs", async original => {
   const actual = await original();
   return { ...actual,
@@ -15,6 +15,7 @@ vi.mock("@aws-sdk/client-s3", async original => ({ ...await original(), S3Client
 vi.mock("./supabase-service-client.mjs", () => ({ createSupabaseServiceClient: () => shared.db,
   closeSupabaseServiceTransport: async () => { shared.closed++; } }));
 vi.mock("./lib/program-text-repository.mjs", () => ({ createProgramTextRepository: () => shared.repository,
+  listBasicContinuityWork: async (_db, { source_ids } = {}) => shared.continuity.filter(row => !source_ids || source_ids.includes(row.source_id)),
   programTextCandidateWork: () => { throw new Error("Unexpected candidate work in empty-queue fixture"); } }));
 vi.mock("./lib/program-text-provider.mjs", () => ({
   submitProgramTextBatch: async row => { shared.submissions.push(row); throw new Error("No paid submission is allowed"); },
@@ -65,6 +66,7 @@ beforeEach(() => {
   shared.config = { schema: "awardping.program-text-monitoring.v1", epoch, enabled: true, sources: {} };
   shared.db = readonlyDatabase(); shared.repository = { listCandidates: vi.fn(async () => []) };
   shared.probeRows = [{ id: owner }];
+  shared.continuity = [];
   shared.captures = []; shared.submissions = []; shared.polls = []; shared.destroyed = 0; shared.closed = 0;
   for (const [key, value] of Object.entries({ NEXT_PUBLIC_SUPABASE_URL: "https://fixture.invalid", SUPABASE_SERVICE_ROLE_KEY: "fake-never-sent",
     R2_BUCKET: "private-bucket", R2_ENDPOINT: "https://fixture.invalid", R2_ACCESS_KEY_ID: "fake-never-sent",
@@ -74,6 +76,15 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("review candidate limit is not a required-source limit", () => {
+  it("recovers terminal no-change continuity even with an empty paid queue, before provider work", async () => {
+    shared.probeRows = [];
+    shared.continuity = [{ source_id: shared.sources[0].id, epoch }];
+    shared.repository.reconcileBasicContinuity = vi.fn(async id => ({ source_id: id, status: "current", already_applied: false }));
+    const report = await runProgramTextWorker(["--mode=review", "--apply=true"]);
+    expect(shared.repository.reconcileBasicContinuity).toHaveBeenCalledExactlyOnceWith(shared.sources[0].id);
+    expect(report.basic_continuity).toEqual([{ source_id: shared.sources[0].id, status: "current", already_applied: false }]);
+    expect(report.results).toEqual([]);expect(shared.submissions).toEqual([]);expect(shared.polls).toEqual([]);expect(fetch).not.toHaveBeenCalled();
+  });
   it("exits an empty queue before roster enumeration, storage setup or provider configuration", async () => {
     shared.probeRows = [];
     for (const key of ["R2_BUCKET", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "GEMINI_API_KEY"]) vi.stubEnv(key, "");

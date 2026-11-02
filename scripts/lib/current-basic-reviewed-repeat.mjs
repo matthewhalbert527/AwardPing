@@ -282,3 +282,112 @@ export function currentReviewedBasicSourceProof(source,ref,context,selected){
 }
 
 export function currentBasicProofSelection(proof){return proof.kind===REVIEWED_BASIC_REPEAT_KIND?{source_id:proof.source_id,id:proof.reviewed_repeat_observation_id,kind:proof.kind}:{source_id:proof.source_id,id:proof.repeat_observation_id};}
+
+// Continuity is a separate technical purpose: it cannot publish, reinterpret
+// facts, decide an owner alert, or act as the human who approved the snapshot.
+export const BASIC_CONTINUITY_SCHEMA='awardping.program-basic-continuity-validation.v1';
+export const BASIC_CONTINUITY_ACTOR='system:program-text:basic-continuity';
+export const BASIC_CONTINUITY_SOURCE_IDS=Object.freeze([
+ ...HONEYPOT_PROFILES.map(p=>p.source_id),
+ ...WIDGET_PROFILES.filter(p=>p.profile==='daad_sponsored_university_carousel.v1').map(p=>p.source_id),
+]);
+const continuityProfile=(source,cohort)=>cohort==='schwarzman'?HONEYPOT_PROFILES.find(p=>p.source_id===source?.id&&p.owner===source.shared_award_id&&p.url===source.url):
+ cohort==='daad_study'?WIDGET_PROFILES.find(p=>p.profile==='daad_sponsored_university_carousel.v1'&&p.source_id===source?.id&&p.owner===source.shared_award_id&&p.url===source.url):null;
+function continuityHiddenIdentity(previous,current){
+ const blocks=current.blocks.filter(b=>b.kind==='li'&&b.text.endsWith(' '+VALIDATION_SENTENCE));check(blocks.length===1,'unique_continuity_honeypot_block_required');
+ const block=blocks[0],old=previous.blocks.find(b=>b.id===block.id);check(old&&reviewedBasicEqual(semantic(old),semantic(block)),'identical_hidden_block_required');
+ const a=honeypotMarker(previous,old),b=honeypotMarker(current,block);
+ check(a.label===b.label&&a.html===b.html&&a.wrapper_start_tag===b.wrapper_start_tag&&a.form_start_tag===b.form_start_tag,'identical_hidden_field_required');
+ return{kind:'hidden_gravityforms_honeypot_label',block_id:block.id,previous_marker:a,current_marker:b};
+}
+
+/** Bind directly to the approved original, never an accumulating proof chain. */
+export function basicContinuityPair(previous,current,{epoch,cohort_key}){
+ check(continuityProfile(current.source,cohort_key)&&reviewedBasicEqual(previous.source,current.source)&&previous.final_url===current.final_url&&
+  current.final_url===current.source.url&&previous.acquisition==='http_html'&&current.acquisition==='http_html'&&reviewedBasicEqual(previous.extractor,current.extractor),'finite_continuity_source_required');
+ for(const capture of[previous,current]){validateProgramTextCapture(capture);check(capture.completeness.status==='complete'&&capture.completeness.reasons.length===0,'complete_continuity_originals_required');}
+ const comparison=buildProgramTextComparison(previous,current,{epoch,cycle_id:null});
+ if(comparison.status==='review_required'){
+  const proof=reviewedBasicDeterministicRules(previous,current,comparison);
+  check(proof.rules.every(r=>['identical_protected_email_destination','hidden_gravityforms_honeypot_label','raw_marked_ancillary_widget'].includes(r.kind)),'unreviewed_continuity_rule');
+  const identity_markers=cohort_key==='schwarzman'&&!proof.rules.some(r=>r.kind==='hidden_gravityforms_honeypot_label')?[continuityHiddenIdentity(previous,current)]:[];
+  return{mode:'profiled_ancillary_change',...proof,identity_markers,changed_blocks:comparison.changed_blocks};
+ }
+ check(comparison.status==='unchanged'&&previous.text===current.text&&reviewedBasicEqual(previous.blocks,current.blocks),'identical_complete_program_text_required');
+ const identity_markers=[],widget_proofs=[];
+ if(cohort_key==='schwarzman'){
+  identity_markers.push(continuityHiddenIdentity(previous,current));
+ }else{
+  const a=widgetMarker(previous),b=widgetMarker(current);
+  check(a.marker.profile===b.marker.profile&&reviewedBasicEqual(a.marker.container_attributes,b.marker.container_attributes),'identical_widget_scope_required');
+  widget_proofs.push({profile:b.marker.profile,previous_marker:a.marker,current_marker:b.marker});
+ }
+ return{mode:'identical_program_text',rules:[],widget_proofs,identity_markers,changed_blocks:[]};
+}
+
+function continuityReview(approved,selected,sourceId,anchor,current,widgets){
+ check(Array.isArray(selected)&&selected.length>0&&selected.length<=15&&new Set(selected).size===selected.length&&selected.includes('overview')&&selected.every(f=>CURRENT_BASIC_FIELDS.includes(f)),'approved_basic_selection_required');
+ const review=structuredClone(approved);review.capture_refs=review.capture_refs.map(r=>r.source.id===sourceId?programTextReference(current):r);
+ review.fields=review.fields.filter(f=>selected.includes(f.field));
+ check(review.fields.length===selected.length&&review.fields.every(f=>f.status==='verified'),'approved_selected_fields_changed');
+ for(const field of review.fields)for(const item of field.items)for(const quote of item.support){
+  if(quote.source_id!==sourceId)continue;
+  const block=anchor.blocks.find(b=>b.id===quote.block_id);
+  check(quote.capture_id===anchor.capture_id&&block&&quote.start_utf16>=block.start_utf16&&quote.end_utf16<=block.end_utf16&&
+   quote.end_utf16>quote.start_utf16&&anchor.text.slice(quote.start_utf16,quote.end_utf16)===quote.text,'approved_anchor_quote_changed');
+  const matches=current.blocks.filter(b=>reviewedBasicEqual(semantic(b),semantic(block))),next=matches.find(b=>b.id===block.id)||(matches.length===1?matches[0]:null);
+  check(next,'approved_full_support_block_changed_or_ambiguous');
+  const offset=quote.start_utf16-block.start_utf16;
+  Object.assign(quote,{capture_id:current.capture_id,block_id:next.id,start_utf16:next.start_utf16+offset,end_utf16:next.start_utf16+offset+quote.text.length});
+ }
+ const support=reviewedBasicSupportProjection(review,sourceId,current,anchor,widgets);
+ return{review,support};
+}
+
+/** Complete originals are transient request inputs. The server stores only a
+ * small immutable receipt, retaining full originals in their existing archive. */
+export async function prepareBasicContinuity(inspection,{loadCapture,now=()=>Date.now()}={}){
+ check(inspection?.schema==='awardping.program-basic-continuity-inspection.v1'&&inspection.status==='ready'&&typeof loadCapture==='function','fresh_continuity_inspection_required');
+ const i=inspection,context=i.context,source=context?.sources?.find(s=>s.id===i.source_id),ref=i.current_ref;
+ check(uuid(i.expected_head)&&hex(i.snapshot_hash)&&hex(i.input_review_hash)&&i.epoch===context?.epoch&&i.cohort_key===context?.registry?.cohort_key&&
+  continuityProfile(source,i.cohort_key)&&i.source_version?.source_id===source.id&&i.source_version.owner_id===source.shared_award_id&&i.source_version.url===source.url&&
+  i.source_version.epoch===i.epoch&&reviewedBasicEqual(ref,source.text_monitoring_state?.latest_ref)&&
+  assertCurrentBasicSource(source,ref,context)===null&&source.text_monitoring_state.status==='baseline_ready','current_approved_continuity_scope_changed');
+ const approved=i.approved_review;
+ check(approved?.cohort_key===i.cohort_key&&approved.award_id===context.registry.canonical_shared_award_id&&approved.epoch===i.epoch&&
+  reviewedBasicEqual(approved.capture_refs.find(r=>r.source.id===source.id),i.anchor_ref)&&
+  reviewedBasicEqual([...approved.roster].sort((a,b)=>a.source_role.localeCompare(b.source_role)),context.roles.map(({source_role,revision,source_ids})=>({source_role,revision,source_ids})).sort((a,b)=>a.source_role.localeCompare(b.source_role))),'approved_anchor_or_roster_changed');
+ const cache=new Map(),cold=async r=>{
+  if(!cache.has(r.capture_id)){const c=await loadCapture(r);validateProgramTextCapture(c,{source});check(reviewedBasicEqual(programTextReference(c),r)&&c.completeness.status==='complete'&&c.completeness.reasons.length===0,'cold_continuity_original_changed');cache.set(r.capture_id,c);}
+  const c=cache.get(r.capture_id);check(reviewedBasicEqual(programTextReference(c),r),'ambiguous_continuity_capture_identity');return c;
+ };
+ const anchor=await cold(i.anchor_ref),current=await cold(ref);
+ check(Date.parse(anchor.captured_at)<=Date.parse(current.captured_at),'continuity_capture_regressed');
+ const anchor_pair=basicContinuityPair(anchor,current,{epoch:i.epoch,cohort_key:i.cohort_key});
+ const rebound=continuityReview(approved,i.selected_fields,source.id,anchor,current,anchor_pair.widget_proofs);
+ const verified_at=new Date(now()).toISOString();
+ check(Date.parse(verified_at)>=Date.parse(current.captured_at)&&Date.now()-Date.parse(verified_at)<=15*60*1000&&Date.parse(verified_at)<=Date.now(),'fresh_continuity_clock_required');
+ let previous=null,normal_validation=null,kind;
+ if(i.candidate!==null){
+  previous=await cold(i.candidate.previous_snapshot_ref);
+  check(i.unchanged_basis===null&&reviewedBasicEqual(i.repeat_ref,i.candidate.previous_snapshot_ref)&&reviewedBasicEqual(i.candidate.new_snapshot_ref,ref)&&reviewedBasicHash(i.candidate)===i.candidate_hash,'current_normal_candidate_changed');
+  const inspection={schema:REVIEWED_BASIC_REPEAT_INSPECTION_SCHEMA,packet:{schema:'awardping.current-basic-award-context.v1',head_id:i.expected_head,context},candidate:i.candidate,candidate_hash:i.candidate_hash,paid_reservation:i.paid_reservation};
+  normal_validation=(await prepareCurrentBasicReviewedRepeat({inspection,review:rebound.review,verified_at},{...context,loadCapture:cold})).p_validation;
+  basicContinuityPair(previous,current,{epoch:i.epoch,cohort_key:i.cohort_key});
+  kind='ordinary_no_program_change';
+ }else{
+  previous=await cold(i.repeat_ref);
+  check(i.candidate_hash===null&&i.paid_reservation===null&&
+   (i.unchanged_basis===null?reviewedBasicEqual(i.repeat_ref,i.anchor_ref):exact(i.unchanged_basis,['observation_id','content_hash','repeat_ref'])&&uuid(i.unchanged_basis.observation_id)&&hex(i.unchanged_basis.content_hash)&&reviewedBasicEqual(i.unchanged_basis.repeat_ref,i.repeat_ref))&&
+   basicContinuityPair(previous,current,{epoch:i.epoch,cohort_key:i.cohort_key}).mode==='identical_program_text'&&previous.capture_id!==current.capture_id&&
+   Date.parse(previous.captured_at)<Date.parse(current.captured_at)&&i.repeat_ref.artifacts.metadata.object_key!==ref.artifacts.metadata.object_key,'genuine_unchanged_repeat_required');
+  kind='ordinary_unchanged';
+ }
+ const validation={schema:BASIC_CONTINUITY_SCHEMA,actor:BASIC_CONTINUITY_ACTOR,kind,cohort_key:i.cohort_key,source_id:i.source_id,epoch:i.epoch,
+  expected_head:i.expected_head,snapshot_hash:i.snapshot_hash,input_review_hash:i.input_review_hash,source_version:i.source_version,
+  anchor_ref:i.anchor_ref,current_ref:ref,repeat_ref:i.repeat_ref,unchanged_basis:i.unchanged_basis,verified_at,anchor_document:document(anchor),anchor_raw:raw(anchor),current_document:document(current),current_raw:raw(current),
+  previous_document:previous?document(previous):null,previous_raw:previous?raw(previous):null,normal_validation,anchor_pair,
+  support_projection:rebound.support,support_hash:reviewedBasicHash(rebound.support)};
+ check(Buffer.byteLength(JSON.stringify(validation))<=32*1024*1024,'bounded_continuity_proof_required');
+ return{p_validation:validation};
+}

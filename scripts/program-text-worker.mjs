@@ -6,7 +6,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { createSupabaseServiceClient, closeSupabaseServiceTransport } from "./supabase-service-client.mjs";
 import { monitorProgramTextSource, finalizeProgramTextReview } from "./lib/program-text-monitor.mjs";
 import { retainProgramTextCapture, uploadProgramTextCapture, loadProgramTextCapture, validateProgramTextReference } from "./lib/program-text-storage.mjs";
-import { createProgramTextRepository, programTextCandidateWork } from "./lib/program-text-repository.mjs";
+import { createProgramTextRepository, programTextCandidateWork, listBasicContinuityWork } from "./lib/program-text-repository.mjs";
 import { submitProgramTextBatch, pollProgramTextBatch } from "./lib/program-text-provider.mjs";
 import { findProgramTextBrowserExecutable } from "./lib/program-text-browser.mjs";
 import { isKnownProgramTextHtmlShellReference, isKnownProgramTextFooterOnlyPdfReference } from "./lib/program-text-capture-contract.mjs";
@@ -220,7 +220,11 @@ export async function review(repository, options, callbacks, limit, scope) {
                 ...(local ? { deterministicCandidate: row } : row.status === "succeeded" &&
                   row.ai_result?.program_text_review_provenance?.schema === "awardping.deterministic-program-text-no-change.v1"
                   ? { deterministicProvenance: row.ai_result.program_text_review_provenance } : {}) }) } });
-          if (outcome.status === "no_program_change") await repository.finishNoChange(row.id);
+          if (outcome.status === "no_program_change" && await repository.finishNoChange(row.id)) {
+            // The baseline and terminal rejection must both exist first. This
+            // records technical continuity only; it never publishes new facts.
+            await repository.reconcileBasicContinuity?.(row.shared_award_source_id);
+          }
         } else outcome = completed;
       }
       report.push({ candidate_id: row.id, status: outcome.status, reason: outcome.reason || null });
@@ -242,7 +246,8 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
     // still enumerate and validate their requested roster, including empty or
     // invalid scopes, before querying any candidate queue.
     if (args.apply && args.mode === "review" && !args["source-id"] && !args.cohort && args.shardCount === 1 &&
-        !await hasPotentialProgramTextReview(supabase, { epoch: config.epoch })) {
+        !await hasPotentialProgramTextReview(supabase, { epoch: config.epoch }) &&
+        !(await listBasicContinuityWork(supabase, { epoch: config.epoch })).length) {
       return { schema: "awardping.program-text-run.v1", mode: args.mode, epoch: config.epoch, apply: true,
         selected_sources: 0, roster_seal: null, checked_at: new Date().toISOString(), coverage: [], results: [],
         queue_state: "idle", roster_checked: false };
@@ -292,6 +297,14 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
         return uploadProgramTextCapture(capture, storage);
       }, retainIncomplete: capture => { if (!archive) throw new Error("Private text archive is not configured"); return retainProgramTextCapture(capture, archive); } };
     if (args.mode === "review") {
+      // Bounded recovery survives interruption after a candidate was rejected,
+      // even when the paid-review queue is empty. Cheap SQL admission excludes
+      // already-current sources before any archived originals are downloaded.
+      const continuity = await listBasicContinuityWork(supabase, { epoch: config.epoch, source_ids: selected.map(source => source.id) });
+      if (continuity.length) {
+        report.basic_continuity = [];
+        for (const row of continuity) report.basic_continuity.push(await repository.reconcileBasicContinuity(row.source_id));
+      }
       if (!env.GEMINI_API_KEY) throw new Error("Gemini review is not configured");
       report.results = await review(repository, { supabase, apiKey: env.GEMINI_API_KEY }, callbacks, Math.min(args.limit, 100),
         { source_ids: selected.filter(source => hasProgramTextSourceAccess(source, { epoch: config.epoch }) && source.manifest_bound).map(source => source.id), epoch: config.epoch });
@@ -327,6 +340,13 @@ export async function runProgramTextWorker(argv = process.argv.slice(2)) {
         report.results.push({ source_id: source.id, status: "held", reason: outcome.reason }); continue;
       }
       if (outcome.state) source.text_monitoring_state = outcome.state;
+      if (outcome.status === "unchanged" && outcome.initial_coverage !== true) {
+        const continuity = await repository.reconcileBasicContinuity?.(source.id);
+        if (continuity && continuity.status !== "skipped") {
+          report.basic_continuity ||= [];
+          report.basic_continuity.push(continuity);
+        }
+      }
       if (outcome.collection_failure_recorded === true) source.text_collection_quality = outcome.collection_failure.failure;
       else if (outcome.collection_failure_recorded === false) source.text_collection_quality = undefined;
       report.results.push({ source_id: source.id, cohorts: source.cohorts, status: outcome.status, reason: outcome.reason || null,
