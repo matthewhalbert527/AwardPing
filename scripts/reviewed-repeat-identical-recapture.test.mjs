@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {parse} from 'libpg-query';
 
-const migration=readFileSync(new URL('../supabase/migrations/20261102021715_reviewed_repeat_identical_recapture_currentness.sql',import.meta.url),'utf8');
+const migration=readFileSync(new URL('../supabase/migrations/20261102024528_reviewed_repeat_identical_recapture_currentness.sql',import.meta.url),'utf8');
 const accepted=readFileSync(new URL('../supabase/migrations/20261101003439_current_basic_sealed_read_fastpaths.sql',import.meta.url),'utf8');
 const previous=accepted.split('after_def:=$reviewed_read_after$')[1].split('$reviewed_read_after$;')[0];
 const beforeHash='8358f9e50fd8c3d9aac24c07be93a8178d50c8ee6ca8f3f4dd55aac626d5d73e';
