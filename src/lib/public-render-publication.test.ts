@@ -18,6 +18,7 @@ import { loadPublicRenderPublicationIndex, loadPublicRenderDirectoryPublicationI
 import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
 import { emptyBasicAwardFacts } from "@/lib/program-basic-facts.server";
 const at = "2026-10-29T12:00:00.000Z", id = (n: number) => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
+const publicCount = 25 + cohort.awards.length;
 function original(): Stage1PublicationIndex {
   const entries = Array.from({ length: 25 }, (_, n) => ({ registry: { cohort_key: `original_${n}` }, canonicalAwardId: id(n + 1), memberAwardIds: [id(n + 1)],
     effectivelyVerified: true, allowedSourceIds: [id(n + 100)], allowedSourceIdSet: new Set([id(n + 100)]), publishedFacts: emptyBasicAwardFacts(), basicFactsUnavailable: true } as unknown as Stage1PublicationEntry));
@@ -47,19 +48,19 @@ beforeEach(() => {
   });
 });
 
-it("homepage/update identity reads share one in-flight render read and never scan50 basic facts", async () => {
+it("homepage/update identity reads share one in-flight render read and never scan60 basic facts", async () => {
   let finish!: (value: Stage1PublicationIndex) => void; state.read.mockReturnValue(new Promise(resolve => { finish = resolve; })); state.scope = new Map();
   const home = loadPublicRenderPublicationIndex(), updates = loadPublicRenderPublicationIndex(); expect(home).toBe(updates); expect(state.read).toHaveBeenCalledTimes(1);
   finish(original()); const index = await updates;
-  expect(index.verifiedEntries).toHaveLength(50); expect(index.entries.every(e => e.basicFactsUnavailable && (e.publishedFacts as { overview: unknown }).overview === null)).toBe(true);
+  expect(index.verifiedEntries).toHaveLength(publicCount); expect(index.entries.every(e => e.basicFactsUnavailable && (e.publishedFacts as { overview: unknown }).overview === null)).toBe(true);
   expect(state.rpc.mock.calls.map(([name]) => name)).toEqual(["get_program_award_expansion_identities", "get_program_text_public_alert_source_bindings"]);
 });
 
-it("directory makes exactly one bounded50-award facts query after thin authority completes", async () => {
+it("directory makes exactly one bounded60-award facts query after thin authority completes", async () => {
   state.scope = new Map(); const index = await loadPublicRenderDirectoryPublicationIndex();
-  expect(index.verifiedEntries).toHaveLength(50); expect(index.entries.every(e => e.basicFactSnapshot?.current)).toBe(true);
+  expect(index.verifiedEntries).toHaveLength(publicCount); expect(index.entries.every(e => e.basicFactSnapshot?.current)).toBe(true);
   expect(state.rpc.mock.calls.map(([name]) => name)).toEqual(["get_program_award_expansion_identities", "get_program_text_public_alert_source_bindings", "get_program_basic_facts"]);
-  const ids = state.rpc.mock.calls[2][1].p_award_ids; expect(ids).toHaveLength(50); expect(new Set(ids).size).toBe(50);
+  const ids = state.rpc.mock.calls[2][1].p_award_ids; expect(ids).toHaveLength(publicCount); expect(new Set(ids).size).toBe(publicCount);
   await loadPublicRenderDirectoryPublicationIndex(); expect(state.rpc).toHaveBeenCalledTimes(3);
 });
 
@@ -72,12 +73,12 @@ it("never overlaps the directory facts scan with the preceding source-authority 
   await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
   expect(state.rpc.mock.calls.some(([name]) => name === "get_program_basic_facts")).toBe(false);
   finish({ data: { schema: "awardping.program-text-public-alert-sources.v1", epoch: textMonitoring.epoch, source_count: 0, bindings: [] }, error: null });
-  expect((await loading).verifiedEntries).toHaveLength(50);
+  expect((await loading).verifiedEntries).toHaveLength(publicCount);
   expect(state.rpc.mock.calls.filter(([name]) => name === "get_program_basic_facts")).toHaveLength(1);
 });
 
 it("a new render rechecks authority and does not retain previous facts after a release closes", async () => {
-  state.scope = new Map(); expect((await loadPublicRenderDirectoryPublicationIndex()).verifiedEntries).toHaveLength(50);
+  state.scope = new Map(); expect((await loadPublicRenderDirectoryPublicationIndex()).verifiedEntries).toHaveLength(publicCount);
   state.read.mockResolvedValueOnce({ ...original(), available: false, verifiedEntries: [] }); state.scope = new Map();
   const next = await loadPublicRenderDirectoryPublicationIndex(); expect(next.available).toBe(false); expect(next.verifiedEntries).toHaveLength(0); expect(state.rpc).toHaveBeenCalledTimes(3);
 });
@@ -87,7 +88,7 @@ it("identity or fact failures never fabricate expansion rows or resurrect retire
   expect((await loadPublicRenderPublicationIndex()).verifiedEntries).toHaveLength(25);
   state.rpc.mockImplementation(async (name: string) => name === "get_program_award_expansion_identities" ? { data: identities(), error: null } : name === "get_program_text_public_alert_source_bindings"
     ? { data: { schema: "awardping.program-text-public-alert-sources.v1", epoch: textMonitoring.epoch, source_count: 0, bindings: [] }, error: null } : { data: null, error: { code: "57014" } });
-  const failed = await loadPublicRenderDirectoryPublicationIndex(); expect(failed.verifiedEntries).toHaveLength(50); expect(failed.entries.every(e => e.basicFactsUnavailable && (e.publishedFacts as { overview: unknown }).overview === null)).toBe(true);
+  const failed = await loadPublicRenderDirectoryPublicationIndex(); expect(failed.verifiedEntries).toHaveLength(publicCount); expect(failed.entries.every(e => e.basicFactsUnavailable && (e.publishedFacts as { overview: unknown }).overview === null)).toBe(true);
 });
 
 it("raw actions and delivery remain uncached while non-render callers do not reuse a memo", async () => {
@@ -101,3 +102,5 @@ it("publication/read-state/delivery keep full current authority and no persisten
   }
   expect(readFileSync(new URL("./public-render-publication.ts", import.meta.url), "utf8")).not.toMatch(/unstable_cache|setTimeout|new Map|userId|officeId|force-cache/);
 });
+
+it("keeps the original50 public while the final ten remain unadmitted", async () => { const normal=state.rpc.getMockImplementation()!; state.rpc.mockImplementation((name: string, args: { p_award_ids?: string[] }) => name === "get_program_award_expansion_identities" ? Promise.resolve({data:{...identities(),awards:identities().awards.slice(0,25)},error:null}) : normal(name,args)); const index=await loadPublicRenderDirectoryPublicationIndex(); expect(index.verifiedEntries).toHaveLength(50); expect(state.rpc.mock.calls.find(([name])=>name === "get_program_basic_facts")![1].p_award_ids).toHaveLength(50); });
